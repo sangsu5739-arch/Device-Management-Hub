@@ -38,10 +38,12 @@ class FtdiManager(QObject):
     data_sent = Signal(str)
     data_received = Signal(str)
     log_message = Signal(str)
+    device_info_changed = Signal(object)
 
     # ── Singleton ──
     _instance: Optional[FtdiManager] = None
     _initialized: bool = False
+    _device_cache: dict = {}
 
     # ── FTDI ADBUS GPIO 핀맵 ──
     _PIN0_SK = 1 << 0   # AD0 — SCL
@@ -103,6 +105,18 @@ class FtdiManager(QObject):
     def serial_number(self) -> str:
         return self._serial_number
 
+    @property
+    def channel(self) -> str:
+        return self._channel
+
+    def get_device_info(self, serial: Optional[str] = None) -> dict:
+        key = serial or self._serial_number
+        info = FtdiManager._device_cache.get(key, {}).copy()
+        if info:
+            info["channel"] = self._channel
+            info["connected"] = self._is_connected
+        return info
+
     # ── 장치 관리 ──
 
     @staticmethod
@@ -114,6 +128,17 @@ class FtdiManager(QObject):
         return serial
 
     @staticmethod
+    def _infer_device_type(desc: str, channels: List[str]) -> str:
+        desc_upper = (desc or "").upper()
+        if "4232" in desc_upper or len(channels) >= 4:
+            return "FT4232H"
+        if "2232" in desc_upper or len(channels) >= 2:
+            return "FT2232H"
+        if "232" in desc_upper or len(channels) <= 1:
+            return "FT232H"
+        return "FTDI"
+
+    @staticmethod
     def scan_devices() -> List[Tuple[str, str]]:
         """연결된 FTDI 장치 스캔
 
@@ -121,17 +146,13 @@ class FtdiManager(QObject):
             [(base_serial, description), ...] 리스트
         """
         devices: List[Tuple[str, str]] = []
-        for serial, desc, _channels in FtdiManager.scan_devices_with_channels():
+        for serial, desc, _channels, _dtype in FtdiManager.scan_devices_with_channels():
             devices.append((serial, desc))
         return devices
 
     @staticmethod
-    def scan_devices_with_channels() -> List[Tuple[str, str, List[str]]]:
-        """연결된 FTDI 장치 스캔 (채널 포함)
-
-        Returns:
-            [(base_serial, description, channels), ...] 리스트
-        """
+    def scan_devices_with_channels() -> List[Tuple[str, str, List[str], str]]:
+        # Scan FTDI devices with channel list
         devices_map: dict[str, dict[str, object]] = {}
         try:
             import ftd2xx
@@ -155,7 +176,7 @@ class FtdiManager(QObject):
                 if not base_serial:
                     continue
 
-                channel: Optional[str] = None
+                channel = None
                 if serial and serial[-1].upper() in ("A", "B", "C", "D"):
                     channel = serial[-1].upper()
                 else:
@@ -172,19 +193,27 @@ class FtdiManager(QObject):
                     entry["desc"] = desc
                 if channel:
                     entry["channels"].add(channel)
-                # 채널 접미사가 없는 장치(FT232H, FT232R 등 단일채널)는
-                # channels를 비워 둠 — UI에서 채널 선택 불필요로 처리
+                else:
+                    entry["channels"].add("A")
 
         except ImportError:
-            logger.warning("ftd2xx 라이브러리가 설치되어 있지 않습니다.")
+            logger.warning("ftd2xx library is not installed.")
         except Exception as e:
-            logger.error(f"장치 스캔 오류: {e}")
+            logger.error(f"device scan error: {e}")
 
-        devices: List[Tuple[str, str, List[str]]] = []
+        devices: List[Tuple[str, str, List[str], str]] = []
+        FtdiManager._device_cache = {}
         for serial, meta in devices_map.items():
             desc = str(meta.get("desc") or "")
-            channels = sorted(meta.get("channels") or [])  # 단일채널 장치는 빈 리스트
-            devices.append((serial, desc, channels))
+            channels = sorted(meta.get("channels") or ["A"])
+            device_type = FtdiManager._infer_device_type(desc, channels)
+            devices.append((serial, desc, channels, device_type))
+            FtdiManager._device_cache[serial] = {
+                "serial": serial,
+                "desc": desc,
+                "channels": channels,
+                "device_type": device_type,
+            }
         return devices
 
     def _find_device_index(self, serial_number: str, channel: str) -> Optional[int]:
@@ -319,6 +348,17 @@ class FtdiManager(QObject):
             info = f"연결됨: SN={serial_number}, CH={self._channel}"
             self._log(info)
             self.device_connected.emit(info)
+            cached = FtdiManager._device_cache.get(self._serial_number, {})
+            self.device_info_changed.emit(
+                {
+                    "serial": self._serial_number,
+                    "channel": self._channel,
+                    "desc": cached.get("desc", ""),
+                    "channels": cached.get("channels", []),
+                    "device_type": cached.get("device_type", ""),
+                    "connected": True,
+                }
+            )
             return True
         except ImportError:
             err = "ftd2xx 라이브러리가 설치되어 있지 않습니다."
@@ -356,6 +396,16 @@ class FtdiManager(QObject):
             self._serial_number = ""
             self._log("연결 해제됨")
             self.device_disconnected.emit()
+            self.device_info_changed.emit(
+                {
+                    "serial": "",
+                    "channel": "",
+                    "desc": "",
+                    "channels": [],
+                    "device_type": "",
+                    "connected": False,
+                }
+            )
 
     # ── I2C 프리미티브 (내부용, mutex 없음) ──
 
@@ -527,6 +577,19 @@ class FtdiManager(QObject):
                 except Exception:
                     pass
         return found
+
+    def read_gpio_low(self) -> Optional[int]:
+        """Read low GPIO bits (ADBUS) in MPSSE mode."""
+        if not self._is_connected or self._ft is None:
+            return None
+        locker = QMutexLocker(self._mutex)
+        try:
+            self._mpsse_write(bytes([self._MPSSE_READ_BITS_LOW, self._MPSSE_SEND_IMMEDIATE]))
+            resp = self._mpsse_read(1)
+            return resp[0] if resp else None
+        except Exception as e:
+            self._log(f"[오류] GPIO 읽기 실패: {e}")
+            return None
     
     # ── SMBus 프로토콜 (PI6CG18201 호환) ──
 

@@ -1,0 +1,3 @@
+from modules.ftdi_verifier.ftdi_verifier_module import FtdiVerifierModule
+
+MODULE_CLASS = FtdiVerifierModule

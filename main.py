@@ -21,6 +21,8 @@ from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QGroupBox, QLabel, QPushButton, QComboBox, QTabWidget, QMessageBox,
+    QSplitter, QTableWidget, QTableWidgetItem, QHeaderView, QAbstractItemView,
+    QGraphicsOpacityEffect,
 )
 
 from core.ftdi_manager import FtdiManager
@@ -180,8 +182,8 @@ class MainWindow(QMainWindow):
 
         return group
 
+
     def _connect_signals(self) -> None:
-        """FtdiManager 시그널 연결"""
         self._ftdi.device_connected.connect(self._on_hw_connected)
         self._ftdi.device_disconnected.connect(self._on_hw_disconnected)
         self._ftdi.comm_error.connect(self._on_hw_error)
@@ -275,9 +277,9 @@ class MainWindow(QMainWindow):
             self._show_scan_dialog(0)
             return
 
-        for serial, desc, channels in devices:
+        for serial, desc, channels, device_type in devices:
             self._device_combo.addItem(
-                f"{serial}  ({desc})", {"serial": serial, "channels": channels}
+                f"{serial}  ({desc})", {"serial": serial, "channels": channels, "device_type": device_type}
             )
 
         self.statusBar().showMessage(f"{len(devices)}개 FTDI 장치 발견")
@@ -323,24 +325,18 @@ class MainWindow(QMainWindow):
         channels: List[str] = []
         if isinstance(data, dict):
             channels = list(data.get("channels") or [])
-
         current = self._channel_combo.currentText()
         self._channel_combo.blockSignals(True)
         self._channel_combo.clear()
 
-        if channels:
-            # 다채널 장치 (FT2232, FT4232): A/B/C/D 선택
-            self._channel_combo.addItems(channels)
-            if current in channels:
-                self._channel_combo.setCurrentText(current)
-            self._channel_combo.setEnabled(True)
-            self._channel_combo.setToolTip("사용할 FTDI 채널을 선택하세요")
-        else:
-            # 단일 채널 장치 (FT232H, FT232R): 채널 선택 불필요
-            self._channel_combo.addItem("(단일채널)")
-            self._channel_combo.setCurrentIndex(0)
-            self._channel_combo.setEnabled(False)
-            self._channel_combo.setToolTip("이 장치는 채널이 하나뿐입니다")
+        if not channels:
+            channels = ["A"]
+        # 다채널 장치 (FT2232, FT4232) 또는 단일 채널 포함
+        self._channel_combo.addItems(channels)
+        if current in channels:
+            self._channel_combo.setCurrentText(current)
+        self._channel_combo.setEnabled(True)
+        self._channel_combo.setToolTip("사용할 FTDI 채널을 선택하세요")
 
         self._channel_combo.blockSignals(False)
 
