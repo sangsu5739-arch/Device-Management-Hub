@@ -728,6 +728,12 @@ class FtdiVerifierModule(BaseModule):
             "UART": {
                 0: PinFunction.UART_TX,
                 1: PinFunction.UART_RX,
+                2: PinFunction.UART_RTS,
+                3: PinFunction.UART_CTS,
+                4: PinFunction.UART_DTR,
+                5: PinFunction.UART_DSR,
+                6: PinFunction.UART_DCD,
+                7: PinFunction.UART_RI,
             },
         }
 
