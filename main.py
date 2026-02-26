@@ -11,6 +11,7 @@ import importlib
 import logging
 import os
 import pkgutil
+import signal
 import sys
 import traceback
 from pathlib import Path
@@ -155,7 +156,15 @@ class MainWindow(QMainWindow):
         self._channel_combo = QComboBox()
         self._channel_combo.setMinimumWidth(80)
         self._channel_combo.setPlaceholderText("—")
+        self._channel_combo.currentIndexChanged.connect(self._on_channel_combo_changed)
         layout.addWidget(self._channel_combo)
+
+        self._active_channel_badge = QLabel("ACTIVE: -")
+        self._active_channel_badge.setStyleSheet(
+            "color: #e8f0ff; background: #2a3142; border-radius: 6px; padding: 4px 8px;"
+            "font-weight: 700;"
+        )
+        layout.addWidget(self._active_channel_badge)
 
         layout.addSpacing(10)
 
@@ -187,6 +196,7 @@ class MainWindow(QMainWindow):
         self._ftdi.device_connected.connect(self._on_hw_connected)
         self._ftdi.device_disconnected.connect(self._on_hw_disconnected)
         self._ftdi.comm_error.connect(self._on_hw_error)
+        self._ftdi.active_channel_changed.connect(self._on_active_channel_changed)
 
     def _load_modules(self) -> None:
         """디바이스 모듈 탐색 및 탭 추가"""
@@ -301,8 +311,7 @@ class MainWindow(QMainWindow):
         channels = list((data.get("channels") or []) if isinstance(data, dict) else [])
 
         if channels:
-            # 다채널 장치: 채널이 유효하게 선택됐는지 확인
-            channel = self._channel_combo.currentText()
+            channel = self._channel_combo.currentText() or "A"
             if self._channel_combo.currentIndex() < 0 or channel not in channels:
                 self._show_warning_dialog(
                     "채널 미선택",
@@ -312,12 +321,15 @@ class MainWindow(QMainWindow):
                 self.statusBar().showMessage("채널을 선택하세요")
                 return
         else:
-            channel = ""
+            channel = "A"
 
         success = self._ftdi.open_device(serial, channel)
         if success:
             ch_label = f" CH-{channel}" if channel else ""
             self.statusBar().showMessage(f"연결됨: {serial}{ch_label}")
+            self._active_channel_ui = channel
+            if hasattr(self, "_active_channel_badge"):
+                self._active_channel_badge.setText(f"ACTIVE: {channel}")
 
     @Slot(int)
     def _on_device_selected(self, index: int) -> None:
@@ -340,6 +352,61 @@ class MainWindow(QMainWindow):
 
         self._channel_combo.blockSignals(False)
 
+    @Slot(int)
+    def _on_channel_combo_changed(self, index: int) -> None:
+        new_channel = self._channel_combo.currentText()
+        if not new_channel:
+            return
+        if not self._ftdi.is_connected:
+            self._active_channel_ui = new_channel
+            return
+
+        current = getattr(self, "_active_channel_ui", self._ftdi.channel)
+        if new_channel == current:
+            return
+
+        # Stop running communications before switching
+        for module in self._modules:
+            try:
+                module.stop_communication()
+            except Exception:
+                pass
+
+        # Confirmation dialog
+        msg = QMessageBox(self)
+        msg.setWindowTitle("채널 전환 확인")
+        msg.setIcon(QMessageBox.Icon.Question)
+        msg.setText(f"제어 채널을 {new_channel}로 변경하시겠습니까?")
+        msg.setInformativeText("현재 동작 중인 채널이 변경됩니다.")
+        msg.setStandardButtons(QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+        msg.setDefaultButton(QMessageBox.StandardButton.No)
+        msg.setStyleSheet(self._MSGBOX_STYLESHEET)
+        if msg.exec() != QMessageBox.StandardButton.Yes:
+            # restore previous selection
+            self._channel_combo.blockSignals(True)
+            self._channel_combo.setCurrentText(current)
+            self._channel_combo.blockSignals(False)
+            # Optionally resume communication
+            for module in self._modules:
+                try:
+                    module.start_communication()
+                except Exception:
+                    pass
+            return
+
+        if self._ftdi.set_active_channel(new_channel):
+            self._active_channel_ui = new_channel
+            self.statusBar().showMessage(f"활성 채널 변경: {new_channel}")
+            # Restart communications after switching
+            for module in self._modules:
+                try:
+                    module.start_communication()
+                except Exception:
+                    pass
+            self._log_channel_switch(current, new_channel)
+        else:
+            self.statusBar().showMessage("채널 변경 실패")
+
     @Slot()
     def _on_disconnect(self) -> None:
         """FTDI 장치 연결 해제"""
@@ -360,7 +427,6 @@ class MainWindow(QMainWindow):
         self._connect_btn.setEnabled(False)
         self._disconnect_btn.setEnabled(True)
         self._device_combo.setEnabled(False)
-        self._channel_combo.setEnabled(False)
         self._scan_btn.setEnabled(False)
 
         # 모든 모듈에 연결 알림
@@ -369,6 +435,17 @@ class MainWindow(QMainWindow):
                 module.on_device_connected()
             except Exception as e:
                 logger.error(f"모듈 on_device_connected 오류: {e}")
+
+        # 활성 채널 동기화
+        try:
+            active_ch = self._ftdi.channel
+            for module in self._modules:
+                try:
+                    module.on_channel_changed(active_ch)
+                except Exception as e:
+                    logger.error(f"모듈 on_channel_changed 오류: {e}")
+        except Exception:
+            pass
 
         QApplication.beep()
         self._show_connection_dialog(info)
@@ -383,10 +460,7 @@ class MainWindow(QMainWindow):
         self._disconnect_btn.setEnabled(False)
         self._device_combo.setEnabled(True)
         self._scan_btn.setEnabled(True)
-        # 단일 채널 장치는 해제 후에도 채널 콤보 비활성 유지
-        data = self._device_combo.currentData()
-        channels = list((data.get("channels") or []) if isinstance(data, dict) else [])
-        self._channel_combo.setEnabled(bool(channels))
+        self._channel_combo.setEnabled(True)
         self.statusBar().showMessage("연결 해제됨")
         self._show_disconnection_dialog(self._last_connected_serial)
 
@@ -402,6 +476,20 @@ class MainWindow(QMainWindow):
         """하드웨어 오류 표시"""
         self._status_led.setStyleSheet("color: #cccc33; font-size: 16px;")
         self.statusBar().showMessage(f"오류: {error_msg}")
+
+    @Slot(str)
+    def _on_active_channel_changed(self, channel: str) -> None:
+        for module in self._modules:
+            try:
+                module.on_channel_changed(channel)
+            except Exception as e:
+                logger.error(f"모듈 on_channel_changed 오류: {e}")
+        if hasattr(self, "_active_channel_badge"):
+            self._active_channel_badge.setText(f"ACTIVE: {channel}")
+
+    def _log_channel_switch(self, prev: str, new: str) -> None:
+        logger.info(f"Active channel switch: {prev} -> {new}")
+        self.statusBar().showMessage(f"채널 전환: {prev} → {new}")
 
     # ── 탭 전환 핸들러 ──
 
@@ -465,6 +553,9 @@ def main() -> None:
     )
 
     app = QApplication(sys.argv)
+
+    # Ctrl+C로 깔끔하게 종료
+    signal.signal(signal.SIGINT, lambda *_: app.quit())
 
     # 다크 테마 로드
     qss_path = Path(__file__).parent / "assets" / "dark_theme.qss"
