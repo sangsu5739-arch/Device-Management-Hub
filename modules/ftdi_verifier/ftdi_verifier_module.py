@@ -552,8 +552,8 @@ class FtdiVerifierModule(BaseModule):
         current = self._proto_mode_combo.currentText()
         self._proto_mode_combo.blockSignals(True)
         self._proto_mode_combo.clear()
-        for proto in ch_spec.supported_protocols:
-            self._proto_mode_combo.addItem(proto.value)
+        for name in ["I2C", "SPI", "JTAG", "UART", "GPIO"]:
+            self._proto_mode_combo.addItem(name)
         self._proto_mode_combo.blockSignals(False)
 
         if self._proto_mode_combo.count() > 0:
@@ -598,8 +598,10 @@ class FtdiVerifierModule(BaseModule):
             "UART": self._uart_group,
             "GPIO": self._gpio_group,
         }
+        ch_spec = self._current_chip.channels.get(self._current_channel) if self._current_chip else None
+        supported = set(p.value for p in ch_spec.supported_protocols) if ch_spec else set()
         for name, grp in groups.items():
-            grp.setEnabled(name == mode)
+            grp.setEnabled(name == mode and name in supported)
         if hasattr(self, "_proto_tabs"):
             idx = list(groups.keys()).index(mode) if mode in groups else 0
             self._proto_tabs.setCurrentIndex(idx)
@@ -664,13 +666,14 @@ class FtdiVerifierModule(BaseModule):
         func_map = mode_map.get(text, {})
 
         ch_spec = self._current_chip.channels.get(self._current_channel)
-        force_gpio = bool(ch_spec and not ch_spec.supports_mpsse)
+        supports_mpsse = bool(ch_spec and ch_spec.supports_mpsse)
+        force_gpio = (not supports_mpsse) and text in ("I2C", "SPI", "JTAG")
 
         for num, pin in self._current_chip.pins.items():
             if pin.channel != self._current_channel:
                 continue
 
-            if force_gpio or text == "GPIO":
+            if text == "GPIO" or force_gpio:
                 if PinFunction.GPIO_OUT in pin.functions:
                     self._pinout.set_pin_function(num, PinFunction.GPIO_OUT)
                 elif PinFunction.GPIO_IN in pin.functions:
@@ -1021,49 +1024,45 @@ class FtdiVerifierModule(BaseModule):
             self._mode_desc_label.setText("")
             return
 
-        display_ch = getattr(self, "_display_channel", self._current_channel)
+        # --- mode descriptions (Korean) ---
+        dch = self._display_channel
+        green_css = "color: #88cc88; font-size: 11px; font-family: 'Malgun Gothic';"
+        warn_css = "color: #ffcc44; font-size: 11px; font-family: 'Malgun Gothic';"
 
-        if not ch_spec.supports_mpsse:
-            if mode == "GPIO":
-                self._mode_desc_label.setText(
-                    f"채널 {display_ch}: GPIO는 Bit-bang 모드로 지원됩니다. 디지털 IO 제어가 가능합니다."
-                )
-                self._mode_desc_label.setStyleSheet(
-                    "color: #88cc88; font-size: 11px; font-family: 'Malgun Gothic';"
-                )
-            else:
-                self._mode_desc_label.setText(
-                    f"채널 {display_ch}: UART/GPIO만 지원됩니다. MPSSE(I2C/SPI/JTAG)는 사용할 수 없습니다."
-                )
-                self._mode_desc_label.setStyleSheet(
-                    "color: #ffcc44; font-size: 11px; font-family: 'Malgun Gothic';"
-                )
-            return
+        _DESC = {
+            # (supports_mpsse=False, mode)
+            (False, "GPIO"): (
+                "\ucc44\ub110 {ch}: GPIO\ub294 Bit-bang \ubaa8\ub4dc\ub85c \uc9c0\uc6d0\ub429\ub2c8\ub2e4. \ub514\uc9c0\ud138 IO \uc81c\uc5b4\uac00 \uac00\ub2a5\ud569\ub2c8\ub2e4.",
+                green_css,
+            ),
+            (False, "UART"): (
+                "\ucc44\ub110 {ch}: UART \ubaa8\ub4dc\ub85c \ub3d9\uc791\ud569\ub2c8\ub2e4.",
+                green_css,
+            ),
+            (False, "_else"): (
+                "\ucc44\ub110 {ch}: UART/GPIO\ub9cc \uc9c0\uc6d0\ub429\ub2c8\ub2e4. MPSSE(I2C/SPI/JTAG)\ub294 \uc0ac\uc6a9\ud560 \uc218 \uc5c6\uc2b5\ub2c8\ub2e4.",
+                warn_css,
+            ),
+            # (supports_mpsse=True, mode)
+            (True, "GPIO"): (
+                "\ucc44\ub110 {ch}: GPIO\ub294 Bit-bang \ubaa8\ub4dc\uc785\ub2c8\ub2e4. I2C/SPI/JTAG\ub294 MPSSE, UART\ub294 \ubcc4\ub3c4 \ubaa8\ub4dc\ub85c \uc9c0\uc6d0\ub429\ub2c8\ub2e4.",
+                green_css,
+            ),
+            (True, "UART"): (
+                "\ucc44\ub110 {ch}: UART \ubaa8\ub4dc (MPSSE \uc544\ub2d8). \ubcc4\ub3c4 \uc2dc\ub9ac\uc5bc \ud1b5\uc2e0\uc73c\ub85c \ub3d9\uc791\ud569\ub2c8\ub2e4.",
+                green_css,
+            ),
+            (True, "_else"): (
+                "\ucc44\ub110 {ch}: MPSSE \ubaa8\ub4dc - I2C/SPI/JTAG \uc0ac\uc6a9 \uac00\ub2a5",
+                green_css,
+            ),
+        }
 
-        if mode == "GPIO":
-            self._mode_desc_label.setText(
-                f"채널 {display_ch}: GPIO는 Bit-bang 모드입니다. I2C/SPI/JTAG는 MPSSE, UART는 별도 모드로 지원됩니다."
-            )
-            self._mode_desc_label.setStyleSheet(
-                "color: #88cc88; font-size: 11px; font-family: 'Malgun Gothic';"
-            )
-            return
-
-        if mode == "UART":
-            self._mode_desc_label.setText(
-                f"채널 {display_ch}: UART 모드 (MPSSE 아님). 별도 시리얼 통신으로 동작합니다."
-            )
-            self._mode_desc_label.setStyleSheet(
-                "color: #88cc88; font-size: 11px; font-family: 'Malgun Gothic';"
-            )
-            return
-
-        self._mode_desc_label.setText(
-            f"채널 {display_ch}: MPSSE 모드 — I2C/SPI/JTAG 사용 가능"
-        )
-        self._mode_desc_label.setStyleSheet(
-            "color: #88cc88; font-size: 11px; font-family: 'Malgun Gothic';"
-        )
+        mpsse = ch_spec.supports_mpsse
+        key = (mpsse, mode) if (mpsse, mode) in _DESC else (mpsse, "_else")
+        text_tmpl, css = _DESC[key]
+        self._mode_desc_label.setText(text_tmpl.format(ch=dch))
+        self._mode_desc_label.setStyleSheet(css)
 
     def _append_log(self, message: str) -> None:
         if not hasattr(self, "_log_text"):
