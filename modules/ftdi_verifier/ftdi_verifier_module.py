@@ -757,6 +757,10 @@ class FtdiVerifierModule(BaseModule):
                 self._pinout.set_pin_function(num, assigned)
             elif PinFunction.GPIO_OUT in pin.functions:
                 self._pinout.set_pin_function(num, PinFunction.GPIO_OUT)
+            elif PinFunction.GPIO_IN in pin.functions:
+                self._pinout.set_pin_function(num, PinFunction.GPIO_IN)
+            else:
+                self._pinout.set_pin_function(num, pin.default_function)
 
     @Slot()
     def _on_pin_clicked(self, pin_number: int) -> None:
