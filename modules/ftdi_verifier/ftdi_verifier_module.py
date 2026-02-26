@@ -52,6 +52,7 @@ class FtdiVerifierModule(BaseModule):
         self._worker_thread: Optional[QThread] = None
         self._current_chip: Optional[ChipSpec] = None
         self._current_channel: str = "A"
+        self._display_channel: str = "A"
         self._gpio_states: dict[int, bool] = {}
         super().__init__(ftdi_manager, parent)
 
@@ -496,11 +497,16 @@ class FtdiVerifierModule(BaseModule):
         self._current_chip = spec
         self._pinout.set_chip(spec)
 
-        # 채널 적용
+        # 채널 적용 — 연결된 실제 채널 우선, 칩 스펙에 없으면 첫 번째 채널로 매핑
         ch = channel or "A"
         if ch not in spec.channels:
-            ch = "A"
-        self._current_channel = ch
+            # 단일채널 칩(FT232H)이면 스펙 키는 "A"뿐이지만 표시는 실제 채널 사용
+            spec_ch = list(spec.channels.keys())[0] if spec.channels else "A"
+            self._current_channel = spec_ch
+            self._display_channel = ch  # 실제 연결 채널 (UI 표시용)
+        else:
+            self._current_channel = ch
+            self._display_channel = ch
         self._pinout.set_channel_filter(self._current_channel)
 
         # 칩 정보
@@ -512,7 +518,7 @@ class FtdiVerifierModule(BaseModule):
         if hasattr(self, "_chip_label"):
             self._chip_label.setText(chip_name)
         if hasattr(self, "_channel_label"):
-            self._channel_label.setText(self._current_channel)
+            self._channel_label.setText(self._display_channel)
 
         self._update_protocol_availability()
         self._refresh_gpio_table()
@@ -568,10 +574,10 @@ class FtdiVerifierModule(BaseModule):
             self._pin_name_label.setText("사용 불가")
             self._pin_func_label.setText("MPSSE 미지원 채널")
             if not ch_match and connected:
-                self._pin_ch_label.setText(f"{self._current_channel} (연결: {self._ftdi.channel})")
+                self._pin_ch_label.setText(f"{self._display_channel} (연결: {self._ftdi.channel})")
                 self._pin_desc_label.setText("연결된 채널과 선택 채널이 다릅니다.")
             else:
-                self._pin_ch_label.setText(self._current_channel)
+                self._pin_ch_label.setText(self._display_channel)
                 self._pin_desc_label.setText("채널 A/B에서만 GPIO 제어가 가능합니다.")
 
         # 채널 제약 안내
@@ -696,10 +702,10 @@ class FtdiVerifierModule(BaseModule):
             self._pin_name_label.setText("사용 불가")
             self._pin_func_label.setText("MPSSE 미지원 채널")
             if self._ftdi.is_connected and self._ftdi.channel != self._current_channel:
-                self._pin_ch_label.setText(f"{self._current_channel} (연결: {self._ftdi.channel})")
+                self._pin_ch_label.setText(f"{self._display_channel} (연결: {self._ftdi.channel})")
                 self._pin_desc_label.setText("연결된 채널과 선택 채널이 다릅니다.")
             else:
-                self._pin_ch_label.setText(self._current_channel)
+                self._pin_ch_label.setText(self._display_channel)
                 self._pin_desc_label.setText("채널 A/B에서만 GPIO 제어가 가능합니다.")
             self._refresh_gpio_controls(pin_selected=True, is_gpio=False)
             return
@@ -1015,17 +1021,19 @@ class FtdiVerifierModule(BaseModule):
             self._mode_desc_label.setText("")
             return
 
+        display_ch = getattr(self, "_display_channel", self._current_channel)
+
         if not ch_spec.supports_mpsse:
             if mode == "GPIO":
                 self._mode_desc_label.setText(
-                    f"채널 {self._current_channel}: GPIO는 Bit-bang 모드로 지원됩니다. 디지털 IO 제어가 가능합니다."
+                    f"채널 {display_ch}: GPIO는 Bit-bang 모드로 지원됩니다. 디지털 IO 제어가 가능합니다."
                 )
                 self._mode_desc_label.setStyleSheet(
                     "color: #88cc88; font-size: 11px; font-family: 'Malgun Gothic';"
                 )
             else:
                 self._mode_desc_label.setText(
-                    f"채널 {self._current_channel}: UART/GPIO만 지원됩니다. MPSSE(I2C/SPI/JTAG)는 사용할 수 없습니다."
+                    f"채널 {display_ch}: UART/GPIO만 지원됩니다. MPSSE(I2C/SPI/JTAG)는 사용할 수 없습니다."
                 )
                 self._mode_desc_label.setStyleSheet(
                     "color: #ffcc44; font-size: 11px; font-family: 'Malgun Gothic';"
@@ -1034,7 +1042,7 @@ class FtdiVerifierModule(BaseModule):
 
         if mode == "GPIO":
             self._mode_desc_label.setText(
-                f"채널 {self._current_channel}: GPIO는 Bit-bang 모드입니다. I2C/SPI/JTAG는 MPSSE, UART는 별도 모드로 지원됩니다."
+                f"채널 {display_ch}: GPIO는 Bit-bang 모드입니다. I2C/SPI/JTAG는 MPSSE, UART는 별도 모드로 지원됩니다."
             )
             self._mode_desc_label.setStyleSheet(
                 "color: #88cc88; font-size: 11px; font-family: 'Malgun Gothic';"
@@ -1043,7 +1051,7 @@ class FtdiVerifierModule(BaseModule):
 
         if mode == "UART":
             self._mode_desc_label.setText(
-                f"채널 {self._current_channel}: UART 모드 (MPSSE 아님). 별도 시리얼 통신으로 동작합니다."
+                f"채널 {display_ch}: UART 모드 (MPSSE 아님). 별도 시리얼 통신으로 동작합니다."
             )
             self._mode_desc_label.setStyleSheet(
                 "color: #88cc88; font-size: 11px; font-family: 'Malgun Gothic';"
@@ -1051,7 +1059,7 @@ class FtdiVerifierModule(BaseModule):
             return
 
         self._mode_desc_label.setText(
-            f"채널 {self._current_channel}: MPSSE 모드 — I2C/SPI/JTAG 사용 가능"
+            f"채널 {display_ch}: MPSSE 모드 — I2C/SPI/JTAG 사용 가능"
         )
         self._mode_desc_label.setStyleSheet(
             "color: #88cc88; font-size: 11px; font-family: 'Malgun Gothic';"
