@@ -1025,7 +1025,7 @@ class FtdiVerifierModule(BaseModule):
                 )
             else:
                 self._mode_desc_label.setText(
-                    f"채널 {self._current_channel}: MPSSE 모드를 지원하지 않습니다. I2C/SPI/JTAG는 사용할 수 없습니다."
+                    f"채널 {self._current_channel}: UART/GPIO만 지원됩니다. MPSSE(I2C/SPI/JTAG)는 사용할 수 없습니다."
                 )
                 self._mode_desc_label.setStyleSheet(
                     "color: #ffcc44; font-size: 11px; font-family: 'Malgun Gothic';"
