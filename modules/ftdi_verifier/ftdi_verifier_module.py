@@ -111,6 +111,11 @@ class FtdiVerifierModule(BaseModule):
             self._channel_label.setText("-")
         self.status_message.emit("FTDI Verifier: 장치 해제됨")
 
+    def on_channel_changed(self, channel: str) -> None:
+        info = self._ftdi.get_device_info()
+        chip = info.get("device_type", "FT232H")
+        self._apply_chip_and_channel(chip, channel)
+
     def start_communication(self) -> None:
         pass  # GPIO 폴링은 별도 버튼으로 시작
 
@@ -156,15 +161,18 @@ class FtdiVerifierModule(BaseModule):
 
         # ── 모드 선택 (Exclusive) ──
         mode_group = QGroupBox("프로토콜 모드")
+        mode_group.setFont(QFont("Malgun Gothic", 10))
         mode_layout = QVBoxLayout(mode_group)
         mode_layout.setSpacing(4)
 
         self._proto_mode_combo = QComboBox()
+        self._proto_mode_combo.setFont(QFont("Malgun Gothic", 10))
         self._proto_mode_combo.addItems(["I2C", "SPI", "JTAG", "UART", "GPIO"])
         self._proto_mode_combo.currentTextChanged.connect(self._on_protocol_mode_changed)
         mode_layout.addWidget(self._proto_mode_combo)
 
         self._mode_desc_label = QLabel("")
+        self._mode_desc_label.setFont(QFont("Malgun Gothic", 9))
         self._mode_desc_label.setWordWrap(True)
         self._mode_desc_label.setStyleSheet("color: #8899bb; font-size: 11px;")
         mode_layout.addWidget(self._mode_desc_label)
@@ -173,7 +181,6 @@ class FtdiVerifierModule(BaseModule):
 
         # ── 프로토콜 탭 ──
         self._proto_tabs = QTabWidget()
-        self._proto_tabs.currentChanged.connect(self._on_proto_tab_changed)
 
         # I2C 테스트
         self._i2c_group = QGroupBox("I2C 테스트")
@@ -332,9 +339,24 @@ class FtdiVerifierModule(BaseModule):
         gpio_layout.setSpacing(4)
 
         poll_row = QHBoxLayout()
+        poll_row.addWidget(QLabel("폴링 주기(ms):"))
+        self._gpio_poll_interval = QSpinBox()
+        self._gpio_poll_interval.setRange(50, 2000)
+        self._gpio_poll_interval.setValue(200)
+        self._gpio_poll_interval.setSingleStep(50)
+        self._gpio_poll_interval.setMinimumWidth(110)
+        self._gpio_poll_interval.valueChanged.connect(self._on_gpio_poll_interval_changed)
+        poll_row.addWidget(self._gpio_poll_interval)
+        poll_row.addStretch()
+
         self._gpio_poll_btn = QPushButton("GPIO 폴링 시작")
         self._gpio_poll_btn.setCheckable(True)
         self._gpio_poll_btn.setEnabled(False)
+        self._gpio_poll_btn.setMinimumHeight(32)
+        self._gpio_poll_btn.setStyleSheet(
+            "QPushButton { background: #1d2433; color: #c8d2f0; font-weight: 700; border-radius: 6px; }"
+            "QPushButton:checked { background: #2ecc71; color: #0b1a10; }"
+        )
         self._gpio_poll_btn.toggled.connect(self._on_gpio_poll_toggled)
         poll_row.addWidget(self._gpio_poll_btn)
         gpio_layout.addLayout(poll_row)
@@ -396,6 +418,8 @@ class FtdiVerifierModule(BaseModule):
         gpio_layout.addWidget(self._gpio_table)
 
         self._proto_tabs.addTab(self._gpio_group, "GPIO")
+
+        self._proto_tabs.currentChanged.connect(self._on_proto_tab_changed)
 
         main_layout.addWidget(self._proto_tabs)
 
@@ -540,9 +564,7 @@ class FtdiVerifierModule(BaseModule):
         self._i2c_scan_btn.setEnabled(has_mpsse and connected)
         self._i2c_test_btn.setEnabled(has_mpsse and connected)
         self._spi_test_btn.setEnabled(has_mpsse and connected)
-        self._gpio_poll_btn.setEnabled(has_mpsse and connected and ch_match)
         if not (has_mpsse and connected and ch_match):
-            self._gpio_toggle_btn.setEnabled(False)
             self._pin_name_label.setText("사용 불가")
             self._pin_func_label.setText("MPSSE 미지원 채널")
             if not ch_match and connected:
@@ -553,22 +575,16 @@ class FtdiVerifierModule(BaseModule):
                 self._pin_desc_label.setText("채널 A/B에서만 GPIO 제어가 가능합니다.")
 
         # 채널 제약 안내
-        if not ch_spec.supports_mpsse:
-            self._mode_desc_label.setText(
-                f"⚠ 채널 {self._current_channel}은 UART/Bit-Bang만 지원합니다.\n"
-                "I2C/SPI/JTAG는 MPSSE 지원 채널(A, B)에서만 사용 가능합니다."
-            )
-            self._mode_desc_label.setStyleSheet("color: #ffcc44; font-size: 11px;")
-        else:
-            self._mode_desc_label.setText(
-                f"채널 {self._current_channel}: 모든 MPSSE 프로토콜 사용 가능"
-            )
-            self._mode_desc_label.setStyleSheet("color: #88cc88; font-size: 11px;")
+        self._update_mode_desc(self._proto_mode_combo.currentText())
 
         # Protocol mode UI enable/disable
         self._apply_protocol_mode(self._proto_mode_combo.currentText())
+        self._refresh_gpio_controls()
 
     def _apply_protocol_mode(self, mode: str) -> None:
+        required = ("_i2c_group", "_spi_group", "_jtag_group", "_uart_group", "_gpio_group")
+        if not all(hasattr(self, name) for name in required):
+            return
         groups = {
             "I2C": self._i2c_group,
             "SPI": self._spi_group,
@@ -588,6 +604,7 @@ class FtdiVerifierModule(BaseModule):
 
         # Update pinout mapping based on mode
         self._on_mode_changed(mode)
+        self._update_mode_desc(mode)
 
         if mode == "UART":
             self._refresh_uart_ports()
@@ -598,6 +615,9 @@ class FtdiVerifierModule(BaseModule):
 
     @Slot(int)
     def _on_proto_tab_changed(self, index: int) -> None:
+        required = ("_i2c_group", "_spi_group", "_jtag_group", "_uart_group", "_gpio_group")
+        if not all(hasattr(self, name) for name in required):
+            return
         names = ["I2C", "SPI", "JTAG", "UART", "GPIO"]
         if 0 <= index < len(names):
             self._proto_mode_combo.blockSignals(True)
@@ -638,12 +658,21 @@ class FtdiVerifierModule(BaseModule):
         func_map = mode_map.get(text, {})
 
         for num, pin in self._current_chip.pins.items():
-            if pin.channel == self._current_channel:
-                assigned = func_map.get(pin.mpsse_bit)
-                if assigned and assigned in pin.functions:
-                    self._pinout.set_pin_function(num, assigned)
-                elif PinFunction.GPIO_OUT in pin.functions:
+            if pin.channel != self._current_channel:
+                continue
+
+            if text == "GPIO":
+                if PinFunction.GPIO_OUT in pin.functions:
                     self._pinout.set_pin_function(num, PinFunction.GPIO_OUT)
+                elif PinFunction.GPIO_IN in pin.functions:
+                    self._pinout.set_pin_function(num, PinFunction.GPIO_IN)
+                continue
+
+            assigned = func_map.get(pin.mpsse_bit)
+            if assigned and assigned in pin.functions:
+                self._pinout.set_pin_function(num, assigned)
+            elif PinFunction.GPIO_OUT in pin.functions:
+                self._pinout.set_pin_function(num, PinFunction.GPIO_OUT)
 
     @Slot()
     def _on_pin_clicked(self, pin_number: int) -> None:
@@ -652,7 +681,7 @@ class FtdiVerifierModule(BaseModule):
             self._pin_func_label.setText("—")
             self._pin_ch_label.setText("—")
             self._pin_desc_label.setText("—")
-            self._gpio_toggle_btn.setEnabled(False)
+            self._refresh_gpio_controls(pin_selected=False, is_gpio=False)
             return
 
         ch_spec = self._current_chip.channels.get(self._current_channel)
@@ -665,7 +694,7 @@ class FtdiVerifierModule(BaseModule):
             else:
                 self._pin_ch_label.setText(self._current_channel)
                 self._pin_desc_label.setText("채널 A/B에서만 GPIO 제어가 가능합니다.")
-            self._gpio_toggle_btn.setEnabled(False)
+            self._refresh_gpio_controls(pin_selected=True, is_gpio=False)
             return
 
         pin = self._current_chip.pins.get(pin_number)
@@ -680,7 +709,7 @@ class FtdiVerifierModule(BaseModule):
 
         # GPIO 핀이면 토글 버튼 활성화
         is_gpio = active in (PinFunction.GPIO_OUT, PinFunction.GPIO_IN)
-        self._gpio_toggle_btn.setEnabled(is_gpio and self._ftdi.is_connected)
+        self._refresh_gpio_controls(pin_selected=True, is_gpio=is_gpio)
 
         state = self._gpio_states.get(pin_number, False)
         self._gpio_toggle_btn.blockSignals(True)
@@ -803,12 +832,28 @@ class FtdiVerifierModule(BaseModule):
             self._gpio_poll_btn.setChecked(False)
             self._append_log("채널 불일치: 연결된 채널에서만 GPIO 제어가 가능합니다.")
             return
+        if self._pinout.get_selected_pin() < 0:
+            self._gpio_poll_btn.setChecked(False)
+            self._append_log("GPIO 폴링을 시작하려면 먼저 핀을 선택해야 합니다.")
+            return
         if checked:
             self._gpio_poll_btn.setText("GPIO 폴링 중지")
-            self._start_worker()
+            self._refresh_gpio_controls()
+            interval = self._gpio_poll_interval.value()
+            self._start_worker(interval)
         else:
             self._gpio_poll_btn.setText("GPIO 폴링 시작")
             self._stop_worker()
+            self._refresh_gpio_controls()
+
+    @Slot(int)
+    def _on_gpio_poll_interval_changed(self, value: int) -> None:
+        if self._worker is not None and self._gpio_poll_btn.isChecked():
+            try:
+                self._worker.start_gpio_polling(value)
+                self._append_log(f"[GPIO] 폴링 주기 변경: {value} ms")
+            except Exception:
+                pass
 
     @Slot(bool)
     def _on_gpio_toggle(self, high: bool) -> None:
@@ -819,9 +864,12 @@ class FtdiVerifierModule(BaseModule):
         pin_num = self._pinout.get_selected_pin()
         if pin_num < 0:
             return
+        if self._gpio_poll_btn.isChecked():
+            self._gpio_poll_btn.setChecked(False)
         self._pinout.set_pin_state(pin_num, high)
         self._gpio_states[pin_num] = high
         self._gpio_toggle_btn.setText("GPIO: HIGH" if high else "GPIO: LOW")
+        self._refresh_gpio_controls(pin_selected=True, is_gpio=True)
         self._pin_desc_label.setText(
             (self._pin_desc_label.text().split("\n")[0]) + f"\n현재 상태: {'HIGH' if high else 'LOW'}"
         )
@@ -882,12 +930,12 @@ class FtdiVerifierModule(BaseModule):
 
     # ── Worker 관리 ──
 
-    def _start_worker(self) -> None:
+    def _start_worker(self, interval_ms: int = 200) -> None:
         if self._worker_thread is not None:
             return
 
         self._worker = VerifierWorker(self._ftdi)
-        self._worker.start_gpio_polling(200)
+        self._worker.start_gpio_polling(interval_ms)
         self._worker.gpio_updated.connect(self._on_gpio_updated)
         self._worker.log_message.connect(self._append_log)
         self._worker.error_occurred.connect(self._append_log)
@@ -907,9 +955,83 @@ class FtdiVerifierModule(BaseModule):
             self._worker_thread = None
         self._worker = None
 
+    def _refresh_gpio_controls(self, pin_selected: bool | None = None, is_gpio: bool | None = None) -> None:
+        if self._current_chip is None:
+            self._gpio_toggle_btn.setEnabled(False)
+            self._gpio_poll_btn.setEnabled(False)
+            return
+
+        ch_spec = self._current_chip.channels.get(self._current_channel)
+        has_mpsse = bool(ch_spec and ch_spec.supports_mpsse)
+        connected = self._ftdi.is_connected
+        ch_match = (not connected) or (self._ftdi.channel == self._current_channel)
+
+        if pin_selected is None:
+            pin_selected = self._pinout.get_selected_pin() >= 0
+
+        if is_gpio is None:
+            is_gpio = False
+            if pin_selected:
+                pin_num = self._pinout.get_selected_pin()
+                if self._current_chip and pin_num in self._current_chip.pins:
+                    pin = self._current_chip.pins[pin_num]
+                    active = self._pinout._pin_active_funcs.get(pin.number, pin.default_function)
+                    is_gpio = active in (PinFunction.GPIO_OUT, PinFunction.GPIO_IN)
+
+        allow = has_mpsse and connected and ch_match and pin_selected and is_gpio
+        if not allow:
+            if self._gpio_poll_btn.isChecked():
+                self._gpio_poll_btn.blockSignals(True)
+                self._gpio_poll_btn.setChecked(False)
+                self._gpio_poll_btn.blockSignals(False)
+                self._gpio_poll_btn.setText("GPIO 폴링 시작")
+                self._stop_worker()
+            self._gpio_toggle_btn.setEnabled(False)
+            self._gpio_poll_btn.setEnabled(False)
+            return
+
+        poll_checked = self._gpio_poll_btn.isChecked()
+        self._gpio_toggle_btn.setEnabled(not poll_checked)
+        self._gpio_poll_btn.setEnabled(True)
+
     # ── 로그 ──
 
     _MAX_LOG_BLOCKS = 3000
+
+    def _update_mode_desc(self, mode: str) -> None:
+        if self._current_chip is None:
+            self._mode_desc_label.setText("")
+            return
+
+        ch_spec = self._current_chip.channels.get(self._current_channel)
+        if ch_spec is None:
+            self._mode_desc_label.setText("")
+            return
+
+        if not ch_spec.supports_mpsse:
+            self._mode_desc_label.setText(
+                f"채널 {self._current_channel}: UART/Bit-bang만 지원합니다. 다른 프로토콜 {mode}은 사용할 수 없습니다."
+            )
+            self._mode_desc_label.setStyleSheet(
+                "color: #ffcc44; font-size: 11px; font-family: 'Malgun Gothic';"
+            )
+            return
+
+        if mode == "GPIO":
+            self._mode_desc_label.setText(
+                f"채널 {self._current_channel}: GPIO는 Bit-bang 모드입니다. I2C/SPI/JTAG는 MPSSE 지원 채널에서만 가능합니다."
+            )
+            self._mode_desc_label.setStyleSheet(
+                "color: #88cc88; font-size: 11px; font-family: 'Malgun Gothic';"
+            )
+            return
+
+        self._mode_desc_label.setText(
+            f"채널 {self._current_channel}: 모든 MPSSE 프로토콜 사용 가능"
+        )
+        self._mode_desc_label.setStyleSheet(
+            "color: #88cc88; font-size: 11px; font-family: 'Malgun Gothic';"
+        )
 
     def _append_log(self, message: str) -> None:
         if not hasattr(self, "_log_text"):
