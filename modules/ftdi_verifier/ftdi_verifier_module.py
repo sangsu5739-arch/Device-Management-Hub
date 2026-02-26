@@ -1034,7 +1034,16 @@ class FtdiVerifierModule(BaseModule):
 
         if mode == "GPIO":
             self._mode_desc_label.setText(
-                f"채널 {self._current_channel}: GPIO는 Bit-bang 모드입니다. I2C/SPI/JTAG는 MPSSE 모드로 지원됩니다."
+                f"채널 {self._current_channel}: GPIO는 Bit-bang 모드입니다. I2C/SPI/JTAG는 MPSSE, UART는 별도 모드로 지원됩니다."
+            )
+            self._mode_desc_label.setStyleSheet(
+                "color: #88cc88; font-size: 11px; font-family: 'Malgun Gothic';"
+            )
+            return
+
+        if mode == "UART":
+            self._mode_desc_label.setText(
+                f"채널 {self._current_channel}: UART 모드 (MPSSE 아님). 별도 시리얼 통신으로 동작합니다."
             )
             self._mode_desc_label.setStyleSheet(
                 "color: #88cc88; font-size: 11px; font-family: 'Malgun Gothic';"
@@ -1042,7 +1051,7 @@ class FtdiVerifierModule(BaseModule):
             return
 
         self._mode_desc_label.setText(
-            f"채널 {self._current_channel}: 모든 MPSSE 프로토콜 사용 가능"
+            f"채널 {self._current_channel}: MPSSE 모드 — I2C/SPI/JTAG 사용 가능"
         )
         self._mode_desc_label.setStyleSheet(
             "color: #88cc88; font-size: 11px; font-family: 'Malgun Gothic';"

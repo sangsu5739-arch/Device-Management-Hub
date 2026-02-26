@@ -359,6 +359,13 @@ class MainWindow(QMainWindow):
             return
         if not self._ftdi.is_connected:
             self._active_channel_ui = new_channel
+            for module in self._modules:
+                try:
+                    module.on_channel_changed(new_channel)
+                except Exception as e:
+                    logger.error(f"모듈 on_channel_changed 오류: {e}")
+            if hasattr(self, "_active_channel_badge"):
+                self._active_channel_badge.setText(f"ACTIVE: {new_channel}")
             return
 
         current = getattr(self, "_active_channel_ui", self._ftdi.channel)
