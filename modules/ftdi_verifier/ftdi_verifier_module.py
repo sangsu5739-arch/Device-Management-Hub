@@ -657,15 +657,22 @@ class FtdiVerifierModule(BaseModule):
 
         func_map = mode_map.get(text, {})
 
+        ch_spec = self._current_chip.channels.get(self._current_channel)
+        force_gpio = bool(ch_spec and not ch_spec.supports_mpsse)
+
         for num, pin in self._current_chip.pins.items():
             if pin.channel != self._current_channel:
                 continue
 
-            if text == "GPIO":
+            if force_gpio or text == "GPIO":
                 if PinFunction.GPIO_OUT in pin.functions:
                     self._pinout.set_pin_function(num, PinFunction.GPIO_OUT)
                 elif PinFunction.GPIO_IN in pin.functions:
                     self._pinout.set_pin_function(num, PinFunction.GPIO_IN)
+                elif pin.direction == PinDirection.INPUT:
+                    self._pinout.set_pin_function(num, PinFunction.GPIO_IN)
+                elif pin.direction in (PinDirection.OUTPUT, PinDirection.BIDIRECTIONAL):
+                    self._pinout.set_pin_function(num, PinFunction.GPIO_OUT)
                 continue
 
             assigned = func_map.get(pin.mpsse_bit)
@@ -1009,17 +1016,25 @@ class FtdiVerifierModule(BaseModule):
             return
 
         if not ch_spec.supports_mpsse:
-            self._mode_desc_label.setText(
-                f"채널 {self._current_channel}: UART/Bit-bang만 지원합니다. 다른 프로토콜 {mode}은 사용할 수 없습니다."
-            )
-            self._mode_desc_label.setStyleSheet(
-                "color: #ffcc44; font-size: 11px; font-family: 'Malgun Gothic';"
-            )
+            if mode == "GPIO":
+                self._mode_desc_label.setText(
+                    f"채널 {self._current_channel}: GPIO는 Bit-bang 모드로 지원됩니다. 디지털 IO 제어가 가능합니다."
+                )
+                self._mode_desc_label.setStyleSheet(
+                    "color: #88cc88; font-size: 11px; font-family: 'Malgun Gothic';"
+                )
+            else:
+                self._mode_desc_label.setText(
+                    f"채널 {self._current_channel}: MPSSE 모드를 지원하지 않습니다. I2C/SPI/JTAG는 사용할 수 없습니다."
+                )
+                self._mode_desc_label.setStyleSheet(
+                    "color: #ffcc44; font-size: 11px; font-family: 'Malgun Gothic';"
+                )
             return
 
         if mode == "GPIO":
             self._mode_desc_label.setText(
-                f"채널 {self._current_channel}: GPIO는 Bit-bang 모드입니다. I2C/SPI/JTAG는 MPSSE 지원 채널에서만 가능합니다."
+                f"채널 {self._current_channel}: GPIO는 Bit-bang 모드입니다. I2C/SPI/JTAG는 MPSSE 모드로 지원됩니다."
             )
             self._mode_desc_label.setStyleSheet(
                 "color: #88cc88; font-size: 11px; font-family: 'Malgun Gothic';"
