@@ -17,7 +17,7 @@ import traceback
 from pathlib import Path
 from typing import List, Optional, Type
 
-from PySide6.QtCore import Qt, Slot, QSettings
+from PySide6.QtCore import Qt, Slot, QSettings, QTimer
 from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
@@ -105,7 +105,10 @@ class MainWindow(QMainWindow):
         tab_names = [self._tab_widget.tabText(i) for i in range(tab_count)]
         print(f"[UDS] 로드된 탭 {tab_count}개: {tab_names}")
 
-        self.statusBar().showMessage("준비됨 — FTDI 장치를 연결하세요")
+        self.statusBar().showMessage("준비됨 — FTDI 장치를 스캔 중...")
+
+        # 시작 시 자동 스캔
+        QTimer.singleShot(300, self._on_scan_devices)
 
     def _init_ui(self) -> None:
         """전체 UI 레이아웃 구성"""
