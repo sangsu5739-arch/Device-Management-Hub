@@ -467,3 +467,8 @@ class PinoutWidget(QWidget):
 
     def sizeHint(self) -> QSize:
         return QSize(650, 550)
+
+    def closeEvent(self, event) -> None:
+        """위젯이 닫힐 때 타이머 정리."""
+        self._blink_timer.stop()
+        super().closeEvent(event)
