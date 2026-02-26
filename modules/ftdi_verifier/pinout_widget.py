@@ -84,8 +84,10 @@ class PinoutWidget(QWidget):
         self._selected_pin: int = -1
         self._channel_filter: str = ""
         self._blink_on: bool = True
+        self._painting: bool = False
         self._blink_timer = QTimer(self)
         self._blink_timer.setInterval(450)
+        self._blink_timer.setSingleShot(False)
         self._blink_timer.timeout.connect(self._on_blink)
         self._blink_timer.start()
 
@@ -124,31 +126,35 @@ class PinoutWidget(QWidget):
     # ── 페인트 ──
 
     def paintEvent(self, event: QPaintEvent) -> None:
-        if self._chip is None:
+        if self._chip is None or self._painting:
             return
 
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        painter.setRenderHint(QPainter.RenderHint.TextAntialiasing)
+        self._painting = True
+        try:
+            painter = QPainter(self)
+            painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+            painter.setRenderHint(QPainter.RenderHint.TextAntialiasing)
 
-        # 배경
-        painter.fillRect(self.rect(), QColor("#2a3040"))
+            # 배경
+            painter.fillRect(self.rect(), QColor("#2a3040"))
 
-        w, h = self.width(), self.height()
-        self._pin_rects.clear()
+            w, h = self.width(), self.height()
+            self._pin_rects.clear()
 
-        # 칩 바디 영역
-        body_w = w * self._CHIP_BODY_RATIO
-        body_h = h * 0.60
-        body_x = (w - body_w) / 2
-        body_y = (h - body_h) / 2
-        body_rect = QRectF(body_x, body_y, body_w, body_h)
+            # 칩 바디 영역
+            body_w = w * self._CHIP_BODY_RATIO
+            body_h = h * 0.60
+            body_x = (w - body_w) / 2
+            body_y = (h - body_h) / 2
+            body_rect = QRectF(body_x, body_y, body_w, body_h)
 
-        self._draw_chip_body(painter, body_rect)
-        self._draw_pins(painter, body_rect)
-        self._draw_hover_tooltip(painter)
+            self._draw_chip_body(painter, body_rect)
+            self._draw_pins(painter, body_rect)
+            self._draw_hover_tooltip(painter)
 
-        painter.end()
+            painter.end()
+        finally:
+            self._painting = False
 
     def _draw_chip_body(self, p: QPainter, r: QRectF) -> None:
         """칩 바디 — 진한 회색 + 금속 테두리 + 로고"""
@@ -462,8 +468,13 @@ class PinoutWidget(QWidget):
 
     def _on_blink(self) -> None:
         self._blink_on = not self._blink_on
-        if self._selected_pin >= 0:
-            self.update()
+        if self._selected_pin >= 0 and not self._painting:
+            rect = self._pin_rects.get(self._selected_pin)
+            if rect is not None:
+                # 선택된 핀 영역만 다시 그리기
+                self.update(rect.adjusted(-8, -8, 8, 8).toAlignedRect())
+            else:
+                self.update()
 
     def sizeHint(self) -> QSize:
         return QSize(650, 550)
