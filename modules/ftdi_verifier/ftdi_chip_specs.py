@@ -1,8 +1,8 @@
 """
-FTDI 칩셋 사양 정의 — FT232H / FT2232H / FT4232H
+FTDI chipset spec definitions - FT232H / FT2232H / FT4232H
 
-핀 맵, 채널 능력, 프로토콜 지원 정보를 클래스 상수로 관리합니다.
-하드코딩을 배제하고 확장성을 확보합니다.
+Pin map, channel capability, and protocol support are stored as class constants.
+Avoids hardcoding and keeps extensibility.
 """
 
 from __future__ import annotations
@@ -12,10 +12,10 @@ from enum import Enum, auto
 from typing import Dict, List, Optional, Tuple
 
 
-# ── 핀 기능 열거형 ──
+# -- Pin function enum --
 
 class PinFunction(Enum):
-    """핀이 지원하는 기능 종류"""
+    """Pin supported function types."""
     GPIO_OUT = auto()
     GPIO_IN = auto()
     I2C_SCL = auto()
@@ -40,7 +40,7 @@ class PinFunction(Enum):
     POWER = auto()
     GROUND = auto()
     NC = auto()       # No Connect
-    SPECIAL = auto()  # 기타 (RESET, EECS 등)
+    SPECIAL = auto()  # Other (RESET, EECS, etc)
 
 
 class PinDirection(Enum):
@@ -59,26 +59,26 @@ class ProtocolMode(Enum):
     BITBANG = "Bit-Bang"
 
 
-# ── 핀 데이터 구조 ──
+# -- Pin data structure --
 
 @dataclass
 class PinSpec:
-    """핀 하나의 사양"""
-    number: int                     # 물리 핀 번호
-    name: str                       # 핀 이름 (AD0, BD7 등)
-    direction: PinDirection         # 패키지 배치 방향
-    functions: List[PinFunction]    # 지원 기능 목록
-    default_function: PinFunction   # 초기 기능
-    channel: str = ""               # 소속 채널 (A/B/C/D 또는 "" )
-    mpsse_bit: int = -1             # MPSSE 비트 인덱스 (0-7, GPIO면 해당)
-    description: str = ""           # 기능 설명
+    """Pin spec."""
+    number: int                     # Physical pin number
+    name: str                       # Pin name (AD0, BD7, etc)
+    direction: PinDirection         # Package side orientation
+    functions: List[PinFunction]    # Supported functions
+    default_function: PinFunction   # Default function
+    channel: str = ""               # Channel (A/B/C/D or "")
+    mpsse_bit: int = -1             # MPSSE bit index (0-7, for GPIO)
+    description: str = ""           # Function description
 
 
 @dataclass
 class ChannelSpec:
-    """칩의 한 채널에 대한 사양"""
+    """Spec for a chip channel."""
     name: str                                 # "A", "B", "C", "D"
-    supports_mpsse: bool = True               # MPSSE 지원 여부
+    supports_mpsse: bool = True               # MPSSE support
     supported_protocols: List[ProtocolMode] = field(default_factory=list)
     data_pins: List[str] = field(default_factory=list)   # xDBUS0-7
     ctrl_pins: List[str] = field(default_factory=list)   # xCBUS0-9
@@ -86,32 +86,32 @@ class ChannelSpec:
 
 @dataclass
 class ChipSpec:
-    """FTDI 칩 전체 사양"""
+    """Full FTDI chip spec."""
     name: str                       # "FT232H", "FT2232H", "FT4232H"
     package: str                    # "LQFP48", "LQFP64"
     pin_count: int                  # 48, 64
     vid: int = 0x0403               # Vendor ID
     pid: int = 0x6014               # Product ID
     channels: Dict[str, ChannelSpec] = field(default_factory=dict)
-    pins: Dict[int, PinSpec] = field(default_factory=dict)  # pin_number → PinSpec
+    pins: Dict[int, PinSpec] = field(default_factory=dict)  # pin_number -> PinSpec
     description: str = ""
 
 
-# ── 핀 색상 매핑 ──
+# -- Pin color mapping --
 
 PIN_COLORS: Dict[PinFunction, str] = {
-    PinFunction.I2C_SCL:     "#00d2ff",  # 시안
+    PinFunction.I2C_SCL:     "#00d2ff",  # cyan
     PinFunction.I2C_SDA_OUT: "#00d2ff",
     PinFunction.I2C_SDA_IN:  "#00d2ff",
-    PinFunction.SPI_SCK:     "#ff9933",  # 오렌지
+    PinFunction.SPI_SCK:     "#ff9933",  # orange
     PinFunction.SPI_MOSI:    "#ff9933",
     PinFunction.SPI_MISO:    "#ff9933",
     PinFunction.SPI_CS:      "#ff9933",
-    PinFunction.JTAG_TCK:    "#cc66ff",  # 보라
+    PinFunction.JTAG_TCK:    "#cc66ff",  # purple
     PinFunction.JTAG_TDI:    "#cc66ff",
     PinFunction.JTAG_TDO:    "#cc66ff",
     PinFunction.JTAG_TMS:    "#cc66ff",
-    PinFunction.UART_TX:     "#66ff66",  # 녹색
+    PinFunction.UART_TX:     "#66ff66",  # green
     PinFunction.UART_RX:     "#66ff66",
     PinFunction.UART_RTS:    "#44cc44",
     PinFunction.UART_CTS:    "#44cc44",
@@ -119,15 +119,15 @@ PIN_COLORS: Dict[PinFunction, str] = {
     PinFunction.UART_DSR:    "#44cc44",
     PinFunction.UART_DCD:    "#44cc44",
     PinFunction.UART_RI:     "#44cc44",
-    PinFunction.GPIO_OUT:    "#ffcc44",  # 노란색
+    PinFunction.GPIO_OUT:    "#ffcc44",  # yellow
     PinFunction.GPIO_IN:     "#ffcc44",
-    PinFunction.POWER:       "#ff4444",  # 빨강
-    PinFunction.GROUND:      "#666666",  # 회색
-    PinFunction.NC:          "#444444",  # 어두운 회색
-    PinFunction.SPECIAL:     "#cc8844",  # 갈색
+    PinFunction.POWER:       "#ff4444",  # red
+    PinFunction.GROUND:      "#666666",  # gray
+    PinFunction.NC:          "#444444",  # dark gray
+    PinFunction.SPECIAL:     "#cc8844",  # brown
 }
 
-# 프로토콜 → 색상
+# Protocol -> color
 PROTOCOL_COLORS: Dict[ProtocolMode, str] = {
     ProtocolMode.I2C:     "#00d2ff",
     ProtocolMode.SPI:     "#ff9933",
@@ -138,9 +138,9 @@ PROTOCOL_COLORS: Dict[ProtocolMode, str] = {
 }
 
 
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# FT232H — 단일 채널, LQFP48
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# -----------------------------------------------
+# FT232H - single channel, LQFP48
+# ------------------------------------------------
 
 def _build_ft232h() -> ChipSpec:
     channels = {
@@ -159,7 +159,7 @@ def _build_ft232h() -> ChipSpec:
 
     pins: Dict[int, PinSpec] = {}
 
-    # ── ADBUS 0-7 (좌측 배치) ──
+    # -- ADBUS 0-7 (left side) --
     ad_mpsse_funcs = [
         ("AD0", [PinFunction.I2C_SCL, PinFunction.SPI_SCK, PinFunction.JTAG_TCK, PinFunction.UART_TX, PinFunction.GPIO_OUT],
          PinFunction.GPIO_OUT, "SCK / SCL / TCK / TX"),
@@ -181,7 +181,7 @@ def _build_ft232h() -> ChipSpec:
             channel="A", mpsse_bit=i, description=desc,
         )
 
-    # ── ACBUS 0-9 (우측 배치) ──
+    # -- ACBUS 0-9 (right side) --
     ac_names = [
         ("AC0", "GPIOH0"), ("AC1", "GPIOH1"), ("AC2", "GPIOH2"),
         ("AC3", "GPIOH3"), ("AC4", "GPIOH4"), ("AC5", "GPIOH5"),
@@ -196,7 +196,7 @@ def _build_ft232h() -> ChipSpec:
             channel="A", mpsse_bit=i, description=desc,
         )
 
-    # ── 전원/GND 핀 (상단/하단) ──
+    # -- Power/GND pins (top/bottom) --
     power_pins = [
         (1,  "GND",     PinDirection.TOP),
         (3,  "VCC",     PinDirection.TOP),
@@ -215,7 +215,7 @@ def _build_ft232h() -> ChipSpec:
             description="Power" if func == PinFunction.POWER else "Ground",
         )
 
-    # ── 특수 핀 ──
+    # -- Special pins --
     special_pins = [
         (34, "RESET#", PinDirection.BOTTOM, "Active-low reset"),
         (36, "EECS",   PinDirection.BOTTOM, "EEPROM chip select"),
@@ -236,9 +236,9 @@ def _build_ft232h() -> ChipSpec:
     )
 
 
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# FT2232H — 듀얼 채널, LQFP64
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# ------------------------------------------------
+# FT2232H - dual channel, LQFP64
+# ------------------------------------------------
 
 def _build_ft2232h() -> ChipSpec:
     channels = {
@@ -329,7 +329,7 @@ def _build_ft2232h() -> ChipSpec:
             channel="B", mpsse_bit=i, description=f"GPIOH{i}",
         )
 
-    # 전원/GND
+    # Power/GND
     for num, name, d in [
         (1, "GND", PinDirection.TOP), (4, "VCC", PinDirection.TOP),
         (8, "VCCIO", PinDirection.TOP), (12, "GND", PinDirection.TOP),
@@ -349,9 +349,9 @@ def _build_ft2232h() -> ChipSpec:
     )
 
 
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# FT4232H — 쿼드 채널, LQFP64
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# ------------------------------------------------
+# FT4232H - quad channel, LQFP64
+# ------------------------------------------------
 
 def _build_ft4232h() -> ChipSpec:
     channels = {
@@ -422,7 +422,7 @@ def _build_ft4232h() -> ChipSpec:
         "TX", "RX", "RTS#", "CTS#", "DTR#", "DSR#", "DCD#", "RI#",
     ]
 
-    # Channel A (좌측 상단)
+    # Channel A (top-left)
     for i in range(8):
         pins[16 + i] = PinSpec(
             number=16 + i, name=f"AD{i}", direction=PinDirection.LEFT,
@@ -430,7 +430,7 @@ def _build_ft4232h() -> ChipSpec:
             channel="A", mpsse_bit=i, description=mpsse_desc[i],
         )
 
-    # Channel B (좌측 하단)
+    # Channel B (bottom-left)
     for i in range(8):
         pins[24 + i] = PinSpec(
             number=24 + i, name=f"BD{i}", direction=PinDirection.LEFT,
@@ -438,7 +438,7 @@ def _build_ft4232h() -> ChipSpec:
             channel="B", mpsse_bit=i, description=mpsse_desc[i],
         )
 
-    # Channel C (우측 상단) — UART/Bit-bang only
+    # Channel C (top-right) - UART/Bit-bang only
     for i in range(8):
         pins[38 + i] = PinSpec(
             number=38 + i, name=f"CD{i}", direction=PinDirection.RIGHT,
@@ -447,7 +447,7 @@ def _build_ft4232h() -> ChipSpec:
             channel="C", mpsse_bit=i, description=uart_desc[i],
         )
 
-    # Channel D (우측 하단) — UART/Bit-bang only
+    # Channel D (bottom-right) - UART/Bit-bang only
     for i in range(8):
         pins[46 + i] = PinSpec(
             number=46 + i, name=f"DD{i}", direction=PinDirection.RIGHT,
@@ -456,7 +456,7 @@ def _build_ft4232h() -> ChipSpec:
             channel="D", mpsse_bit=i, description=uart_desc[i],
         )
 
-    # 전원/GND
+    # Power/GND
     for num, name, d in [
         (1, "GND", PinDirection.TOP), (4, "VCC", PinDirection.TOP),
         (8, "VCCIO", PinDirection.TOP), (12, "GND", PinDirection.TOP),
@@ -472,11 +472,11 @@ def _build_ft4232h() -> ChipSpec:
     return ChipSpec(
         name="FT4232H", package="LQFP64", pin_count=64,
         pid=0x6011, channels=channels, pins=pins,
-        description="Quad-channel USB Hi-Speed — A/B: MPSSE, C/D: UART only",
+        description="Quad-channel USB Hi-Speed - A/B: MPSSE, C/D: UART only",
     )
 
 
-# ── 칩셋 레지스트리 ──
+# -- Chipset registry --
 
 CHIP_SPECS: Dict[str, ChipSpec] = {
     "FT232H":  _build_ft232h(),
@@ -484,7 +484,7 @@ CHIP_SPECS: Dict[str, ChipSpec] = {
     "FT4232H": _build_ft4232h(),
 }
 
-# PID → 칩 이름 매핑
+# PID -> chip name mapping
 PID_TO_CHIP: Dict[int, str] = {
     0x6014: "FT232H",
     0x6010: "FT2232H",
@@ -493,18 +493,18 @@ PID_TO_CHIP: Dict[int, str] = {
 
 
 def get_chip_spec(chip_name: str) -> Optional[ChipSpec]:
-    """칩 이름으로 사양 조회"""
+    """Get spec by chip name."""
     return CHIP_SPECS.get(chip_name)
 
 
 def get_chip_by_pid(pid: int) -> Optional[ChipSpec]:
-    """PID로 칩 사양 조회"""
+    """Get spec by PID."""
     name = PID_TO_CHIP.get(pid)
     return CHIP_SPECS.get(name) if name else None
 
 
 def get_channel_protocols(chip_name: str, channel: str) -> List[ProtocolMode]:
-    """특정 칩의 특정 채널이 지원하는 프로토콜 목록"""
+    """Supported protocol list for a chip/channel."""
     spec = CHIP_SPECS.get(chip_name)
     if spec is None:
         return []

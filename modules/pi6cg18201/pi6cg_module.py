@@ -1,8 +1,8 @@
 """
-PI6CG18201 클럭 제너레이터 모듈 - Universal Device Studio 플러그인
+PI6CG18201 clock generator module - Universal Device Studio plugin
 
-기존 단일 윈도우 앱의 제어/시각화/레지스터 UI를 BaseModule 위젯으로 마이그레이션.
-연결 패널은 MainWindow에서 관리하므로 제외합니다.
+Migrated control/visualization/register UI from the legacy single-window app into a BaseModule widget.
+Connection panel is managed by MainWindow and is excluded here.
 """
 
 from __future__ import annotations
@@ -35,18 +35,20 @@ from modules.pi6cg18201.clock_visualizer import ClockVisualizer
 
 
 class PI6CGModule(BaseModule):
-    """PI6CG18201 클럭 제너레이터 디바이스 모듈
+    """PI6CG18201 clock generator device module
 
     Layout:
-    - 상단: 슬레이브 주소 선택
-    - 좌측: 제어 센터 (OE, Amplitude, Spread Spectrum, Slew Rate)
-    - 우측: 클럭 파형 시각화
-    - 하단: 레지스터 맵 + I2C 로그
+    - Top: slave address select
+    - Left: control center (OE, Amplitude, Spread Spectrum, Slew Rate)
+    - Right: clock waveform visualization
+    - Bottom: register map + I2C log
     """
 
     MODULE_NAME = "PI6CG18201"
     MODULE_ICON = ""
     MODULE_VERSION = "1.0.0"
+    REQUIRED_MODE = "I2C"
+    REQUIRE_MPSSE = True
 
     VALID_SLAVE_ADDRESSES = (SLAVE_ADDRESS_7BIT_SADR_LOW, SLAVE_ADDRESS_7BIT_SADR_HIGH)
 
@@ -60,14 +62,14 @@ class PI6CGModule(BaseModule):
         super().__init__(ftdi_manager, parent)
 
     def init_ui(self) -> None:
-        """모듈 UI 초기화"""
+        """Initialize module UI."""
         layout = QVBoxLayout(self)
         layout.setContentsMargins(4, 4, 4, 4)
         layout.setSpacing(4)
 
-        # 주소 선택
+        # Address selection
         addr_row = QHBoxLayout()
-        addr_row.addWidget(QLabel("슬레이브 주소:"))
+        addr_row.addWidget(QLabel("Slave address:"))
         self._addr_combo = QComboBox()
         self._addr_combo.addItem(
             f"0x{SLAVE_ADDRESS_7BIT_SADR_LOW:02X} (SADR=L)", SLAVE_ADDRESS_7BIT_SADR_LOW
@@ -81,12 +83,12 @@ class PI6CGModule(BaseModule):
         addr_row.addStretch()
         layout.addLayout(addr_row)
 
-        # 중앙+하단 Splitter
+        # Center + bottom splitter
         v_splitter = QSplitter(Qt.Orientation.Vertical)
         v_splitter.setHandleWidth(3)
         self._v_splitter = v_splitter
 
-        # 좌측(제어) + 우측(시각화) Splitter
+        # Left (control) + right (visualization) splitter
         h_splitter = QSplitter(Qt.Orientation.Horizontal)
         h_splitter.setHandleWidth(3)
         self._h_splitter = h_splitter
@@ -100,7 +102,7 @@ class PI6CGModule(BaseModule):
 
         v_splitter.addWidget(h_splitter)
 
-        # 하단: 레지스터 맵 + 로그
+        # Bottom: register map + log
         bottom_panel = self._create_bottom_panel()
         v_splitter.addWidget(bottom_panel)
         v_splitter.setStretchFactor(0, 2)
@@ -108,50 +110,59 @@ class PI6CGModule(BaseModule):
 
         layout.addWidget(v_splitter, 1)
 
-        # 시그널 연결
+        # Signal connections
         self._reg_map.register_changed.connect(self._on_register_changed)
         self._reg_map.full_map_changed.connect(self._on_full_map_changed)
 
-        # 초기 갱신
+        # Initial refresh
         self._update_visualizer()
         self._refresh_register_table()
         self._load_ui_settings()
 
     def on_device_connected(self) -> None:
-        self.status_message.emit(f"PI6CG18201 준비 (0x{self._slave_address:02X})")
+        self.status_message.emit(f"PI6CG18201 ready (0x{self._slave_address:02X})")
 
     def on_device_disconnected(self) -> None:
         self.stop_communication()
 
+    def on_channel_changed(self, channel: str) -> None:
+        if not self._ftdi.supports_mpsse(channel):
+            self._read_btn.setEnabled(False)
+            self._write_btn.setEnabled(False)
+            self.status_message.emit("PI6CG18201: Current channel does not support MPSSE.")
+        else:
+            self._read_btn.setEnabled(True)
+            self._write_btn.setEnabled(True)
+
     def start_communication(self) -> None:
-        pass  # PI6CG18201은 사용자 트리거 방식 (라이브 모드는 제어 변경 시 자동 전송)
+        pass  # PI6CG18201 uses manual trigger (live mode auto-sends on control change)
 
     def stop_communication(self) -> None:
         pass
 
     def update_data(self) -> None:
-        """하드웨어에서 레지스터 읽기"""
+        """Read registers from hardware."""
         self._on_read_registers()
 
-    # ── UI 빌더 ──
+    # -- UI builders --
 
     def _create_control_panel(self) -> QGroupBox:
-        """좌측 제어 패널"""
-        group = QGroupBox("제어 센터")
+        """Left control panel."""
+        group = QGroupBox("Control Center")
         layout = QVBoxLayout(group)
         layout.setSpacing(10)
 
-        # 고급 모드
+        # Advanced mode
         mode_row = QHBoxLayout()
-        self._advanced_mode_cb = QCheckBox("고급 모드")
-        self._advanced_mode_cb.setToolTip("ON: Byte/Bit 매핑 정보를 표시합니다.")
+        self._advanced_mode_cb = QCheckBox("Advanced mode")
+        self._advanced_mode_cb.setToolTip("ON: Show Byte/Bit mapping details.")
         self._advanced_mode_cb.stateChanged.connect(self._on_advanced_mode_changed)
         mode_row.addWidget(self._advanced_mode_cb)
         mode_row.addStretch()
         layout.addLayout(mode_row)
 
-        # 출력 활성화 (OE)
-        oe_label = QLabel("출력 활성화 (Output Enable)")
+        # Output enable (OE)
+        oe_label = QLabel("Output Enable")
         oe_label.setStyleSheet("color: #88c0ff; font-weight: bold; font-size: 12px;")
         layout.addWidget(oe_label)
 
@@ -174,56 +185,56 @@ class PI6CGModule(BaseModule):
             oe_layout.addWidget(cb, 0, i)
         layout.addWidget(oe_frame)
 
-        self._oe_hint = QLabel("고급: OE_Q0=Byte0[1], OE_Q1=Byte0[2]")
+        self._oe_hint = QLabel("Advanced: OE_Q0=Byte0[1], OE_Q1=Byte0[2]")
         self._oe_hint.setStyleSheet("color: #7f8aa4; font-size: 11px;")
         self._oe_hint.setVisible(False)
         self._advanced_hint_labels.append(self._oe_hint)
         layout.addWidget(self._oe_hint)
 
-        # 진폭 (Amplitude)
-        amp_label = QLabel("출력 진폭 (Amplitude)")
+        # Amplitude
+        amp_label = QLabel("Output amplitude")
         amp_label.setStyleSheet("color: #88c0ff; font-weight: bold; font-size: 12px;")
         layout.addWidget(amp_label)
 
         amp_frame = QFrame()
         amp_layout = QHBoxLayout(amp_frame)
         amp_layout.setContentsMargins(4, 2, 4, 2)
-        amp_layout.addWidget(QLabel("출력 전압 레벨"))
+        amp_layout.addWidget(QLabel("Output voltage level"))
         self._amplitude_combo = QComboBox()
         self._amplitude_combo.addItems(["0.6 V", "0.7 V", "0.8 V", "0.9 V"])
         self._amplitude_combo.setCurrentIndex(2)
         self._amplitude_combo.currentIndexChanged.connect(self._on_control_changed)
         amp_layout.addWidget(self._amplitude_combo)
         amp_layout.addStretch()
-        self._amp_indicator = QLabel("● 0.8V")
+        self._amp_indicator = QLabel("o 0.8V")
         self._amp_indicator.setStyleSheet("color: #ffcc44; font-weight: bold; font-size: 14px;")
         amp_layout.addWidget(self._amp_indicator)
         layout.addWidget(amp_frame)
 
-        self._amp_hint = QLabel("고급: AMPLITUDE=Byte1[1:0]")
+        self._amp_hint = QLabel("Advanced: AMPLITUDE=Byte1[1:0]")
         self._amp_hint.setStyleSheet("color: #7f8aa4; font-size: 11px;")
         self._amp_hint.setVisible(False)
         self._advanced_hint_labels.append(self._amp_hint)
         layout.addWidget(self._amp_hint)
 
-        # 스프레드 스펙트럼
-        ss_label = QLabel("스프레드 스펙트럼 (Spread Spectrum)")
+        # Spread spectrum
+        ss_label = QLabel("Spread spectrum")
         ss_label.setStyleSheet("color: #88c0ff; font-weight: bold; font-size: 12px;")
         layout.addWidget(ss_label)
 
         ss_frame = QFrame()
         ss_layout = QHBoxLayout(ss_frame)
         ss_layout.setContentsMargins(4, 2, 4, 2)
-        ss_layout.addWidget(QLabel("동작 모드"))
+        ss_layout.addWidget(QLabel("Mode"))
         self._ss_combo = QComboBox()
         self._ss_combo.addItems([
-            "자동 (하드웨어 핀 설정 사용)",
-            "끄기", "약하게 (-0.25%)", "강하게 (-0.5%)",
+            "Auto (use hardware pins)",
+            "Off", "Weak (-0.25%)", "Strong (-0.5%)",
         ])
         self._ss_combo.currentIndexChanged.connect(self._on_control_changed)
         ss_layout.addWidget(self._ss_combo)
         ss_layout.addStretch()
-        self._ss_readback_badge = QLabel("현재: -")
+        self._ss_readback_badge = QLabel("Current: -")
         self._ss_readback_badge.setStyleSheet(
             "color: #9ac6ff; font-weight: bold; background-color: #26374f; "
             "padding: 2px 8px; border-radius: 8px;"
@@ -232,14 +243,14 @@ class PI6CGModule(BaseModule):
         ss_layout.addWidget(self._ss_readback_badge)
         layout.addWidget(ss_frame)
 
-        self._ss_hint = QLabel("고급: SS_SW_CTRL=Byte1[5], SS_MODE=Byte1[4:3]")
+        self._ss_hint = QLabel("Advanced: SS_SW_CTRL=Byte1[5], SS_MODE=Byte1[4:3]")
         self._ss_hint.setStyleSheet("color: #7f8aa4; font-size: 11px;")
         self._ss_hint.setVisible(False)
         self._advanced_hint_labels.append(self._ss_hint)
         layout.addWidget(self._ss_hint)
 
         # Slew Rate
-        slew_label = QLabel("Slew Rate 조절")
+        slew_label = QLabel("Slew Rate")
         slew_label.setStyleSheet("color: #88c0ff; font-weight: bold; font-size: 12px;")
         layout.addWidget(slew_label)
 
@@ -247,19 +258,19 @@ class PI6CGModule(BaseModule):
         slew_grid = QGridLayout(slew_frame)
         slew_grid.setSpacing(6)
 
-        slew_grid.addWidget(QLabel("출력 엣지 속도 (Q0/Q1):"), 0, 0)
+        slew_grid.addWidget(QLabel("Output edge speed (Q0/Q1):"), 0, 0)
         self._slew_coarse_combo = QComboBox()
         self._slew_coarse_combo.addItems([
-            "둘 다 느리게", "Q0 빠르게 / Q1 느리게",
-            "Q0 느리게 / Q1 빠르게", "둘 다 빠르게",
+            "Both slow", "Q0 fast / Q1 slow",
+            "Q0 slow / Q1 fast", "Both fast",
         ])
         self._slew_coarse_combo.setCurrentIndex(2)
         self._slew_coarse_combo.currentIndexChanged.connect(self._on_control_changed)
         slew_grid.addWidget(self._slew_coarse_combo, 0, 1)
 
-        slew_grid.addWidget(QLabel("기준클럭(REF) 엣지 속도:"), 1, 0)
+        slew_grid.addWidget(QLabel("REF edge speed:"), 1, 0)
         self._slew_fine_combo = QComboBox()
-        self._slew_fine_combo.addItems(["느림", "보통", "빠름", "매우 빠름"])
+        self._slew_fine_combo.addItems(["Slow", "Medium", "Fast", "Very Fast"])
         self._slew_fine_combo.currentIndexChanged.connect(self._on_control_changed)
         slew_grid.addWidget(self._slew_fine_combo, 1, 1)
 
@@ -268,13 +279,13 @@ class PI6CGModule(BaseModule):
         slew_grid.addWidget(self._slew_indicator, 2, 0, 1, 2)
         layout.addWidget(slew_frame)
 
-        self._slew_hint = QLabel("고급: SLEW_Q1=Byte2[2], SLEW_Q0=Byte2[1], REF_SLEW=Byte3[7:6]")
+        self._slew_hint = QLabel("Advanced: SLEW_Q1=Byte2[2], SLEW_Q0=Byte2[1], REF_SLEW=Byte3[7:6]")
         self._slew_hint.setStyleSheet("color: #7f8aa4; font-size: 11px;")
         self._slew_hint.setVisible(False)
         self._advanced_hint_labels.append(self._slew_hint)
         layout.addWidget(self._slew_hint)
 
-        # 라이브 모드
+        # Live mode
         separator = QFrame()
         separator.setFrameShape(QFrame.Shape.HLine)
         separator.setStyleSheet("color: #3a3f50;")
@@ -283,7 +294,7 @@ class PI6CGModule(BaseModule):
         live_frame = QFrame()
         live_layout = QHBoxLayout(live_frame)
         live_layout.setContentsMargins(4, 2, 4, 2)
-        self._live_mode_cb = QCheckBox(" 라이브 모드 (실시간 I2C 전송)")
+        self._live_mode_cb = QCheckBox(" Live mode (real-time I2C send)")
         self._live_mode_cb.setStyleSheet("""
             QCheckBox { font-weight: bold; color: #ff8888; font-size: 12px; }
             QCheckBox::indicator:checked { background-color: #cc3344; border-color: #ff4455; }
@@ -292,7 +303,7 @@ class PI6CGModule(BaseModule):
         live_layout.addWidget(self._live_mode_cb)
         layout.addWidget(live_frame)
 
-        # 수동 전송 버튼
+        # Manual send button
         btn_frame = QFrame()
         btn_layout = QHBoxLayout(btn_frame)
         btn_layout.setContentsMargins(4, 2, 4, 2)
@@ -312,8 +323,8 @@ class PI6CGModule(BaseModule):
         return group
 
     def _create_visualizer_panel(self) -> QGroupBox:
-        """우측 파형 시각화 패널"""
-        group = QGroupBox("파형 시각화 (Waveform Visualizer)")
+        """Right waveform visualization panel."""
+        group = QGroupBox("Waveform Visualizer")
         layout = QVBoxLayout(group)
         layout.setContentsMargins(6, 6, 6, 6)
         self._visualizer = ClockVisualizer()
@@ -321,16 +332,16 @@ class PI6CGModule(BaseModule):
         return group
 
     def _create_bottom_panel(self) -> QTabWidget:
-        """하단 레지스터 맵 + 로그"""
+        """Bottom register map + log."""
         tabs = QTabWidget()
 
-        # 레지스터 맵 탭
+        # Register map tab
         reg_tab = QWidget()
         reg_layout = QVBoxLayout(reg_tab)
         reg_layout.setContentsMargins(6, 6, 6, 6)
 
         # Overview
-        overview_label = QLabel("레지스터 맵 (8-Byte Overview)")
+        overview_label = QLabel("Register Map (8-Byte Overview)")
         overview_label.setStyleSheet("color: #88c0ff; font-weight: bold; font-size: 12px;")
         reg_layout.addWidget(overview_label)
 
@@ -345,12 +356,12 @@ class PI6CGModule(BaseModule):
         reg_layout.addWidget(self._reg_overview_table)
 
         # Detail
-        detail_label = QLabel("비트 필드 상세 (Bit Field Detail)")
+        detail_label = QLabel("Bit Field Detail")
         detail_label.setStyleSheet("color: #88c0ff; font-weight: bold; font-size: 12px;")
         detail_header = QHBoxLayout()
         detail_header.addWidget(detail_label)
         detail_header.addStretch()
-        self._show_advanced_columns_cb = QCheckBox("Byte/비트 컬럼 표시")
+        self._show_advanced_columns_cb = QCheckBox("Show Byte/Bit columns")
         self._show_advanced_columns_cb.setChecked(True)
         self._show_advanced_columns_cb.stateChanged.connect(self._on_advanced_columns_changed)
         detail_header.addWidget(self._show_advanced_columns_cb)
@@ -358,7 +369,7 @@ class PI6CGModule(BaseModule):
 
         self._reg_detail_table = QTableWidget(len(REGISTER_FIELDS), 7)
         self._reg_detail_table.setHorizontalHeaderLabels([
-            "필드명", "설명", "Byte", "비트 범위", "값", "Hex", "설정"
+            "Field", "Desc", "Byte", "Bit range", "Value", "Hex", "Set"
         ])
         self._reg_detail_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
         self._reg_detail_table.horizontalHeader().setStretchLastSection(True)
@@ -409,12 +420,12 @@ class PI6CGModule(BaseModule):
             self._reg_detail_table.setItem(row, 5, hex_item)
 
             if bf.options:
-                opt_text = bf.options.get(0, "—")
+                opt_text = bf.options.get(0, "-")
                 opt_item = QTableWidgetItem(opt_text)
                 opt_item.setFlags(opt_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
                 opt_item.setForeground(QColor(180, 200, 140))
             else:
-                opt_item = QTableWidgetItem("—")
+                opt_item = QTableWidgetItem("-")
                 opt_item.setFlags(opt_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
                 opt_item.setForeground(QColor(80, 85, 100))
             self._reg_detail_table.setItem(row, 6, opt_item)
@@ -422,16 +433,16 @@ class PI6CGModule(BaseModule):
         self._reg_detail_table.cellChanged.connect(self._on_detail_cell_changed)
         reg_layout.addWidget(self._reg_detail_table, 1)
 
-        tabs.addTab(reg_tab, "레지스터 맵")
+        tabs.addTab(reg_tab, "Register Map")
 
-        # 로그 탭
+        # Log tab
         log_tab = QWidget()
         log_layout = QVBoxLayout(log_tab)
         log_layout.setContentsMargins(6, 6, 6, 6)
 
         log_header = QHBoxLayout()
-        log_header.addWidget(QLabel("I2C 패킷 로그"))
-        self._clear_log_btn = QPushButton("로그 지우기")
+        log_header.addWidget(QLabel("I2C Packet Log"))
+        self._clear_log_btn = QPushButton("Clear Log")
         self._clear_log_btn.setFixedWidth(120)
         self._clear_log_btn.clicked.connect(lambda: self._log_text.clear())
         log_header.addStretch()
@@ -443,10 +454,10 @@ class PI6CGModule(BaseModule):
         self._log_text.setFont(QFont("Consolas", 10))
         log_layout.addWidget(self._log_text, 1)
 
-        tabs.addTab(log_tab, "I2C 로그")
+        tabs.addTab(log_tab, "I2C Log")
         return tabs
 
-    # ── 핸들러 ──
+    # -- Handlers --
 
     @Slot()
     def _on_addr_changed(self) -> None:
@@ -454,7 +465,7 @@ class PI6CGModule(BaseModule):
 
     @Slot()
     def _on_control_changed(self) -> None:
-        """제어 패널 값 변경 → RegisterMap 업데이트"""
+        """Control panel value change -> update RegisterMap."""
         for i, cb in enumerate(self._oe_checks):
             self._reg_map.set_field(f"OE_Q{i}", int(cb.isChecked()), emit=False)
         self._reg_map.set_field("AMPLITUDE", self._amplitude_combo.currentIndex(), emit=False)
@@ -463,7 +474,7 @@ class PI6CGModule(BaseModule):
         self._reg_map.slew_rate_fine = self._slew_fine_combo.currentIndex()
 
         amp_v = self._reg_map.amplitude_voltage
-        self._amp_indicator.setText(f"● {amp_v:.1f}V")
+        self._amp_indicator.setText(f"o {amp_v:.1f}V")
         combined = self._reg_map.slew_rate_combined
         self._slew_indicator.setText(f"Combined: Lv.{combined}/15")
         self._update_ss_readback_badge()
@@ -501,7 +512,7 @@ class PI6CGModule(BaseModule):
             return
         readback = self._reg_map.get_field("SS_READBACK")
         text_map = {0: "SS Off", 1: "-0.25%", 3: "-0.5%"}
-        self._ss_readback_badge.setText(f"현재: {text_map.get(readback, f'예약({readback})')}")
+        self._ss_readback_badge.setText(f"Current: {text_map.get(readback, f'Reserved({readback})')}")
 
     def _apply_ss_combo_to_regmap(self, index: int) -> None:
         if index == 0:
@@ -638,7 +649,7 @@ class PI6CGModule(BaseModule):
         self._slew_fine_combo.setCurrentIndex(self._reg_map.slew_rate_fine)
         self._slew_fine_combo.blockSignals(False)
 
-        self._amp_indicator.setText(f"● {self._reg_map.amplitude_voltage:.1f}V")
+        self._amp_indicator.setText(f"o {self._reg_map.amplitude_voltage:.1f}V")
         self._slew_indicator.setText(f"Combined: Lv.{self._reg_map.slew_rate_combined}/15")
         self._update_ss_readback_badge()
         self._update_visualizer()

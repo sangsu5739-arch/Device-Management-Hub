@@ -1,13 +1,13 @@
 """
-FTDI Hardware Verifier 모듈 - Universal Device Studio 플러그인
+FTDI Hardware Verifier module - Universal Device Studio plugin
 
-연결된 FTDI 칩의 하드웨어 리소스를 검증하고,
-각 채널·핀의 기능을 실시간으로 테스트합니다.
+Validates connected FTDI chip hardware resources,
+Tests each channel/pin function in real time.
 
 Layout:
-  좌측: Control Center (칩 선택, 모드, 프로토콜 테스트, GPIO 제어)
-  우측: Interactive Pinout View (CubeIDE 스타일)
-  하단: Communication Log
+  Left: Control Center (chip select, mode, protocol tests, GPIO control)
+  Right: Interactive Pinout View (CubeIDE style)
+  Bottom: Communication Log
 """
 
 from __future__ import annotations
@@ -21,7 +21,7 @@ from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QGridLayout,
     QGroupBox, QLabel, QPushButton, QComboBox, QSpinBox,
     QSplitter, QTabWidget, QFrame, QTextEdit,
-    QTableWidget, QTableWidgetItem, QHeaderView, QLineEdit, QCheckBox,
+    QTableWidget, QTableWidgetItem, QHeaderView, QLineEdit, QCheckBox, QFileDialog, QStyle,
 )
 
 from core.ftdi_manager import FtdiManager
@@ -38,9 +38,9 @@ from modules.ftdi_verifier.verifier_worker import (
 
 
 class FtdiVerifierModule(BaseModule):
-    """FTDI Hardware Verifier 디바이스 모듈
+    """FTDI Hardware Verifier device module
 
-    칩 모델별 핀맵 시각화, I2C/SPI ACK 체크, GPIO 제어를 제공합니다.
+    Provides chip pinmap view, I2C/SPI ACK check, and GPIO control.
     """
 
     MODULE_NAME = "FTDI Verifier"
@@ -59,29 +59,38 @@ class FtdiVerifierModule(BaseModule):
         self._last_proto_mode: str = "I2C"
         self._gpio_poll_pin: int = -1
         self._gpio_poll_blink = None
+        self._bitbang_mask: int = 0xFF
+        self._bitbang_btns: list[QPushButton] = []
+        self._last_i2c_scan_t0: float | None = None
+        self._last_i2c_scan_range: tuple[int, int] = (0x08, 0x77)
         super().__init__(ftdi_manager, parent)
 
-    # ── BaseModule 구현 ──
+    # -- BaseModule implementation --
 
     def init_ui(self) -> None:
         layout = QVBoxLayout(self)
         layout.setContentsMargins(4, 4, 4, 4)
         layout.setSpacing(4)
 
-        # 상단: FTDI 정보 패널 (연결 탭에 연동)
+        # Top: FTDI info panel (linked to connection tab)
         layout.addWidget(self._create_device_info_panel())
 
-        # 메인 영역 (좌·우 + 하단)
+        # Main area (left/right + bottom)
         v_splitter = QSplitter(Qt.Orientation.Vertical)
         v_splitter.setHandleWidth(3)
 
-        # 좌측(제어) + 우측(핀맵)
+        # Left (control) + right (pinmap)
         h_splitter = QSplitter(Qt.Orientation.Horizontal)
         h_splitter.setHandleWidth(3)
-        h_splitter.addWidget(self._create_control_panel())
-        h_splitter.addWidget(self._create_pinout_panel())
-        h_splitter.setStretchFactor(0, 3)
-        h_splitter.setStretchFactor(1, 4)
+        control_panel = self._create_control_panel()
+        pinout_panel = self._create_pinout_panel()
+        control_panel.setMinimumWidth(260)
+        pinout_panel.setMinimumWidth(520)
+        h_splitter.addWidget(control_panel)
+        h_splitter.addWidget(pinout_panel)
+        h_splitter.setStretchFactor(0, 2)
+        h_splitter.setStretchFactor(1, 5)
+        h_splitter.setSizes([260, 520])
 
         v_splitter.addWidget(h_splitter)
         v_splitter.addWidget(self._create_log_panel())
@@ -90,8 +99,9 @@ class FtdiVerifierModule(BaseModule):
 
         layout.addWidget(v_splitter, 1)
 
-        # 기본 칩 로드
+        # Load default chip
         self._apply_chip_and_channel("FT232H", "A")
+        QTimer.singleShot(0, lambda: h_splitter.setSizes([260, 520]))
         if self._uart_read_timer is None:
             self._uart_read_timer = QTimer(self)
             self._uart_read_timer.setInterval(50)
@@ -105,27 +115,28 @@ class FtdiVerifierModule(BaseModule):
         self._i2c_scan_btn.setEnabled(True)
         self._i2c_test_btn.setEnabled(True)
         self._spi_test_btn.setEnabled(True)
-        if hasattr(self, "_gpio_mask_apply"):
-            self._gpio_mask_apply.setEnabled(True)
+        self._set_bitbang_controls_enabled(True)
+        self._apply_bitbang_mask(self._bitbang_mask, push=True)
         self._gpio_poll_btn.setEnabled(True)
         info = self._ftdi.get_device_info()
         chip = info.get("device_type", "FT232H")
         ch = info.get("channel", "A")
         self._apply_chip_and_channel(chip, ch)
         self._update_protocol_availability()
-        self.status_message.emit("FTDI Verifier: 장치 연결됨")
+        self.status_message.emit("FTDI Verifier: device connected")
 
     def on_device_disconnected(self) -> None:
         self.stop_communication()
         self._i2c_scan_btn.setEnabled(False)
         self._i2c_test_btn.setEnabled(False)
         self._spi_test_btn.setEnabled(False)
+        self._set_bitbang_controls_enabled(False)
         self._gpio_poll_btn.setEnabled(False)
         if hasattr(self, "_chip_label"):
             self._chip_label.setText("-")
         if hasattr(self, "_channel_label"):
             self._channel_label.setText("-")
-        self.status_message.emit("FTDI Verifier: 장치 해제됨")
+        self.status_message.emit("FTDI Verifier: device disconnected")
 
     def on_channel_changed(self, channel: str) -> None:
         info = self._ftdi.get_device_info()
@@ -147,7 +158,7 @@ class FtdiVerifierModule(BaseModule):
             self._last_proto_mode = self._proto_mode_combo.currentText()
 
     def start_communication(self) -> None:
-        pass  # GPIO 폴링은 별도 버튼으로 시작
+        pass  # GPIO polling starts from a separate button
 
     def stop_communication(self) -> None:
         self._stop_worker()
@@ -156,21 +167,21 @@ class FtdiVerifierModule(BaseModule):
     def update_data(self) -> None:
         pass
 
-    # ── UI 빌더 ──
+    # -- UI builders --
 
     def _create_device_info_panel(self) -> QGroupBox:
-        """상단: FTDI 연결 정보 (연결 탭 연동)"""
-        group = QGroupBox("FTDI 장치 정보")
+        """Top: FTDI connection info (linked to connection tab)."""
+        group = QGroupBox("FTDI Device Info")
         layout = QHBoxLayout(group)
         layout.setContentsMargins(10, 6, 10, 6)
 
-        layout.addWidget(QLabel("칩 모델:"))
+        layout.addWidget(QLabel("Chip model:"))
         self._chip_label = QLabel("-")
         self._chip_label.setStyleSheet("color: #c8d2f0; font-weight: 600;")
         layout.addWidget(self._chip_label)
 
         layout.addSpacing(20)
-        layout.addWidget(QLabel("채널:"))
+        layout.addWidget(QLabel("Channel:"))
         self._channel_label = QLabel("-")
         self._channel_label.setStyleSheet("color: #c8d2f0; font-weight: 600;")
         layout.addWidget(self._channel_label)
@@ -184,14 +195,14 @@ class FtdiVerifierModule(BaseModule):
         return group
 
     def _create_control_panel(self) -> QWidget:
-        """좌측 제어 패널"""
+        """Left control panel."""
         container = QWidget()
         main_layout = QVBoxLayout(container)
         main_layout.setContentsMargins(4, 4, 4, 4)
         main_layout.setSpacing(6)
 
-        # ── 모드 선택 (Exclusive) ──
-        mode_group = QGroupBox("프로토콜 모드")
+        # -- Mode selection (exclusive) --
+        mode_group = QGroupBox("Protocol Mode")
         mode_group.setFont(QFont("Malgun Gothic", 10))
         mode_layout = QVBoxLayout(mode_group)
         mode_layout.setSpacing(4)
@@ -210,48 +221,44 @@ class FtdiVerifierModule(BaseModule):
 
         main_layout.addWidget(mode_group)
 
-        # ── 프로토콜 탭 ──
+        # -- Protocol tabs --
         self._proto_tabs = QTabWidget()
 
-        # I2C 테스트
-        self._i2c_group = QGroupBox("I2C 테스트")
+        # I2C Test
+        self._i2c_group = QGroupBox("I2C Test")
         i2c_layout = QVBoxLayout(self._i2c_group)
-        i2c_layout.setSpacing(4)
-        i2c_layout.setContentsMargins(8, 6, 8, 6)
+        i2c_layout.setSpacing(3)
+        i2c_layout.setContentsMargins(6, 4, 6, 4)
 
-        self._i2c_scan_btn = QPushButton("I2C 버스 스캔")
+        self._i2c_scan_btn = QPushButton("I2C Bus Scan")
         self._i2c_scan_btn.setEnabled(False)
-        self._i2c_scan_btn.setMinimumHeight(36)
+        self._i2c_scan_btn.setMinimumHeight(30)
         self._i2c_scan_btn.setStyleSheet(
-            "QPushButton { background: #1f2430; color: #e9eefc; font-weight: 700; border-radius: 8px; "
-            "border: 1px solid #3b4458; }"
-            "QPushButton:hover { background: #2a3142; }"
-            "QPushButton:pressed { background: #141923; border: 1px solid #58627a; }"
+            "QPushButton { background: #1b2a4a; color: #cde3ff; font-weight: 800; border-radius: 8px; "
+            "border: 1px solid #3b5ea8; letter-spacing: 0.4px; }"
+            "QPushButton:hover { background: #21335a; }"
+            "QPushButton:pressed { background: #162340; border: 1px solid #5d7cc0; }"
             "QPushButton:disabled { background: #2a303b; color: #9aa4b8; border: 1px solid #3b4458; }"
         )
         self._i2c_scan_btn.clicked.connect(self._on_i2c_scan)
         i2c_layout.addWidget(self._i2c_scan_btn)
 
-        self._i2c_ack_led = QLabel("●  ACK: N/A")
-        self._i2c_ack_led.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._i2c_ack_led.setToolTip("I2C ACK 상태")
-        self._i2c_ack_led.setStyleSheet(
-            "background: #6f7a8e; color: #ffffff; border-radius: 8px; padding: 4px 10px;"
-            "font-weight: 700; letter-spacing: 0.5px;"
-        )
-        self._i2c_ack_led.setFixedHeight(32)
-        i2c_layout.addWidget(self._i2c_ack_led)
-
         addr_row = QHBoxLayout()
-        addr_row.addWidget(QLabel("주소:"))
+        addr_row.setSpacing(6)
+        addr_row.addWidget(QLabel("Scanned address:"))
         self._i2c_addr_combo = QComboBox()
         self._i2c_addr_combo.setEditable(True)
         self._i2c_addr_combo.setMinimumWidth(100)
         self._i2c_addr_combo.addItem("0x40")
         addr_row.addWidget(self._i2c_addr_combo)
+        addr_row.addStretch()
+        i2c_layout.addLayout(addr_row)
+
+        ack_row = QHBoxLayout()
+        ack_row.setSpacing(6)
         self._i2c_test_btn = QPushButton("ACK TEST")
         self._i2c_test_btn.setEnabled(False)
-        self._i2c_test_btn.setMinimumHeight(34)
+        self._i2c_test_btn.setMinimumHeight(30)
         self._i2c_test_btn.setMinimumWidth(110)
         self._i2c_test_btn.setStyleSheet(
             "QPushButton { background: #2f343f; color: #f3d28b; font-weight: 700; border-radius: 8px; "
@@ -260,49 +267,70 @@ class FtdiVerifierModule(BaseModule):
             "QPushButton:disabled { background: #2a303b; color: #9aa4b8; border: 1px solid #3b4458; }"
         )
         self._i2c_test_btn.clicked.connect(self._on_i2c_test)
-        addr_row.addWidget(self._i2c_test_btn)
-        i2c_layout.addLayout(addr_row)
+        ack_row.addWidget(self._i2c_test_btn)
 
-        # 스캔 결과 테이블
+        self._i2c_ack_led = QLabel("  ACK: N/A")
+        self._i2c_ack_led.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._i2c_ack_led.setToolTip("I2C ACK Status")
+        self._i2c_ack_led.setStyleSheet(
+            "background: #6f7a8e; color: #ffffff; border-radius: 8px; padding: 4px 10px;"
+            "font-weight: 800; letter-spacing: 0.6px; font-size: 12px;"
+        )
+        self._i2c_ack_led.setFixedHeight(30)
+        ack_row.addWidget(self._i2c_ack_led, 1)
+        i2c_layout.addLayout(ack_row)
+
+        self._i2c_scan_start = 0x08
+        self._i2c_scan_end = 0x77
+
+        # Scan result table
         self._i2c_result_table = QTableWidget(0, 2)
-        self._i2c_result_table.setHorizontalHeaderLabels(["주소", "상태"])
+        self._i2c_result_table.setHorizontalHeaderLabels(["Addr", "Status"])
         self._i2c_result_table.horizontalHeader().setSectionResizeMode(
             0, QHeaderView.ResizeMode.Fixed
         )
         self._i2c_result_table.horizontalHeader().setSectionResizeMode(
             1, QHeaderView.ResizeMode.Stretch
         )
-        self._i2c_result_table.setColumnWidth(0, 70)
+        self._i2c_result_table.setColumnWidth(0, 60)
         self._i2c_result_table.verticalHeader().setDefaultSectionSize(24)
         self._i2c_result_table.verticalHeader().setVisible(False)
-        self._i2c_result_table.setMaximumHeight(220)
+        self._i2c_result_table.setMaximumHeight(170)
         i2c_layout.addWidget(self._i2c_result_table)
+
+        # Scan history table
+        self._i2c_history_table = QTableWidget(0, 4)
+        self._i2c_history_table.setHorizontalHeaderLabels(["Time", "Scan Range", "Found", "Duration"])
+        self._i2c_history_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        self._i2c_history_table.verticalHeader().setVisible(False)
+        self._i2c_history_table.setMaximumHeight(130)
+        i2c_layout.addWidget(self._i2c_history_table)
 
         self._proto_tabs.addTab(self._i2c_group, "I2C")
 
-        # SPI 테스트
-        self._spi_group = QGroupBox("SPI 테스트")
+        # SPI Test
+        self._spi_group = QGroupBox("SPI Test")
         spi_layout = QVBoxLayout(self._spi_group)
-        self._spi_test_btn = QPushButton("SPI 루프백 테스트")
+        self._spi_test_btn = QPushButton("SPI Loopback Test")
         self._spi_test_btn.setEnabled(False)
         self._spi_test_btn.clicked.connect(self._on_spi_test)
         spi_layout.addWidget(self._spi_test_btn)
-        self._spi_result_label = QLabel("—")
+        self._spi_result_label = QLabel("-")
         self._spi_result_label.setStyleSheet("color: #8899bb;")
         spi_layout.addWidget(self._spi_result_label)
         self._proto_tabs.addTab(self._spi_group, "SPI")
 
-        # JTAG 테스트 (GUI 전용)
-        self._jtag_group = QGroupBox("JTAG 테스트")
+        # JTAG Test (GUI only)
+        self._jtag_group = QGroupBox("JTAG Test")
         jtag_layout = QVBoxLayout(self._jtag_group)
-        jtag_layout.addWidget(QLabel("JTAG Read/Write 테스트"))
-        self._jtag_test_btn = QPushButton("JTAG 테스트 실행")
+        jtag_layout.addWidget(QLabel("JTAG Read/Write Test"))
+        self._jtag_test_btn = QPushButton("Run JTAG Test")
         self._jtag_test_btn.setEnabled(False)
         jtag_layout.addWidget(self._jtag_test_btn)
         self._proto_tabs.addTab(self._jtag_group, "JTAG")
 
-        # UART 테스트 (GUI 전용)
-        self._uart_group = QGroupBox("UART 테스트")
+        # UART Test (GUI only)
+        self._uart_group = QGroupBox("UART Test")
         uart_layout = QVBoxLayout(self._uart_group)
         uart_layout.setSpacing(6)
         uart_layout.setContentsMargins(8, 6, 8, 6)
@@ -343,54 +371,94 @@ class FtdiVerifierModule(BaseModule):
         cfg_row2.addWidget(self._uart_flow)
         uart_layout.addLayout(cfg_row2)
 
+        open_row = QHBoxLayout()
+        open_row.setSpacing(8)
         self._uart_open_btn = QPushButton("OPEN")
         self._uart_open_btn.setEnabled(False)
+        self._uart_open_btn.setMinimumWidth(96)
+        self._uart_open_btn.setMinimumHeight(30)
         self._uart_open_btn.clicked.connect(self._on_uart_open_clicked)
-        uart_layout.addWidget(self._uart_open_btn)
+        self._apply_uart_open_style(opened=False)
+        open_row.addWidget(self._uart_open_btn)
+
+        open_row.addStretch()
+
+        self._uart_clear_btn = QPushButton("")
+        self._uart_clear_btn.setToolTip("Clear console")
+        self._uart_clear_btn.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_TrashIcon))
+        self._uart_clear_btn.setFixedSize(30, 30)
+        self._uart_clear_btn.setFlat(True)
+        self._uart_clear_btn.clicked.connect(self._on_uart_clear_clicked)
+        open_row.addWidget(self._uart_clear_btn)
+
+        self._uart_save_btn = QPushButton("")
+        self._uart_save_btn.setToolTip("Save log")
+        self._uart_save_btn.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_DialogSaveButton))
+        self._uart_save_btn.setFixedSize(30, 30)
+        self._uart_save_btn.setFlat(True)
+        self._uart_save_btn.clicked.connect(self._on_uart_save_clicked)
+        open_row.addWidget(self._uart_save_btn)
+        uart_layout.addLayout(open_row)
 
         fmt_row = QHBoxLayout()
+        fmt_row.setSpacing(10)
         fmt_row.addWidget(QLabel("RX Format:"))
         self._uart_rx_format = QComboBox()
         self._uart_rx_format.addItems(["ASCII", "HEX"])
         fmt_row.addWidget(self._uart_rx_format)
+        fmt_row.addSpacing(12)
         self._uart_autoscroll = QCheckBox("Auto Scroll")
         self._uart_autoscroll.setChecked(True)
         fmt_row.addWidget(self._uart_autoscroll)
+        fmt_row.addSpacing(12)
         self._uart_timestamp = QCheckBox("Timestamp")
         self._uart_timestamp.setChecked(False)
         fmt_row.addWidget(self._uart_timestamp)
+
         fmt_row.addStretch()
         uart_layout.addLayout(fmt_row)
 
         self._uart_console = QTextEdit()
-        self._uart_console.setReadOnly(False)
-        self._uart_console.setFont(QFont("Consolas", 10))
+        self._uart_console.setReadOnly(True)
+        self._uart_console.setFont(QFont("Consolas", 11))
         self._uart_console.setPlaceholderText("UART Console")
-        self._uart_console.setMinimumHeight(160)
+        self._uart_console.setMinimumHeight(230)
+        self._uart_console.setStyleSheet(
+            "background: #0b0f14; color: #e7eef9; border: 1px solid #273043; "
+            "selection-background-color: #2b4365;"
+        )
         uart_layout.addWidget(self._uart_console)
 
         send_row = QHBoxLayout()
+        send_row.setSpacing(6)
         self._uart_input = QLineEdit()
-        self._uart_input.setPlaceholderText("입력 후 전송")
-        self._uart_input.setStyleSheet("color: #111111;")
+        self._uart_input.setPlaceholderText("Type and send")
+        self._uart_input.setMinimumHeight(32)
+        self._uart_input.setStyleSheet(
+            "background: #f7f9fc; color: #111111; border: 1px solid #c9d3e6; "
+            "padding: 2px 6px;"
+        )
+        self._uart_input.returnPressed.connect(self._on_uart_send_clicked)
         send_row.addWidget(self._uart_input)
         self._uart_crlf = QComboBox()
         self._uart_crlf.addItems(["No EOL", "CR", "LF", "CRLF"])
+        self._uart_crlf.setFixedWidth(45)
         send_row.addWidget(self._uart_crlf)
         self._uart_send_btn = QPushButton("SEND")
         self._uart_send_btn.setEnabled(False)
+        self._uart_send_btn.setFixedWidth(76)
         self._uart_send_btn.clicked.connect(self._on_uart_send_clicked)
         send_row.addWidget(self._uart_send_btn)
         uart_layout.addLayout(send_row)
         self._proto_tabs.addTab(self._uart_group, "UART")
 
-        # GPIO 제어
-        self._gpio_group = QGroupBox("GPIO 제어")
+        # GPIO Control
+        self._gpio_group = QGroupBox("GPIO Control")
         gpio_layout = QVBoxLayout(self._gpio_group)
         gpio_layout.setSpacing(4)
 
         poll_row = QHBoxLayout()
-        poll_row.addWidget(QLabel("폴링 주기(ms):"))
+        poll_row.addWidget(QLabel("Polling interval (ms):"))
         self._gpio_poll_interval = QSpinBox()
         self._gpio_poll_interval.setRange(50, 2000)
         self._gpio_poll_interval.setValue(200)
@@ -400,7 +468,7 @@ class FtdiVerifierModule(BaseModule):
         poll_row.addWidget(self._gpio_poll_interval)
         poll_row.addStretch()
 
-        self._gpio_poll_btn = QPushButton("GPIO 폴링 시작 (전체)")
+        self._gpio_poll_btn = QPushButton("Start Polling")
         self._gpio_poll_btn.setCheckable(True)
         self._gpio_poll_btn.setEnabled(False)
         self._gpio_poll_btn.setMinimumHeight(32)
@@ -413,50 +481,42 @@ class FtdiVerifierModule(BaseModule):
         poll_row.addWidget(self._gpio_poll_btn)
         gpio_layout.addLayout(poll_row)
 
-        self._gpio_poll_status = QLabel("● 전역 폴링 중")
+        self._gpio_poll_status = QLabel(" Global polling active")
         self._gpio_poll_status.setStyleSheet(
-            "color: #2ecc71; font-weight: 700; font-size: 11px;"
+            "color: #2ecc71; font-weight: 800; font-size: 12px;"
         )
         self._gpio_poll_status.setVisible(False)
         gpio_layout.addWidget(self._gpio_poll_status)
 
-        mask_row = QHBoxLayout()
-        mask_row.addWidget(QLabel("Bitbang Mask (HEX):"))
-        self._gpio_mask_edit = QLineEdit("FF")
-        self._gpio_mask_edit.setMaximumWidth(80)
-        self._gpio_mask_edit.setStyleSheet("color: #111111;")
-        mask_row.addWidget(self._gpio_mask_edit)
-        self._gpio_mask_apply = QPushButton("APPLY")
-        self._gpio_mask_apply.setEnabled(False)
-        self._gpio_mask_apply.clicked.connect(self._on_gpio_mask_apply)
-        mask_row.addWidget(self._gpio_mask_apply)
-        mask_row.addStretch()
-        gpio_layout.addLayout(mask_row)
-
-        # 선택된 핀 정보
-        self._pin_info_group = QGroupBox("선택된 핀")
+        # Selected pin info
+        self._pin_info_group = QGroupBox("Selected Pin")
         pin_info_layout = QGridLayout(self._pin_info_group)
         pin_info_layout.setSpacing(4)
+        pin_info_layout.setHorizontalSpacing(6)
+        pin_info_layout.setColumnMinimumWidth(0, 100)
+        pin_info_layout.setColumnStretch(0, 0)
+        pin_info_layout.setColumnStretch(1, 1)
 
-        pin_info_layout.addWidget(QLabel("핀:"), 0, 0)
-        self._pin_name_label = QLabel("—")
+        pin_info_layout.addWidget(QLabel("Pin:"), 0, 0)
+        self._pin_name_label = QLabel("-")
         self._pin_name_label.setStyleSheet("font-weight: bold; color: #00d2ff;")
         pin_info_layout.addWidget(self._pin_name_label, 0, 1)
 
-        pin_info_layout.addWidget(QLabel("기능:"), 1, 0)
-        self._pin_func_label = QLabel("—")
+        pin_info_layout.addWidget(QLabel("Function:"), 1, 0)
+        self._pin_func_label = QLabel("-")
         pin_info_layout.addWidget(self._pin_func_label, 1, 1)
 
-        pin_info_layout.addWidget(QLabel("채널:"), 2, 0)
-        self._pin_ch_label = QLabel("—")
+        pin_info_layout.addWidget(QLabel("Channel:"), 2, 0)
+        self._pin_ch_label = QLabel("-")
         pin_info_layout.addWidget(self._pin_ch_label, 2, 1)
 
-        pin_info_layout.addWidget(QLabel("설명:"), 3, 0)
-        self._pin_desc_label = QLabel("—")
+        pin_info_layout.addWidget(QLabel("Desc:"), 3, 0)
+        self._pin_desc_label = QLabel("-")
         self._pin_desc_label.setWordWrap(True)
+        self._pin_desc_label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
         pin_info_layout.addWidget(self._pin_desc_label, 3, 1)
 
-        # GPIO 토글 버튼
+        # GPIO toggle buttons
         self._gpio_toggle_btn = QPushButton("GPIO: LOW")
         self._gpio_toggle_btn.setEnabled(False)
         self._gpio_toggle_btn.setCheckable(True)
@@ -500,12 +560,12 @@ class FtdiVerifierModule(BaseModule):
         return container
 
     def _create_pinout_panel(self) -> QGroupBox:
-        """우측: 인터랙티브 핀맵"""
+        """Right: interactive pinmap."""
         group = QGroupBox("Pinout View")
         layout = QVBoxLayout(group)
         layout.setContentsMargins(6, 6, 6, 6)
 
-        # 범례 행
+        # Legend row
         legend = QHBoxLayout()
         legend.setSpacing(12)
         protocols = [
@@ -514,7 +574,7 @@ class FtdiVerifierModule(BaseModule):
             ("GND", "#666666"),
         ]
         for name, color in protocols:
-            dot = QLabel("●")
+            dot = QLabel("o")
             dot.setStyleSheet(f"color: {color}; font-size: 10px;")
             dot.setFixedWidth(12)
             lbl = QLabel(name)
@@ -524,7 +584,7 @@ class FtdiVerifierModule(BaseModule):
         legend.addStretch()
         layout.addLayout(legend)
 
-        # 핀맵 위젯
+        # Pinmap widget
         self._pinout = PinoutWidget()
         self._pinout.pin_clicked.connect(self._on_pin_clicked)
         self._pinout.pin_hovered.connect(self._on_pin_hovered)
@@ -533,10 +593,10 @@ class FtdiVerifierModule(BaseModule):
         return group
 
     def _create_log_panel(self) -> QTabWidget:
-        """하단: Communication Log"""
+        """Bottom: Communication Log"""
         tabs = QTabWidget()
 
-        # 통신 로그 탭
+        # Communication log tab
         log_tab = QWidget()
         log_layout = QVBoxLayout(log_tab)
         log_layout.setContentsMargins(6, 6, 6, 6)
@@ -544,7 +604,7 @@ class FtdiVerifierModule(BaseModule):
         header = QHBoxLayout()
         header.addWidget(QLabel("Communication Log"))
         header.addStretch()
-        clear_btn = QPushButton("로그 지우기")
+        clear_btn = QPushButton("Clear Log")
         clear_btn.setFixedWidth(120)
         clear_btn.clicked.connect(lambda: self._log_text.clear())
         header.addWidget(clear_btn)
@@ -559,7 +619,7 @@ class FtdiVerifierModule(BaseModule):
 
         return tabs
 
-    # ── 칩/채널 동기화 (FTDI 연결 탭 연동) ──
+    # -- Chip/channel sync (linked to FTDI connection tab) --
 
     def _apply_chip_and_channel(self, chip_name: str, channel: str) -> None:
         spec = get_chip_spec(chip_name)
@@ -576,7 +636,7 @@ class FtdiVerifierModule(BaseModule):
         if hasattr(self, "_gpio_poll_btn"):
             self._gpio_poll_btn.blockSignals(True)
             self._gpio_poll_btn.setChecked(False)
-            self._gpio_poll_btn.setText("GPIO 폴링 시작 (전체)")
+            self._gpio_poll_btn.setText("Start Polling")
             self._gpio_poll_btn.blockSignals(False)
         if hasattr(self, "_gpio_poll_status"):
             self._gpio_poll_status.setVisible(False)
@@ -585,22 +645,22 @@ class FtdiVerifierModule(BaseModule):
         self._gpio_poll_pin = -1
         self._gpio_states = {}
 
-        # 채널 적용 — 연결된 실제 채널 우선, 칩 스펙에 없으면 첫 번째 채널로 매핑
+        # # Channel apply: prefer connected channel; if absent in spec, map to first
         ch = channel or "A"
         if ch not in spec.channels:
-            # 단일채널 칩(FT232H)이면 스펙 키는 "A"뿐이지만 표시는 실제 채널 사용
+            # Single-channel chip (FT232H) has spec key 'A' but displays actual channel
             spec_ch = list(spec.channels.keys())[0] if spec.channels else "A"
             self._current_channel = spec_ch
-            self._display_channel = ch  # 실제 연결 채널 (UI 표시용)
+            self._display_channel = ch  # actual connected channel (UI display)
         else:
             self._current_channel = ch
             self._display_channel = ch
         self._pinout.set_channel_filter(self._current_channel)
 
-        # 칩 정보
+        # Chip info
         self._chip_info_label.setText(
-            f"{spec.description}  |  {len(spec.pins)}핀  |  "
-            f"{len(spec.channels)}채널"
+            f"{spec.description}  |  {len(spec.pins)} pins  |  "
+            f"{len(spec.channels)} channels"
         )
 
         if hasattr(self, "_chip_label"):
@@ -623,13 +683,14 @@ class FtdiVerifierModule(BaseModule):
                 self._gpio_bit_to_pin[pin.mpsse_bit] = pin.number
             self._gpio_table.setItem(row, 0, QTableWidgetItem(f"D{pin.number}"))
             self._gpio_table.setItem(row, 1, QTableWidgetItem(pin.name))
-            self._gpio_table.setItem(row, 2, QTableWidgetItem(pin.default_function.name))
+            active_func = self._pinout._pin_active_funcs.get(pin.number, pin.default_function)
+            self._gpio_table.setItem(row, 2, QTableWidgetItem(active_func.name))
             self._gpio_table.setItem(row, 3, QTableWidgetItem(pin.direction.name))
             level = self._gpio_states.get(pin.number, False)
             self._gpio_table.setItem(row, 4, QTableWidgetItem("1" if level else "0"))
 
     def _update_protocol_availability(self) -> None:
-        """현재 칩+채널의 프로토콜 지원 목록으로 모드 콤보 갱신"""
+        """Update mode combo using supported protocols for current chip/channel."""
         if self._current_chip is None:
             return
 
@@ -651,7 +712,7 @@ class FtdiVerifierModule(BaseModule):
                 self._proto_mode_combo.setCurrentIndex(0)
             self._on_protocol_mode_changed(self._proto_mode_combo.currentText())
 
-        # SPI/I2C/GPIO 버튼은 MPSSE 채널에서만 활성
+        # SPI/I2C/GPIO buttons only enabled on MPSSE channels
         has_mpsse = ch_spec.supports_mpsse
         connected = self._ftdi.is_connected
         ch_match = (not connected) or (self._ftdi.channel == self._current_channel)
@@ -659,16 +720,16 @@ class FtdiVerifierModule(BaseModule):
         self._i2c_test_btn.setEnabled(has_mpsse and connected)
         self._spi_test_btn.setEnabled(has_mpsse and connected)
         if not (has_mpsse and connected and ch_match):
-            self._pin_name_label.setText("사용 불가")
-            self._pin_func_label.setText("MPSSE 미지원 채널")
+            self._pin_name_label.setText("Unavailable")
+            self._pin_func_label.setText("MPSSE not supported on this channel")
             if not ch_match and connected:
-                self._pin_ch_label.setText(f"{self._display_channel} (연결: {self._ftdi.channel})")
-                self._pin_desc_label.setText("연결된 채널과 선택 채널이 다릅니다.")
+                self._pin_ch_label.setText(f"{self._display_channel} (Connected: {self._ftdi.channel})")
+                self._pin_desc_label.setText("Connected channel and selected channel differ.")
             else:
                 self._pin_ch_label.setText(self._display_channel)
-                self._pin_desc_label.setText("채널 A/B에서만 GPIO 제어가 가능합니다.")
+                self._pin_desc_label.setText("GPIO control is only available on channels A/B.")
 
-        # 채널 제약 안내
+        # Channel constraints
         self._update_mode_desc(self._proto_mode_combo.currentText())
 
         # Protocol mode UI enable/disable
@@ -695,8 +756,8 @@ class FtdiVerifierModule(BaseModule):
             self._proto_tabs.setCurrentIndex(idx)
 
         if mode == "GPIO":
-            self._append_log("GPIO 모드: Bit-bang 모드로 전환됩니다.")
-            self.status_message.emit("GPIO 모드: Bit-bang 모드로 전환")
+            self._append_log("GPIO mode: switching to Bitbang mode.")
+            self.status_message.emit("GPIO mode: switch to Bitbang mode")
 
         # Update pinout mapping based on mode
         self._on_mode_changed(mode)
@@ -729,7 +790,7 @@ class FtdiVerifierModule(BaseModule):
 
     @Slot(str)
     def _on_mode_changed(self, text: str) -> None:
-        """프로토콜 모드 변경 시 핀맵 기능 업데이트"""
+        """Update pinmap features on protocol mode change."""
         if self._current_chip is None:
             return
 
@@ -797,23 +858,23 @@ class FtdiVerifierModule(BaseModule):
     @Slot()
     def _on_pin_clicked(self, pin_number: int) -> None:
         if self._current_chip is None or pin_number < 0:
-            self._pin_name_label.setText("—")
-            self._pin_func_label.setText("—")
-            self._pin_ch_label.setText("—")
-            self._pin_desc_label.setText("—")
+            self._pin_name_label.setText("-")
+            self._pin_func_label.setText("-")
+            self._pin_ch_label.setText("-")
+            self._pin_desc_label.setText("-")
             self._refresh_gpio_controls(pin_selected=False, is_gpio=False)
             return
 
         ch_spec = self._current_chip.channels.get(self._current_channel)
         if ch_spec is None or not ch_spec.supports_mpsse or not self._ftdi.is_connected or (self._ftdi.channel != self._current_channel):
-            self._pin_name_label.setText("사용 불가")
-            self._pin_func_label.setText("MPSSE 미지원 채널")
+            self._pin_name_label.setText("Unavailable")
+            self._pin_func_label.setText("MPSSE not supported on this channel")
             if self._ftdi.is_connected and self._ftdi.channel != self._current_channel:
-                self._pin_ch_label.setText(f"{self._display_channel} (연결: {self._ftdi.channel})")
-                self._pin_desc_label.setText("연결된 채널과 선택 채널이 다릅니다.")
+                self._pin_ch_label.setText(f"{self._display_channel} (Connected: {self._ftdi.channel})")
+                self._pin_desc_label.setText("Connected channel and selected channel differ.")
             else:
                 self._pin_ch_label.setText(self._display_channel)
-                self._pin_desc_label.setText("채널 A/B에서만 GPIO 제어가 가능합니다.")
+                self._pin_desc_label.setText("GPIO control is only available on channels A/B.")
             self._refresh_gpio_controls(pin_selected=True, is_gpio=False)
             return
 
@@ -825,9 +886,19 @@ class FtdiVerifierModule(BaseModule):
         active = self._pinout._pin_active_funcs.get(pin.number, pin.default_function)
         self._pin_func_label.setText(active.name)
         self._pin_ch_label.setText(pin.channel or "N/A")
-        self._pin_desc_label.setText(pin.description)
 
-        # GPIO 핀이면 토글 버튼 활성화
+        mode = self._proto_mode_combo.currentText() if hasattr(self, "_proto_mode_combo") else ""
+        force_gpio = False
+        if mode in ("I2C", "SPI", "JTAG"):
+            ch_spec = self._current_chip.channels.get(self._current_channel) if self._current_chip else None
+            supports_mpsse = bool(ch_spec and ch_spec.supports_mpsse)
+            force_gpio = not supports_mpsse
+        if mode == "GPIO" or force_gpio:
+            self._pin_desc_label.setText("GPIO (Bitbang mode)")
+        else:
+            self._pin_desc_label.setText(pin.description)
+
+        # Enable toggle button for GPIO pins
         is_gpio = active in (PinFunction.GPIO_OUT, PinFunction.GPIO_IN)
         self._refresh_gpio_controls(pin_selected=True, is_gpio=is_gpio)
 
@@ -837,23 +908,27 @@ class FtdiVerifierModule(BaseModule):
         self._gpio_toggle_btn.setText("GPIO: HIGH" if state else "GPIO: LOW")
         self._gpio_toggle_btn.blockSignals(False)
         self._pin_desc_label.setText(
-            (pin.description or "") + f"\n현재 상태: {'HIGH' if state else 'LOW'}"
+            (pin.description or "") + f"\nCurrent status: {'HIGH' if state else 'LOW'}"
         )
 
     @Slot(int)
     def _on_pin_hovered(self, pin_number: int) -> None:
-        pass  # PinoutWidget 내부에서 처리
+        pass  # Handled inside PinoutWidget
 
-    # ── I2C ──
+    # -- I2C --
 
     @Slot()
     def _on_i2c_scan(self) -> None:
         if not self._ftdi.is_connected:
             return
 
-        self._append_log("[I2C] 버스 스캔 시작 (0x08 ~ 0x77)...")
+        start = getattr(self, "_i2c_scan_start", 0x08)
+        end = getattr(self, "_i2c_scan_end", 0x77)
+        self._last_i2c_scan_t0 = time.time()
+        self._last_i2c_scan_range = (start, end)
+        self._append_log(f"[I2C] Bus scan start (0x{start:02X} ~ 0x{end:02X})...")
         self._i2c_result_table.setRowCount(0)
-        self._i2c_ack_led.setText("●  ACK: N/A")
+        self._i2c_ack_led.setText("  ACK: N/A")
         self._i2c_ack_led.setStyleSheet(
             "background: #6f7a8e; color: #ffffff; border-radius: 8px; padding: 4px 10px;"
             "font-weight: 700; letter-spacing: 0.5px;"
@@ -864,8 +939,8 @@ class FtdiVerifierModule(BaseModule):
         worker.log_message.connect(self._append_log)
         worker.error_occurred.connect(self._append_log)
 
-        # 동기 실행 (UI 스레드에서 직접 — 짧은 작업이므로)
-        worker.run_i2c_scan(0x08, 0x77)
+        # Run synchronously in UI thread (short operation)
+        worker.run_i2c_scan(start, end)
 
     @Slot(object)
     def _on_i2c_scan_result(self, result: I2CScanResult) -> None:
@@ -878,7 +953,7 @@ class FtdiVerifierModule(BaseModule):
             addr_item.setForeground(QColor("#00d2ff"))
             self._i2c_result_table.setItem(row, 0, addr_item)
 
-            status_item = QTableWidgetItem("ACK ✓")
+            status_item = QTableWidgetItem("ACK OK")
             status_item.setForeground(QColor("#33cc33"))
             self._i2c_result_table.setItem(row, 1, status_item)
 
@@ -891,6 +966,32 @@ class FtdiVerifierModule(BaseModule):
             self._i2c_addr_combo.setCurrentText(f"0x{first_addr:02X}")
         self._i2c_addr_combo.blockSignals(False)
 
+        # Update scan history table
+        t0 = self._last_i2c_scan_t0 or time.time()
+        elapsed = time.time() - t0
+        start, end = self._last_i2c_scan_range
+        row = 0
+        self._i2c_history_table.insertRow(row)
+        time_item = QTableWidgetItem(time.strftime("%H:%M:%S"))
+        range_item = QTableWidgetItem(f"0x{start:02X}-0x{end:02X}")
+        found_item = QTableWidgetItem(str(len(result.found_addresses)))
+        dur_item = QTableWidgetItem(f"{elapsed:.2f}s")
+        for col, item in enumerate([time_item, range_item, found_item, dur_item]):
+            item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            self._i2c_history_table.setItem(row, col, item)
+        max_rows = 5
+        while self._i2c_history_table.rowCount() > max_rows:
+            self._i2c_history_table.removeRow(self._i2c_history_table.rowCount() - 1)
+
+    @Slot(str)
+    def _on_i2c_scan_preset_changed(self, text: str) -> None:
+        if "0x40" in text:
+            self._i2c_scan_start = 0x40
+            self._i2c_scan_end = 0x4F
+        else:
+            self._i2c_scan_start = 0x08
+            self._i2c_scan_end = 0x77
+
     @Slot()
     def _on_i2c_test(self) -> None:
         if not self._ftdi.is_connected:
@@ -899,12 +1000,12 @@ class FtdiVerifierModule(BaseModule):
         try:
             addr = int(text, 16)
         except ValueError:
-            self._append_log(f"[I2C] 잘못된 주소: {text}")
+            self._append_log(f"[I2C] Invalid address: {text}")
             return
         if not (0x08 <= addr <= 0x77):
-            self._append_log(f"[I2C] 주소 범위 오류: 0x{addr:02X}")
+            self._append_log(f"[I2C] Address out of range: 0x{addr:02X}")
             return
-        self._append_log(f"[I2C] 단일 주소 테스트: 0x{addr:02X}")
+        self._append_log(f"[I2C] Single address test: 0x{addr:02X}")
 
         worker = VerifierWorker(self._ftdi)
         worker.protocol_test_done.connect(self._on_protocol_result)
@@ -912,7 +1013,7 @@ class FtdiVerifierModule(BaseModule):
         worker.error_occurred.connect(self._append_log)
         worker.test_i2c_address(addr)
 
-    # ── SPI ──
+    # -- SPI --
 
     @Slot()
     def _on_spi_test(self) -> None:
@@ -932,13 +1033,13 @@ class FtdiVerifierModule(BaseModule):
         )
         if result.protocol == "I2C":
             if result.success:
-                self._i2c_ack_led.setText("●  ACK")
+                self._i2c_ack_led.setText("  ACK")
                 self._i2c_ack_led.setStyleSheet(
                     "background: #2ecc71; color: #0b1a10; border-radius: 8px; padding: 4px 10px;"
                     "font-weight: 800; letter-spacing: 0.5px;"
                 )
             else:
-                self._i2c_ack_led.setText("●  NACK")
+                self._i2c_ack_led.setText("  NACK")
                 self._i2c_ack_led.setStyleSheet(
                     "background: #ff5b5b; color: #1a0b0b; border-radius: 8px; padding: 4px 10px;"
                     "font-weight: 800; letter-spacing: 0.5px;"
@@ -947,21 +1048,26 @@ class FtdiVerifierModule(BaseModule):
             self._spi_result_label.setText(result.message)
             self._spi_result_label.setStyleSheet(f"color: {color};")
 
-    # ── GPIO ──
+    # -- GPIO --
 
     @Slot(bool)
     def _on_gpio_poll_toggled(self, checked: bool) -> None:
         if self._ftdi.is_connected and self._ftdi.channel != self._current_channel:
             self._gpio_poll_btn.setChecked(False)
-            # "채널 불일치: 연결된 채널에서만 GPIO 제어가 가능합니다."
-            self._append_log("\ucc44\ub110 \ubd88\uc77c\uce58: \uc5f0\uacb0\ub41c \ucc44\ub110\uc5d0\uc11c\ub9cc GPIO \uc81c\uc5b4\uac00 \uac00\ub2a5\ud569\ub2c8\ub2e4.")
+            # "Channel mismatch: GPIO control is only available on the connected channel."
+            self._append_log("Channel mismatch: GPIO control is only available on the connected channel.")
             return
         if checked:
-            # "GPIO 폴링 중지 (실행)"
-            self._gpio_poll_btn.setText("GPIO \ud3f4\ub9c1 \uc911\uc9c0 (\uc2e4\ud589)")
+            # "GPIO polling stop (active)"
+            self._gpio_poll_btn.setText("Polling ON")
             self._refresh_gpio_controls()
             interval = self._gpio_poll_interval.value()
             self._start_worker(interval)
+            # Polling start: clear all LED states (show OFF)
+            for pin_num in list(self._gpio_states.keys()):
+                self._gpio_states[pin_num] = False
+                self._pinout.set_pin_state(pin_num, False)
+            self._refresh_gpio_table()
             if hasattr(self, "_gpio_poll_status"):
                 self._gpio_poll_status.setVisible(True)
             if hasattr(self, "_pinout"):
@@ -969,8 +1075,8 @@ class FtdiVerifierModule(BaseModule):
             if self._gpio_poll_blink is not None and not self._gpio_poll_blink.isActive():
                 self._gpio_poll_blink.start()
         else:
-            # "GPIO 폴링 시작 (대기)"
-            self._gpio_poll_btn.setText("GPIO \ud3f4\ub9c1 \uc2dc\uc791 (\ub300\uae30)")
+            # "GPIO polling start (idle)"
+            self._gpio_poll_btn.setText("Polling OFF")
             self._stop_worker()
             self._refresh_gpio_controls()
             if hasattr(self, "_gpio_poll_status"):
@@ -990,7 +1096,7 @@ class FtdiVerifierModule(BaseModule):
         if self._worker is not None and self._gpio_poll_btn.isChecked():
             try:
                 self._worker.start_gpio_polling(value)
-                self._append_log(f"[GPIO] 폴링 주기 변경: {value} ms")
+                self._append_log(f"[GPIO] Poll interval changed: {value} ms")
             except Exception:
                 pass
 
@@ -998,7 +1104,7 @@ class FtdiVerifierModule(BaseModule):
     def _on_gpio_toggle(self, high: bool) -> None:
         if self._ftdi.is_connected and self._ftdi.channel != self._current_channel:
             self._gpio_toggle_btn.setChecked(False)
-            self._append_log("채널 불일치: 연결된 채널에서만 GPIO 제어가 가능합니다.")
+            self._append_log("Channel mismatch: GPIO control is only available on the connected channel.")
             return
         pin_num = self._pinout.get_selected_pin()
         if pin_num < 0:
@@ -1010,12 +1116,12 @@ class FtdiVerifierModule(BaseModule):
         self._gpio_toggle_btn.setText("GPIO: HIGH" if high else "GPIO: LOW")
         self._refresh_gpio_controls(pin_selected=True, is_gpio=True)
         self._pin_desc_label.setText(
-            (self._pin_desc_label.text().split("\n")[0]) + f"\n현재 상태: {'HIGH' if high else 'LOW'}"
+            (self._pin_desc_label.text().split("\n")[0]) + f"\nCurrent status: {'HIGH' if high else 'LOW'}"
         )
         state_str = "HIGH" if high else "LOW"
         pin = self._current_chip.pins.get(pin_num) if self._current_chip else None
         name = pin.name if pin else f"#{pin_num}"
-        self._append_log(f"[GPIO] {name} → {state_str}")
+        self._append_log(f"[GPIO] {name} -> {state_str}")
         self._refresh_gpio_table()
 
     @Slot(object)
@@ -1056,20 +1162,45 @@ class FtdiVerifierModule(BaseModule):
                     self._gpio_toggle_btn.setText("GPIO: HIGH" if mapped[pin_num] else "GPIO: LOW")
                     self._gpio_toggle_btn.blockSignals(False)
 
-    def _on_gpio_mask_apply(self) -> None:
-        text = (self._gpio_mask_edit.text() or "").strip().lower()
-        if text.startswith("0x"):
-            text = text[2:]
-        if not text:
-            return
-        try:
-            mask = int(text, 16) & 0xFF
-        except ValueError:
-            self._append_log("[GPIO] Bitbang mask 형식 오류 (예: FF)")
-            return
-        self._gpio_mask_edit.setText(f"{mask:02X}")
-        self._ftdi.set_bitbang_mask(mask)
-        self._append_log(f"[GPIO] Bitbang mask 적용: 0x{mask:02X}")
+    
+    def _set_bitbang_controls_enabled(self, enabled: bool) -> None:
+        if hasattr(self, "_bitbang_all_out"):
+            self._bitbang_all_out.setEnabled(enabled)
+        if hasattr(self, "_bitbang_all_in"):
+            self._bitbang_all_in.setEnabled(enabled)
+        if hasattr(self, "_bitbang_btns"):
+            for btn in self._bitbang_btns:
+                btn.setEnabled(enabled)
+
+    def _update_bitbang_mask_label(self) -> None:
+        if hasattr(self, "_bitbang_mask_label"):
+            self._bitbang_mask_label.setText(f"MASK: 0x{self._bitbang_mask:02X}")
+
+    def _apply_bitbang_mask(self, mask: int, push: bool = True) -> None:
+        self._bitbang_mask = mask & 0xFF
+        for i, btn in enumerate(self._bitbang_btns):
+            checked = bool(self._bitbang_mask & (1 << i))
+            btn.blockSignals(True)
+            btn.setChecked(checked)
+            btn.setText(f"D{i} {'OUT' if checked else 'IN'}")
+            btn.blockSignals(False)
+        self._update_bitbang_mask_label()
+        if push:
+            self._ftdi.set_bitbang_mask(self._bitbang_mask)
+
+    def _on_bitbang_toggle(self, checked: bool) -> None:
+        mask = 0
+        for i, btn in enumerate(self._bitbang_btns):
+            if btn.isChecked():
+                mask |= (1 << i)
+            btn.setText(f"D{i} {'OUT' if btn.isChecked() else 'IN'}")
+        self._apply_bitbang_mask(mask, push=True)
+
+    def _on_bitbang_all_output(self) -> None:
+        self._apply_bitbang_mask(0xFF, push=True)
+
+    def _on_bitbang_all_input(self) -> None:
+        self._apply_bitbang_mask(0x00, push=True)
 
     def _on_uart_open_clicked(self) -> None:
         if self._uart_serial is not None:
@@ -1084,7 +1215,7 @@ class FtdiVerifierModule(BaseModule):
                 if label.startswith("COM"):
                     port = label.split()[0]
             if not port:
-                self._append_log("[UART] 사용 가능한 포트가 없습니다.")
+                self._append_log("[UART] No available ports.")
                 return
 
             baud = int(self._uart_baud_combo.currentText())
@@ -1112,12 +1243,14 @@ class FtdiVerifierModule(BaseModule):
                 xonxoff=(flow == "XON/XOFF"),
             )
             self._uart_open_btn.setText("CLOSE")
+            self._apply_uart_open_style(opened=True)
             self._uart_send_btn.setEnabled(True)
             self._uart_read_timer.start()
             self._append_log(f"[UART] OPEN: {port} @ {baud}")
         except Exception as e:
-            self._append_log(f"[UART] OPEN 실패: {e}")
+            self._append_log(f"[UART] OPEN failed: {e}")
             self._uart_serial = None
+            self._apply_uart_open_style(opened=False)
 
     def _on_uart_send_clicked(self) -> None:
         if self._uart_serial is None:
@@ -1136,9 +1269,9 @@ class FtdiVerifierModule(BaseModule):
             payload = (data + eol).encode("utf-8")
             self._uart_serial.write(payload)
             self._uart_input.clear()
-            self._append_uart_console(f"TX> {data}")
+            self._append_uart_console(data, kind="TX")
         except Exception as e:
-            self._append_log(f"[UART] 전송 실패: {e}")
+            self._append_log(f"[UART] Send failed: {e}")
 
     def _poll_uart(self) -> None:
         if self._uart_serial is None:
@@ -1153,10 +1286,29 @@ class FtdiVerifierModule(BaseModule):
                     else:
                         text = data.decode("utf-8", errors="ignore")
                     if text:
-                        self._append_uart_console(text)
+                        self._append_uart_console(text, kind="RX")
         except Exception as e:
-            self._append_log(f"[UART] 수신 오류: {e}")
+            self._append_log(f"[UART] Receive error: {e}")
             self._close_uart()
+
+    def _on_uart_clear_clicked(self) -> None:
+        if hasattr(self, "_uart_console"):
+            self._uart_console.clear()
+
+    def _on_uart_save_clicked(self) -> None:
+        if not hasattr(self, "_uart_console"):
+            return
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Save UART Log", "uart_log.txt", "Text Files (*.txt)"
+        )
+        if not path:
+            return
+        try:
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(self._uart_console.toPlainText())
+            self._append_log(f"[UART] Log saved: {path}")
+        except Exception as e:
+            self._append_log(f"[UART] Save failed: {e}")
 
     def _on_gpio_poll_blink(self) -> None:
         if not hasattr(self, "_gpio_poll_status"):
@@ -1174,11 +1326,17 @@ class FtdiVerifierModule(BaseModule):
                 )
 
 
-    def _append_uart_console(self, text: str) -> None:
+    def _append_uart_console(self, text: str, kind: str = "RX") -> None:
+        if not hasattr(self, "_uart_console"):
+            return
+        ts = ""
         if hasattr(self, "_uart_timestamp") and self._uart_timestamp.isChecked():
-            ts = time.strftime("%H:%M:%S")
-            text = f"[{ts}] {text}"
-        self._uart_console.append(text)
+            ts = f"[{time.strftime('%H:%M:%S')}] "
+        prefix = "RX< " if kind == "RX" else "TX> "
+        if kind not in ("RX", "TX"):
+            prefix = ""
+        line = f"{ts}{prefix}{text}"
+        self._uart_console.append(line)
         if hasattr(self, "_uart_autoscroll") and self._uart_autoscroll.isChecked():
             cursor = self._uart_console.textCursor()
             cursor.movePosition(cursor.MoveOperation.End)
@@ -1194,7 +1352,25 @@ class FtdiVerifierModule(BaseModule):
                 pass
         self._uart_serial = None
         self._uart_open_btn.setText("OPEN")
+        self._apply_uart_open_style(opened=False)
         self._uart_send_btn.setEnabled(False)
+
+    def _apply_uart_open_style(self, opened: bool) -> None:
+        if not hasattr(self, "_uart_open_btn"):
+            return
+        if opened:
+            self._uart_open_btn.setStyleSheet(
+                "QPushButton { background: #e06c75; color: #0b0f14; font-weight: 800; "
+                "border-radius: 6px; padding: 4px 10px; }"
+                "QPushButton:hover { background: #f07d87; }"
+            )
+        else:
+            self._uart_open_btn.setStyleSheet(
+                "QPushButton { background: #4c8dff; color: #0b0f14; font-weight: 800; "
+                "border-radius: 6px; padding: 4px 10px; }"
+                "QPushButton:hover { background: #5a9bff; }"
+                "QPushButton:disabled { background: #2a303b; color: #9aa4b8; }"
+            )
 
     def _refresh_uart_ports(self) -> None:
         if not hasattr(self, "_uart_port_combo"):
@@ -1213,7 +1389,7 @@ class FtdiVerifierModule(BaseModule):
                     self._uart_port_combo.addItem(label, p.device)
         except Exception as e:
             self._uart_port_combo.addItem("pyserial not available")
-            self._append_log(f"[UART] 포트 스캔 실패: {e}")
+            self._append_log(f"[UART] Port scan failed: {e}")
         finally:
             self._uart_port_combo.blockSignals(False)
             has_ports = any(
@@ -1221,7 +1397,7 @@ class FtdiVerifierModule(BaseModule):
             )
             self._uart_open_btn.setEnabled(has_ports and self._proto_mode_combo.currentText() == "UART")
 
-    # ── Worker 관리 ──
+    # -- Worker management --
 
     def _start_worker(self, interval_ms: int = 200) -> None:
         if self._worker_thread is not None:
@@ -1252,6 +1428,7 @@ class FtdiVerifierModule(BaseModule):
         if self._current_chip is None:
             self._gpio_toggle_btn.setEnabled(False)
             self._gpio_poll_btn.setEnabled(False)
+            self._set_bitbang_controls_enabled(False)
             return
 
         ch_spec = self._current_chip.channels.get(self._current_channel)
@@ -1280,24 +1457,27 @@ class FtdiVerifierModule(BaseModule):
                 self._gpio_poll_btn.blockSignals(True)
                 self._gpio_poll_btn.setChecked(False)
                 self._gpio_poll_btn.blockSignals(False)
-                self._gpio_poll_btn.setText("GPIO \ud3f4\ub9c1 \uc2dc\uc791")
+                self._gpio_poll_btn.setText("Start Polling")
                 self._stop_worker()
             self._gpio_toggle_btn.setEnabled(False)
             self._gpio_poll_btn.setEnabled(False)
+            self._set_bitbang_controls_enabled(False)
             return
 
         if poll_checked:
             # Global polling active: keep poll enabled, disable toggle to avoid conflict.
             self._gpio_poll_btn.setEnabled(True)
             self._gpio_toggle_btn.setEnabled(False)
+            self._set_bitbang_controls_enabled(mode == "GPIO" )
             return
 
         allow = pin_selected and (is_gpio or mode == "GPIO")
         self._gpio_toggle_btn.setEnabled(allow)
         # Global polling can start without selecting a pin.
         self._gpio_poll_btn.setEnabled(base_ok)
+        self._set_bitbang_controls_enabled(mode == "GPIO" )
 
-    # ── 로그 ──
+    # -- Logs --
 
     _MAX_LOG_BLOCKS = 3000
 
@@ -1311,7 +1491,7 @@ class FtdiVerifierModule(BaseModule):
             self._mode_desc_label.setText("")
             return
 
-        # --- mode descriptions (Korean) ---
+        # --- mode descriptions ---
         dch = self._display_channel
         green_css = "color: #88cc88; font-size: 11px; font-family: 'Malgun Gothic';"
         warn_css = "color: #ffcc44; font-size: 11px; font-family: 'Malgun Gothic';"
@@ -1319,28 +1499,28 @@ class FtdiVerifierModule(BaseModule):
         _DESC = {
             # (supports_mpsse=False, mode)
             (False, "GPIO"): (
-                "\ucc44\ub110 {ch}: GPIO\ub294 Bit-bang \ubaa8\ub4dc\ub85c \uc9c0\uc6d0\ub429\ub2c8\ub2e4. \ub514\uc9c0\ud138 IO \uc81c\uc5b4\uac00 \uac00\ub2a5\ud569\ub2c8\ub2e4.",
+                "Channel {ch}: GPIO uses Bitbang mode. Digital IO control is available.",
                 green_css,
             ),
             (False, "UART"): (
-                "\ucc44\ub110 {ch}: UART \ubaa8\ub4dc\ub85c \ub3d9\uc791\ud569\ub2c8\ub2e4.",
+                "Channel {ch}: UART mode.",
                 green_css,
             ),
             (False, "_else"): (
-                "\ucc44\ub110 {ch}: UART/GPIO\ub9cc \uc9c0\uc6d0\ub429\ub2c8\ub2e4. MPSSE(I2C/SPI/JTAG)\ub294 \uc0ac\uc6a9\ud560 \uc218 \uc5c6\uc2b5\ub2c8\ub2e4.",
+                "Channel {ch}: Only UART/GPIO are supported. MPSSE (I2C/SPI/JTAG) is unavailable.",
                 warn_css,
             ),
             # (supports_mpsse=True, mode)
             (True, "GPIO"): (
-                "\ucc44\ub110 {ch}: GPIO\ub294 Bit-bang \ubaa8\ub4dc\uc785\ub2c8\ub2e4. I2C/SPI/JTAG\ub294 MPSSE, UART\ub294 \ubcc4\ub3c4 \ubaa8\ub4dc\ub85c \uc9c0\uc6d0\ub429\ub2c8\ub2e4.",
+                "Channel {ch}: GPIO uses Bitbang mode. I2C/SPI/JTAG use MPSSE; UART uses a separate mode.",
                 green_css,
             ),
             (True, "UART"): (
-                "\ucc44\ub110 {ch}: UART \ubaa8\ub4dc (MPSSE \uc544\ub2d8). \ubcc4\ub3c4 \uc2dc\ub9ac\uc5bc \ud1b5\uc2e0\uc73c\ub85c \ub3d9\uc791\ud569\ub2c8\ub2e4.",
+                "Channel {ch}: UART mode (not MPSSE). Operates via separate serial interface.",
                 green_css,
             ),
             (True, "_else"): (
-                "\ucc44\ub110 {ch}: MPSSE \ubaa8\ub4dc - I2C/SPI/JTAG \uc0ac\uc6a9 \uac00\ub2a5",
+                "Channel {ch}: MPSSE mode - I2C/SPI/JTAG available.",
                 green_css,
             ),
         }
@@ -1357,7 +1537,7 @@ class FtdiVerifierModule(BaseModule):
 
         if "<span" in message:
             html = message
-        elif "오류" in message or "FAIL" in message or "ERROR" in message:
+        elif "ERROR" in message or "FAIL" in message:
             html = f'<span style="color:#ff6666;">{message}</span>'
         elif "ACK" in message and "NACK" not in message:
             html = f'<span style="color:#33cc33;">{message}</span>'
@@ -1367,7 +1547,7 @@ class FtdiVerifierModule(BaseModule):
             html = f'<span style="color:#66ccff;">{message}</span>'
         elif "RX <-" in message:
             html = f'<span style="color:#66ff99;">{message}</span>'
-        elif "경고" in message or "⚠" in message:
+        elif "WARN" in message or "!" in message:
             html = f'<span style="color:#ffcc44;">{message}</span>'
         else:
             html = f'<span style="color:#8899aa;">{message}</span>'

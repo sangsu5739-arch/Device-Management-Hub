@@ -1,4 +1,4 @@
-/* Universal Device Studio - 다크 테마 스타일시트 */
+/* Universal Device Studio - dark theme stylesheet */
 
 QMainWindow {
     background-color: #1a1c24;

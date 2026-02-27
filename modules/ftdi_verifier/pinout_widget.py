@@ -1,8 +1,8 @@
 """
-FTDI Interactive Pinout Widget — STM32 CubeIDE 스타일 핀맵 시각화
+FTDI Interactive Pinout Widget - STM32 CubeIDE-style pinmap visualization
 
-QPainter로 칩 패키지를 렌더링하고, 핀 위에 마우스를 올리면
-해당 핀의 속성과 현재 상태를 표시합니다.
+Renders chip package with QPainter, and when hovering a pin,
+shows that pin's properties and current state.
 """
 
 from __future__ import annotations
@@ -22,7 +22,7 @@ from modules.ftdi_verifier.ftdi_chip_specs import (
 )
 
 
-# ── 핀 기능 → 사람이 읽을 수 있는 약어 ──
+# -- Pin functions -> human-readable abbreviations --
 _FUNC_SHORT_LABELS: Dict[PinFunction, str] = {
     PinFunction.I2C_SCL:     "SCL",
     PinFunction.I2C_SDA_OUT: "SDA",
@@ -53,20 +53,20 @@ _FUNC_SHORT_LABELS: Dict[PinFunction, str] = {
 
 
 class PinoutWidget(QWidget):
-    """CubeIDE 스타일 인터랙티브 FTDI 핀맵 위젯
+    """CubeIDE-style interactive FTDI pinmap widget.
 
     Signals:
-        pin_clicked(int): 핀 번호 클릭 시 발행
-        pin_hovered(int): 핀 위에 마우스 올릴 때 발행 (-1 = 벗어남)
+        pin_clicked(int): emitted on pin click
+        pin_hovered(int): emitted on pin hover (-1 = leave)
     """
 
     pin_clicked = Signal(int)
     pin_hovered = Signal(int)
 
-    # ── 레이아웃 상수 (크게 확대) ──
+    # -- Layout constants (scaled up) --
     _CHIP_BODY_RATIO = 0.38
-    _PIN_WIDTH = 56          # 20 → 56 (핀 이름이 들어갈 만큼 넓게)
-    _PIN_HEIGHT = 22         # 14 → 22
+    _PIN_WIDTH = 56          # 20 -> 56 (wider for pin labels)
+    _PIN_HEIGHT = 22         # 14 -> 22
     _PIN_SPACING = 3
     _PIN_LABEL_MARGIN = 8
     _CORNER_RADIUS = 10
@@ -97,7 +97,7 @@ class PinoutWidget(QWidget):
         self._polling_timer.setSingleShot(False)
         self._polling_timer.timeout.connect(self._on_polling_blink)
 
-    # ── 공개 API ──
+    # -- Public API --
 
     def set_chip(self, chip: ChipSpec) -> None:
         self._chip = chip
@@ -140,7 +140,7 @@ class PinoutWidget(QWidget):
     def get_selected_pin(self) -> int:
         return self._selected_pin
 
-    # ── 페인트 ──
+    # -- Paint --
 
     def paintEvent(self, event: QPaintEvent) -> None:
         if self._chip is None or self._painting:
@@ -152,13 +152,13 @@ class PinoutWidget(QWidget):
             painter.setRenderHint(QPainter.RenderHint.Antialiasing)
             painter.setRenderHint(QPainter.RenderHint.TextAntialiasing)
 
-            # 배경
+            # Background
             painter.fillRect(self.rect(), QColor("#2a3040"))
 
             w, h = self.width(), self.height()
             self._pin_rects.clear()
 
-            # 칩 바디 영역
+            # Chip body area
             body_w = w * self._CHIP_BODY_RATIO
             body_h = h * 0.60
             body_x = (w - body_w) / 2
@@ -174,14 +174,14 @@ class PinoutWidget(QWidget):
             self._painting = False
 
     def _draw_chip_body(self, p: QPainter, r: QRectF) -> None:
-        """칩 바디 — 진한 회색 + 금속 테두리 + 로고"""
-        # 외곽 그림자
+        """Chip body - dark gray + metallic border + logo."""
+        # Outer shadow
         shadow = QRectF(r.x() + 3, r.y() + 3, r.width(), r.height())
         p.setBrush(QColor(0, 0, 0, 60))
         p.setPen(Qt.PenStyle.NoPen)
         p.drawRoundedRect(shadow, self._CORNER_RADIUS, self._CORNER_RADIUS)
 
-        # 그라데이션 배경 (무광 에폭시 느낌)
+        # Gradient background (matte epoxy feel)
         grad = QLinearGradient(r.topLeft(), r.bottomRight())
         grad.setColorAt(0.0, QColor("#1A1A1A"))
         grad.setColorAt(0.5, QColor("#222222"))
@@ -190,33 +190,33 @@ class PinoutWidget(QWidget):
         p.setPen(QPen(QColor("#3a3a3a"), 2.5))
         p.drawRoundedRect(r, self._CORNER_RADIUS, self._CORNER_RADIUS)
 
-        # 내부 테두리 (밝은 선)
+        # Inner border (bright line)
         inner = r.adjusted(4, 4, -4, -4)
         p.setBrush(Qt.BrushStyle.NoBrush)
         p.setPen(QPen(QColor(100, 120, 160, 50), 1))
         p.drawRoundedRect(inner, self._CORNER_RADIUS - 2, self._CORNER_RADIUS - 2)
 
-        # 1번 핀 마커
+        # Pin 1 marker
         marker_r = 7
         p.setBrush(QColor("#8899bb"))
         p.setPen(QPen(QColor("#aabbdd"), 1.5))
         p.drawEllipse(QPointF(r.left() + 18, r.top() + 18), marker_r, marker_r)
 
-        # 칩 이름 (크고 선명하게)
+        # Chip name (large and clear)
         name_font = QFont("Segoe UI", 18, QFont.Weight.Bold)
         p.setFont(name_font)
         p.setPen(QColor("#D1D1D1"))
         name_rect = QRectF(r.x(), r.center().y() - 22, r.width(), 36)
         p.drawText(name_rect, Qt.AlignmentFlag.AlignCenter, self._chip.name)
 
-        # 패키지 + 설명
+        # Package + description
         sub_font = QFont("Segoe UI", 10)
         p.setFont(sub_font)
         p.setPen(QColor("#B8B8B8"))
         sub_rect = QRectF(r.x(), r.center().y() + 16, r.width(), 20)
         p.drawText(sub_rect, Qt.AlignmentFlag.AlignCenter, self._chip.package)
 
-        # FTDI 로고 텍스트
+        # FTDI logo text
         logo_font = QFont("Segoe UI", 11, QFont.Weight.DemiBold)
         p.setFont(logo_font)
         p.setPen(QColor("#D1D1D1"))
@@ -238,7 +238,7 @@ class PinoutWidget(QWidget):
         pw, ph = self._PIN_WIDTH, self._PIN_HEIGHT
         sp = self._PIN_SPACING
 
-        # 좌측
+        # Left
         left_pins = dir_pins[PinDirection.LEFT]
         if left_pins:
             total_h = len(left_pins) * (ph + sp) - sp
@@ -249,7 +249,7 @@ class PinoutWidget(QWidget):
                 self._pin_rects[pin.number] = rect
                 self._draw_single_pin(p, pin, rect, PinDirection.LEFT, body)
 
-        # 우측
+        # Right
         right_pins = dir_pins[PinDirection.RIGHT]
         if right_pins:
             total_h = len(right_pins) * (ph + sp) - sp
@@ -260,10 +260,10 @@ class PinoutWidget(QWidget):
                 self._pin_rects[pin.number] = rect
                 self._draw_single_pin(p, pin, rect, PinDirection.RIGHT, body)
 
-        # 상단
+        # Top
         top_pins = dir_pins[PinDirection.TOP]
         if top_pins:
-            total_w = len(top_pins) * (ph + sp) - sp  # 상/하는 핀높이 = 폭
+            total_w = len(top_pins) * (ph + sp) - sp  # top/bottom pin height = width
             start_x = body.center().x() - total_w / 2
             for i, pin in enumerate(top_pins):
                 x = start_x + i * (ph + sp)
@@ -271,7 +271,7 @@ class PinoutWidget(QWidget):
                 self._pin_rects[pin.number] = rect
                 self._draw_single_pin(p, pin, rect, PinDirection.TOP, body)
 
-        # 하단
+        # Bottom
         bottom_pins = dir_pins[PinDirection.BOTTOM]
         if bottom_pins:
             total_w = len(bottom_pins) * (ph + sp) - sp
@@ -336,21 +336,25 @@ class PinoutWidget(QWidget):
             p.drawRoundedRect(rect.adjusted(-2, -2, 2, 2), 5, 5)
 
 
-        # ── 핀 사각형 (좌우 핀은 넓게, 상하 핀은 작게) ──
+        # -- Pin rectangles (left/right wider, top/bottom smaller) --
         p.setBrush(QBrush(fill))
         p.setPen(QPen(border_color, border_w))
         p.drawRoundedRect(rect, 4, 4)
 
-        # GPIO state LED (HIGH/LOW indicator) — 폴링 여부 무관하게 동일한 색상
+        # GPIO state LED (HIGH/LOW indicator)
         if active_func in (PinFunction.GPIO_OUT, PinFunction.GPIO_IN) and not dimmed:
-            led_color = QColor("#2ecc71") if state else QColor("#3b4b66")
+            if self._polling_active:
+                # Uniform LED color during polling (blink)
+                led_color = QColor("#00d2ff") if self._polling_blink_on else QColor("#3b4b66")
+            else:
+                led_color = QColor("#2ecc71") if state else QColor("#3b4b66")
             p.setPen(Qt.PenStyle.NoPen)
             p.setBrush(led_color)
             led_r = 3.5
             led_pos = QPointF(rect.right() - 8, rect.center().y())
             p.drawEllipse(led_pos, led_r, led_r)
 
-        # ── 핀 내부에 약어 표시 (좌/우 핀) ──
+        # -- Abbrev inside pin (left/right pins) --
         func_label = _FUNC_SHORT_LABELS.get(active_func, "")
         if direction in (PinDirection.LEFT, PinDirection.RIGHT):
             inner_font = QFont("Consolas", 8, QFont.Weight.Bold)
@@ -359,7 +363,7 @@ class PinoutWidget(QWidget):
             p.setPen(text_color)
             p.drawText(rect, Qt.AlignmentFlag.AlignCenter, func_label)
 
-        # ── 핀 이름 라벨 (외부) ──
+        # -- Pin name labels (outside) --
         label_font = QFont("Consolas", 9, QFont.Weight.Bold)
         p.setFont(label_font)
         fm = QFontMetrics(label_font)
@@ -391,7 +395,7 @@ class PinoutWidget(QWidget):
                        Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, pin.name)
             p.restore()
 
-        # ── 연결선 (점선) ──
+        # -- Connection lines (dashed) --
         line_color = fill.darker(130) if not dimmed else QColor("#222233")
         p.setPen(QPen(line_color, 1.0, Qt.PenStyle.DotLine))
         if direction == PinDirection.LEFT:
@@ -449,27 +453,27 @@ class PinoutWidget(QWidget):
 
         tip_rect = QRectF(tip_x, tip_y, max_w, box_h)
 
-        # 반투명 배경 + 테두리
+        # Translucent background + border
         p.setBrush(QColor(18, 22, 34, 240))
         func_color = QColor(PIN_COLORS.get(active_func, "#5577aa"))
         p.setPen(QPen(func_color, 2.0))
         p.drawRoundedRect(tip_rect, 8, 8)
 
-        # 헤더 (첫 줄) — 강조색
+        # Header (first line) - accent color
         p.setPen(func_color.lighter(130))
         header_font = QFont("Segoe UI", 10, QFont.Weight.Bold)
         p.setFont(header_font)
         y0 = tip_rect.top() + 10
         p.drawText(QPointF(tip_rect.left() + 14, y0 + fm.ascent()), lines[0])
 
-        # 나머지 줄
+        # Remaining lines
         p.setFont(tip_font)
         p.setPen(QColor("#c8d4ee"))
         for i, line in enumerate(lines[1:], start=1):
             y = y0 + i * line_h
             p.drawText(QPointF(tip_rect.left() + 14, y + fm.ascent()), line)
 
-    # ── 마우스 이벤트 ──
+    # -- Mouse events --
 
     def mouseMoveEvent(self, event: QMouseEvent) -> None:
         pos = event.position()
@@ -516,7 +520,7 @@ class PinoutWidget(QWidget):
         if self._selected_pin >= 0 and not self._painting:
             rect = self._pin_rects.get(self._selected_pin)
             if rect is not None:
-                # 선택된 핀 영역만 다시 그리기
+                # Redraw only the selected pin area
                 self.update(rect.adjusted(-8, -8, 8, 8).toAlignedRect())
             else:
                 self.update()
@@ -530,6 +534,6 @@ class PinoutWidget(QWidget):
         return QSize(650, 550)
 
     def closeEvent(self, event) -> None:
-        """위젯이 닫힐 때 타이머 정리."""
+        """Cleanup timer when widget closes."""
         self._blink_timer.stop()
         super().closeEvent(event)

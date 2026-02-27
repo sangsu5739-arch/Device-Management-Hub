@@ -1,8 +1,7 @@
 """
-Universal Device Studio - 디바이스 모듈 추상 베이스 클래스
+Universal Device Studio - Device module base class.
 
-모든 디바이스 모듈은 이 클래스를 상속받아 구현합니다.
-각 모듈은 QTabWidget의 탭으로 추가됩니다.
+All device modules inherit from this class and are added as QTabWidget tabs.
 """
 
 from __future__ import annotations
@@ -17,20 +16,21 @@ from core.ftdi_manager import FtdiManager
 
 
 class BaseModule(QWidget):
-    """디바이스 모듈 추상 베이스 클래스
+    """Device module base class.
 
-    각 모듈은 이 클래스를 상속받아 구현하며,
-    QTabWidget의 탭으로 동적 로드됩니다.
+    Each module implements this class and is loaded as a QTabWidget tab.
 
     Class Attributes:
-        MODULE_NAME: 탭에 표시할 모듈 이름
-        MODULE_ICON: 아이콘 (이모지 또는 경로)
-        MODULE_VERSION: 모듈 버전
+        MODULE_NAME: Tab display name
+        MODULE_ICON: Icon (emoji or path)
+        MODULE_VERSION: Module version
     """
 
     MODULE_NAME: str = "Unknown Module"
     MODULE_ICON: str = ""
     MODULE_VERSION: str = "1.0.0"
+    REQUIRED_MODE: Optional[str] = None
+    REQUIRE_MPSSE: bool = False
 
     # Signals
     status_message = Signal(str)
@@ -44,38 +44,59 @@ class BaseModule(QWidget):
 
     @abstractmethod
     def init_ui(self) -> None:
-        """모듈 UI 초기화. __init__에서 1회 호출됩니다."""
+        """Initialize module UI. Called once in __init__."""
         ...
 
     @abstractmethod
     def on_device_connected(self) -> None:
-        """FTDI 장치 연결 시 호출. UI 상태를 업데이트합니다."""
+        """Called when FTDI connects. Update UI state."""
         ...
 
     @abstractmethod
     def on_device_disconnected(self) -> None:
-        """FTDI 장치 해제 시 호출. 컨트롤을 비활성화합니다."""
+        """Called when FTDI disconnects. Disable controls."""
         ...
 
     @abstractmethod
     def start_communication(self) -> None:
-        """주기적/연속 I2C 통신 시작 (Worker 스레드 등)."""
+        """Start periodic/continuous I2C communication (worker thread)."""
         ...
 
     @abstractmethod
     def stop_communication(self) -> None:
-        """I2C 통신 중지."""
+        """Stop I2C communication."""
         ...
 
     @abstractmethod
     def update_data(self) -> None:
-        """하드웨어로부터 1회 데이터 갱신."""
+        """Update data once from hardware."""
         ...
 
+    def on_channel_changed(self, channel: str) -> None:
+        """Called when active FTDI channel changes."""
+        return
+
     def on_tab_activated(self) -> None:
-        """이 모듈의 탭이 활성화될 때 호출됩니다."""
+        """Called when this module tab becomes active."""
         self._is_active = True
+        if not self._ftdi.is_connected:
+            return
+
+        required = (self.REQUIRED_MODE or "").upper().strip()
+        if not required:
+            return
+
+        active_ch = self._ftdi.channel
+        if self.REQUIRE_MPSSE and not self._ftdi.supports_mpsse(active_ch):
+            self.status_message.emit(
+                f"{self.MODULE_NAME}: channel {active_ch} does not support MPSSE."
+            )
+            self.on_channel_changed(active_ch)
+            return
+
+        self._ftdi.set_protocol_mode(required)
+        self.on_channel_changed(active_ch)
 
     def on_tab_deactivated(self) -> None:
-        """이 모듈의 탭이 비활성화될 때 호출됩니다."""
+        """Called when this module tab becomes inactive."""
         self._is_active = False

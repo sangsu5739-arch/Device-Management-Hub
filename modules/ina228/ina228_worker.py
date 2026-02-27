@@ -1,8 +1,8 @@
 """
-INA228 QThread Worker - 비동기 I2C 폴링
+INA228 QThread Worker - async I2C polling
 
-DIAG_ALRT.CNVRF 비트 폴링 → VSHUNT/VBUS 읽기 → 변환 → Signal 발행
-참조: INA228Controller.run() 로직 포팅
+DIAG_ALRT.CNVRF bit polling -> VSHUNT/VBUS read -> convert -> emit signal
+Ref: INA228Controller.run() logic port
 """
 
 from __future__ import annotations
@@ -22,22 +22,22 @@ from modules.ina228.ina228_registers import (
 
 @dataclass
 class INA228Measurement:
-    """INA228 단일 측정 결과"""
+    """Single INA228 measurement result."""
     timestamp: float       # time.time()
-    vshunt_mv: float       # Shunt 전압 (mV)
-    vbus_v: float          # 버스 전압 (V)
-    current_ma: float      # 전류 (mA)
-    power_mw: float        # 전력 (mW)
-    die_temp_c: float = 0.0  # 다이 온도 (°C)
+    vshunt_mv: float       # Shunt voltage (mV)
+    vbus_v: float          # Bus voltage (V)
+    current_ma: float      # Current (mA)
+    power_mw: float        # Power (mW)
+    die_temp_c: float = 0.0  # Die temperature (C)
 
 
 class INA228Worker(QObject):
-    """INA228 비동기 측정 Worker
+    """INA228 async measurement worker.
 
-    QThread에서 실행되며 VSHUNT, VBUS를 주기적으로 폴링합니다.
-    FtdiManager.i2c_read/write를 통해 스레드 안전하게 I2C 접근합니다.
+    Runs in QThread and polls VSHUNT/VBUS periodically.
+    Uses FtdiManager.i2c_read/write for thread-safe I2C access.
 
-    사용 방법:
+    Usage:
         worker = INA228Worker(ftdi_manager)
         worker.configure(slave_addr=0x40, adc_range=1, shunt_resistor=0.01)
         thread = QThread()
@@ -83,16 +83,16 @@ class INA228Worker(QObject):
         vbusct_index: int = 4,
         vshct_index: int = 4,
     ) -> None:
-        """Worker 파라미터 설정 (run() 호출 전에 설정)
+        """Set worker parameters (before run()).
 
         Args:
-            slave_addr: 7비트 I2C 슬레이브 주소
+            slave_addr: 7-bit I2C slave address
             adc_range: 0=+/-163.84mV, 1=+/-40.96mV
-            shunt_resistor: Shunt 저항값 (Ω)
-            poll_interval_ms: 폴링 간격 (ms)
-            avg_index: AVG 비트값 (0~7)
-            vbusct_index: VBUSCT 비트값 (0~7)
-            vshct_index: VSHCT 비트값 (0~7)
+            shunt_resistor: Shunt resistance (Ohm)
+            poll_interval_ms: Polling interval (ms)
+            avg_index: AVG bits (0~7)
+            vbusct_index: VBUSCT bits (0~7)
+            vshct_index: VSHCT bits (0~7)
         """
         self._slave_addr = slave_addr
         self._adc_range = adc_range
@@ -104,17 +104,17 @@ class INA228Worker(QObject):
 
     @Slot()
     def run(self) -> None:
-        """메인 폴링 루프 (QThread에서 실행)"""
+        """Main polling loop (runs in QThread)."""
         self._running = True
-        self.log_message.emit(f"[INA228] Worker 시작 - 주소: 0x{self._slave_addr:02X}")
+        self.log_message.emit(f"[INA228] Worker start - addr: 0x{self._slave_addr:02X}")
 
-        # 디바이스 설정
+        # Device configuration
         if not self._configure_device():
-            self.error_occurred.emit("INA228 설정 실패")
+            self.error_occurred.emit("INA228 configuration failed")
             self._running = False
             return
 
-        # 첫 더미 읽기 (정착 대기)
+        # First dummy read (settle delay)
         time.sleep(0.1)
         self._read_vshunt()
 
@@ -124,13 +124,13 @@ class INA228Worker(QObject):
                 if now < self._backoff_until:
                     time.sleep(0.01)
                     continue
-                # CNVRF 비트 대기
+                # Wait for CNVRF bit
                 if self._wait_conversion_ready(timeout_s=1.0):
                     vshunt_raw = self._read_vshunt()
                     vbus_raw = self._read_vbus()
                     temp_raw = self._read_dietemp()
 
-                    # 읽기 실패 시 건너뛰기 (NACK 등)
+                    # Skip on read failure (NACK, etc)
                     if vshunt_raw is None or vbus_raw is None:
                         self._record_failure("read_none")
                         continue
@@ -138,7 +138,7 @@ class INA228Worker(QObject):
                     vshunt_mv = INA228Conversion.raw_to_shunt_voltage_mv(vshunt_raw, self._adc_range)
                     vbus_v = INA228Conversion.raw_to_bus_voltage_v(vbus_raw)
 
-                    # 0값 스파이크 필터: 이전 유효값 대비 급격한 0 드롭은 무시
+                    # Zero spike filter: ignore sudden drop to 0 vs last valid
                     if vbus_raw == 0 and self._last_vbus_v > 0.01:
                         self._record_failure("vbus_zero_spike")
                         continue
@@ -179,41 +179,41 @@ class INA228Worker(QObject):
 
             except Exception as e:
                 if self._running:
-                    self.error_occurred.emit(f"Worker 오류: {e}")
+                    self.error_occurred.emit(f"Worker error: {e}")
                     time.sleep(0.5)
 
-        self.log_message.emit("[INA228] Worker 종료")
+        self.log_message.emit("[INA228] Worker stop")
 
     def stop(self) -> None:
-        """폴링 루프 중지 신호"""
+        """Stop polling loop signal."""
         self._running = False
 
-    # ── I2C 레지스터 접근 ──
+    # -- I2C register access --
 
     def _write_register_16(self, reg: INA228Reg, value: int) -> bool:
-        """16비트 레지스터 쓰기
+        """Write 16-bit register.
 
         Args:
-            reg: 레지스터 주소
-            value: 16비트 값
+            reg: register address
+            value: 16-bit value
 
         Returns:
-            성공 여부
+            True if write succeeds.
         """
         data = bytes([reg.value, (value >> 8) & 0xFF, value & 0xFF])
         return self._ftdi.i2c_write(self._slave_addr, data)
 
     def _read_register_raw(self, reg: INA228Reg) -> Optional[int]:
-        """레지스터 원시값 읽기
+        """Read raw register value.
 
-        REGISTER_SIZE에 따라 2~3바이트를 읽고,
-        3바이트 레지스터는 상위 20비트만 반환 (>>4).
+        Read 2-3 bytes based on REGISTER_SIZE.
+        3-byte registers return top 20 bits (>>4).
 
         Args:
-            reg: 레지스터 주소
+            reg: register address
 
         Returns:
-            정수 원시값 또는 None (오류 시)
+            Raw int value or None on error.
         """
         size = REGISTER_SIZE.get(reg, 2)
         raw = self._ftdi.i2c_read(self._slave_addr, bytes([reg.value]), size)
@@ -225,22 +225,22 @@ class INA228Worker(QObject):
             return (raw[0] << 8) | raw[1]
 
     def _read_register_16_raw(self, reg: INA228Reg) -> Optional[int]:
-        """2바이트(16비트) 레지스터 원시값 읽기"""
+        """Read 2-byte (16-bit) register raw value."""
         raw = self._ftdi.i2c_read(self._slave_addr, bytes([reg.value]), 2)
         if raw is None or len(raw) < 2:
             return None
         return (raw[0] << 8) | raw[1]
 
     def _wait_conversion_ready(self, timeout_s: float = 1.0) -> bool:
-        """DIAG_ALRT 레지스터의 CNVRF 비트 폴링
+        """Poll CNVRF bit in DIAG_ALRT register.
 
-        참조: ina228.py main() 루프의 변환 완료 대기 로직
+        Ref: ina228.py main() conversion-complete wait logic
 
         Args:
-            timeout_s: 타임아웃 (초)
+            timeout_s: timeout (s)
 
         Returns:
-            변환 완료 여부
+            True if conversion ready.
         """
         start = time.time()
         while (time.time() - start) < timeout_s:
@@ -253,20 +253,20 @@ class INA228Worker(QObject):
         return False
 
     def _configure_device(self) -> bool:
-        """INA228 CONFIG 및 ADC_CONFIG 레지스터 설정
+        """Configure INA228 CONFIG and ADC_CONFIG registers.
 
-        참조: INA228Controller.configure_ina228()
+        Ref: INA228Controller.configure_ina228()
 
         Returns:
-            성공 여부
+            True if configuration succeeds.
         """
-        # CONFIG: ADCRANGE 설정
+        # CONFIG: ADCRANGE setting
         config_val = 0x0010 if self._adc_range == 1 else 0x0000
         if not self._write_register_16(INA228Reg.CONFIG, config_val):
             return False
 
-        # ADC_CONFIG: 연속 모드(0xF), 변환시간, 평균화 설정
-        # MODE = 0xF (연속 전압+온도)
+        # ADC_CONFIG: continuous mode (0xF), conversion time, averaging
+        # MODE = 0xF (continuous voltage + temperature)
         # VBUSCT = _vbusct_index << 9
         # VSHCT  = _vshct_index << 6
         # VTCT   = 0x4 (540us) << 3
@@ -282,7 +282,7 @@ class INA228Worker(QObject):
             return False
 
         self.log_message.emit(
-            f"[INA228] 설정 완료 - ADC_RANGE={self._adc_range}, "
+            f"[INA228] Config done - ADC_RANGE={self._adc_range}, "
             f"AVG={self._avg_index}, VBUSCT={self._vbusct_index}"
         )
         return True
@@ -297,25 +297,25 @@ class INA228Worker(QObject):
         return self._read_register_16_raw(INA228Reg.DIETEMP)
 
     def read_register_for_map(self, reg: INA228Reg) -> Optional[int]:
-        """외부에서 레지스터 맵 갱신용으로 호출 (UI 스레드에서 직접 호출 가능)
+        """External register map refresh helper (safe to call from UI thread).
 
         Args:
-            reg: 레지스터 주소
+            reg: register address
 
         Returns:
-            16비트 원시값 또는 None
+            16-bit raw value or None
         """
         return self._read_register_16_raw(reg)
 
     def write_register_for_map(self, reg: INA228Reg, value: int) -> bool:
-        """레지스터 맵 테이블에서 직접 수정 시 호출
+        """Called when editing from register map table.
 
         Args:
-            reg: 레지스터 주소
-            value: 16비트 값
+            reg: register address
+            value: 16-bit value
 
         Returns:
-            성공 여부
+            success flag
         """
         return self._write_register_16(reg, value)
 

@@ -1,7 +1,7 @@
 """
-INA228 전력 모니터 모듈 - Universal Device Studio 플러그인
+INA228 power monitor module - Universal Device Studio plugin
 
-I2C 자동 탐지, 실시간 전압/전류 모니터링, 레지스터 맵 시각화를 제공합니다.
+Provides I2C auto-scan, real-time voltage/current monitoring, and register map view.
 """
 
 from __future__ import annotations
@@ -11,7 +11,7 @@ from collections import deque
 import math
 from typing import Optional, List
 
-from PySide6.QtCore import Qt, Slot, QThread
+from PySide6.QtCore import Qt, Slot, QThread, QSettings
 from PySide6.QtGui import QFont, QColor
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QGridLayout,
@@ -34,18 +34,20 @@ from modules.ina228.power_visualizer import PowerVisualizer
 
 
 class INA228Module(BaseModule):
-    """INA228 전력 모니터 디바이스 모듈
+    """INA228 power monitor device module
 
     Layout:
-    - 상단: I2C 주소 자동 탐지 패널
-    - 좌측: 제어 패널 (ADC RANGE, AVG, 변환시간, Shunt 저항, Start/Stop)
-    - 우측: pyqtgraph 듀얼 차트 + 실시간 수치 라벨
-    - 하단: INA228 레지스터 맵 테이블
+    - Top: I2C address auto-scan panel
+    - Left: Control panel (ADC range, AVG, conversion time, shunt, Start/Stop)
+    - Right: pyqtgraph dual chart + live metrics
+    - Bottom: INA228 register map table
     """
 
     MODULE_NAME = "INA228"
     MODULE_ICON = ""
     MODULE_VERSION = "1.0.0"
+    REQUIRED_MODE = "I2C"
+    REQUIRE_MPSSE = True
 
     MAX_DATA_POINTS = 2000
     INA228_SCAN_START = 0x40
@@ -57,30 +59,38 @@ class INA228Module(BaseModule):
         self._slave_addr: int = 0x40
         self._is_monitoring: bool = False
         self._window_seconds: int = 60
+        self._io_hold_mask: int = 0xF0
+        self._io_hold_value: int = 0x00
+        self._saved_hold: Optional[tuple[int, int]] = None
+        self._settings = QSettings("UniversalDeviceStudio", "INA228Module")
 
-        # 데이터 버퍼 (sliding window)
+        # Data buffer (sliding window)
         self._time_data: deque = deque(maxlen=self.MAX_DATA_POINTS)
         self._voltage_data: deque = deque(maxlen=self.MAX_DATA_POINTS)
         self._current_data: deque = deque(maxlen=self.MAX_DATA_POINTS)
         self._start_time: float = 0.0
         super().__init__(ftdi_manager, parent)
 
-    # ── BaseModule 추상 메서드 구현 ──
+    # -- BaseModule abstract method implementations --
 
     def init_ui(self) -> None:
-        """모듈 UI 초기화"""
+        """Initialize module UI."""
         layout = QVBoxLayout(self)
         layout.setContentsMargins(4, 4, 4, 4)
         layout.setSpacing(4)
 
-        # 상단: 주소 탐지 패널
-        layout.addWidget(self._create_address_panel())
+        # Top: address scan panel + IO hold
+        top_row = QHBoxLayout()
+        top_row.setSpacing(8)
+        top_row.addWidget(self._create_address_panel(), 2)
+        top_row.addWidget(self._create_io_hold_panel(), 1)
+        layout.addLayout(top_row)
 
-        # 중앙+하단 Splitter
+        # Center + bottom splitter
         v_splitter = QSplitter(Qt.Orientation.Vertical)
         v_splitter.setHandleWidth(3)
 
-        # 좌측(제어) + 우측(시각화) Splitter
+        # Left (control) + right (visualization) splitter
         h_splitter = QSplitter(Qt.Orientation.Horizontal)
         h_splitter.setHandleWidth(3)
         h_splitter.addWidget(self._create_control_panel())
@@ -94,22 +104,50 @@ class INA228Module(BaseModule):
         v_splitter.setStretchFactor(1, 3)
 
         layout.addWidget(v_splitter, 1)
+        self._load_io_hold_state()
 
     def on_device_connected(self) -> None:
         self._scan_btn.setEnabled(True)
         if self._addr_combo.count() == 0:
             self._addr_combo.addItem(f"0x{self._slave_addr:02X}", self._slave_addr)
         self._start_btn.setEnabled(True)
-        self.status_message.emit("INA228: FTDI 연결됨 - 주소 스캔 가능")
+        self._apply_io_hold()
+        self.status_message.emit("INA228: FTDI connected - address scan available")
 
     def on_device_disconnected(self) -> None:
         self.stop_communication()
         self._scan_btn.setEnabled(False)
         self._start_btn.setEnabled(False)
-        self.status_message.emit("INA228: FTDI 해제됨")
+        self._saved_hold = None
+        self._ftdi.clear_i2c_hold()
+        self.status_message.emit("INA228: FTDI disconnected")
+
+    def on_tab_deactivated(self) -> None:
+        super().on_tab_deactivated()
+        self.stop_communication()
+        if self._saved_hold is not None:
+            mask, value = self._saved_hold
+            self._ftdi.set_i2c_hold(mask, value)
+            self._saved_hold = None
+
+    def on_tab_activated(self) -> None:
+        super().on_tab_activated()
+        self._apply_io_hold()
+
+    def on_channel_changed(self, channel: str) -> None:
+        if not self._ftdi.supports_mpsse(channel):
+            self.stop_communication()
+            self._scan_btn.setEnabled(False)
+            self._start_btn.setEnabled(False)
+            self.status_message.emit("INA228: Current channel does not support MPSSE.")
+        else:
+            if self._ftdi.is_connected:
+                self._scan_btn.setEnabled(True)
+                self._start_btn.setEnabled(True)
+                self._apply_io_hold()
 
     def start_communication(self) -> None:
-        """Worker 스레드 시작 (모니터링 ON)"""
+        """Start worker thread (monitoring ON)."""
         if self._is_monitoring:
             return
         if not self._ftdi.is_connected:
@@ -134,7 +172,7 @@ class INA228Module(BaseModule):
         self._worker.log_message.connect(self._on_worker_log)
         self._worker_thread.start()
 
-        # FTDI 통신 로그를 I2C 로그 탭에 연결
+        # Connect FTDI comm log to I2C log tab
         self._ftdi.data_sent.connect(self._append_log)
         self._ftdi.data_received.connect(self._append_log)
         self._ftdi.log_message.connect(self._append_log)
@@ -155,11 +193,11 @@ class INA228Module(BaseModule):
         self._shunt_spinbox.setEnabled(False)
 
     def stop_communication(self) -> None:
-        """Worker 스레드 중지 (모니터링 OFF)"""
+        """Stop worker thread (monitoring OFF)."""
         if not self._is_monitoring:
             return
 
-        # FTDI 로그 시그널 해제
+        # Disconnect FTDI log signal
         try:
             self._ftdi.data_sent.disconnect(self._append_log)
             self._ftdi.data_received.disconnect(self._append_log)
@@ -187,40 +225,147 @@ class INA228Module(BaseModule):
             self._shunt_spinbox.setEnabled(True)
 
     def update_data(self) -> None:
-        """레지스터 맵 1회 갱신"""
+        """Refresh register map once."""
         self._refresh_register_map()
 
-    # ── UI 빌더 ──
+    # -- UI builders --
 
     def _create_address_panel(self) -> QGroupBox:
-        """I2C 주소 자동 탐지 패널"""
-        group = QGroupBox("I2C 주소 탐지 (0x40 ~ 0x4F)")
+        """I2C address auto-scan panel."""
+        group = QGroupBox("I2C Address Scan (0x40 ~ 0x4F)")
         layout = QHBoxLayout(group)
         layout.setContentsMargins(10, 6, 10, 6)
 
-        self._scan_btn = QPushButton("주소 스캔")
-        self._scan_btn.setFixedWidth(100)
+        self._scan_btn = QPushButton("Scan Addresses")
+        self._scan_btn.setFixedWidth(140)
         self._scan_btn.setEnabled(False)
         self._scan_btn.clicked.connect(self._on_scan_addresses)
         layout.addWidget(self._scan_btn)
 
-        layout.addWidget(QLabel("발견된 장치:"))
+        layout.addSpacing(10)
+        layout.addWidget(QLabel("Detected devices:"))
         self._addr_combo = QComboBox()
-        self._addr_combo.setMinimumWidth(180)
-        self._addr_combo.setPlaceholderText("스캔을 실행하세요")
+        self._addr_combo.setMinimumWidth(220)
+        self._addr_combo.setPlaceholderText("Run scan")
         self._addr_combo.currentIndexChanged.connect(self._on_addr_changed)
         layout.addWidget(self._addr_combo)
 
         layout.addSpacing(20)
-        self._scan_result_label = QLabel("—")
+        self._scan_result_label = QLabel("-")
         self._scan_result_label.setStyleSheet("color: #88a0cc; font-style: italic;")
         layout.addWidget(self._scan_result_label)
         layout.addStretch()
         return group
 
+    def _create_io_hold_panel(self) -> QGroupBox:
+        group = QGroupBox("GPIO Hold (D4-D7)")
+        layout = QVBoxLayout(group)
+        layout.setContentsMargins(10, 6, 10, 6)
+        layout.setSpacing(6)
+
+        self._hold_btns: dict[int, QPushButton] = {}
+        self._hold_leds: dict[int, QLabel] = {}
+        self._hold_bars: dict[int, QFrame] = {}
+        row = QHBoxLayout()
+        row.setSpacing(6)
+        for bit in range(4, 8):
+            btn = QPushButton(f"D{bit}: OFF")
+            btn.setCheckable(True)
+            btn.setMinimumWidth(80)
+            btn.setMinimumHeight(28)
+            btn.setStyleSheet(
+                "QPushButton { background: #2a303b; color: #cbd5e1; font-weight: 700; border-radius: 6px; }"
+                "QPushButton:checked { background: #2ecc71; color: #0b1a10; }"
+            )
+            btn.toggled.connect(lambda checked, b=bit: self._on_hold_toggled(b, checked))
+            self._hold_btns[bit] = btn
+            row.addWidget(btn)
+        row.addStretch()
+        layout.addLayout(row)
+
+        led_row = QHBoxLayout()
+        led_row.setSpacing(8)
+        led_row.addWidget(QLabel("Current:"))
+        for bit in range(4, 8):
+            tag = QLabel(f"D{bit}")
+            tag.setStyleSheet("color: #9aa4b8;")
+            led = QLabel("")
+            led.setFixedSize(12, 12)
+            led.setStyleSheet("background: #2a303b; border-radius: 6px;")
+            self._hold_leds[bit] = led
+            led_row.addWidget(tag)
+            led_row.addWidget(led)
+            bar_bg = QFrame()
+            bar_bg.setFixedSize(56, 8)
+            bar_bg.setStyleSheet("background: #1b202a; border-radius: 4px;")
+            bar_fill = QFrame(bar_bg)
+            bar_fill.setGeometry(1, 1, 6, 6)
+            bar_fill.setStyleSheet("background: #3b4458; border-radius: 3px;")
+            self._hold_bars[bit] = bar_fill
+            led_row.addWidget(bar_bg)
+        led_row.addStretch()
+        layout.addLayout(led_row)
+        return group
+
+    def _on_hold_toggled(self, bit: int, checked: bool) -> None:
+        if checked:
+            self._io_hold_value |= (1 << bit)
+            self._hold_btns[bit].setText(f"D{bit}: ON")
+        else:
+            self._io_hold_value &= ~(1 << bit)
+            self._hold_btns[bit].setText(f"D{bit}: OFF")
+        self._save_io_hold_state()
+        self._apply_io_hold()
+
+    def _apply_io_hold(self) -> None:
+        if not self._ftdi.is_connected:
+            return
+        if not self._ftdi.supports_mpsse(self._ftdi.channel):
+            return
+        if self._saved_hold is None:
+            self._saved_hold = self._ftdi.get_i2c_hold()
+        self._ftdi.set_i2c_hold(self._io_hold_mask, self._io_hold_value)
+        self._refresh_hold_status()
+
+    def _refresh_hold_status(self) -> None:
+        if not hasattr(self, "_hold_leds"):
+            return
+        value = self._ftdi.read_gpio_low()
+        if value is None:
+            return
+        for bit in range(4, 8):
+            led = self._hold_leds.get(bit)
+            if not led:
+                continue
+            high = bool(value & (1 << bit))
+            color = "#2ecc71" if high else "#3b4458"
+            led.setStyleSheet(f"background: {color}; border-radius: 6px;")
+            bar = self._hold_bars.get(bit)
+            if bar:
+                if high:
+                    bar.setGeometry(1, 1, 54, 6)
+                    bar.setStyleSheet("background: #2ecc71; border-radius: 3px;")
+                else:
+                    bar.setGeometry(1, 1, 10, 6)
+                    bar.setStyleSheet("background: #3b4458; border-radius: 3px;")
+
+    def _save_io_hold_state(self) -> None:
+        self._settings.setValue("io_hold_value", int(self._io_hold_value))
+
+    def _load_io_hold_state(self) -> None:
+        val = self._settings.value("io_hold_value", 0, type=int)
+        self._io_hold_value = val & self._io_hold_mask
+        if hasattr(self, "_hold_btns"):
+            for bit, btn in self._hold_btns.items():
+                checked = bool(self._io_hold_value & (1 << bit))
+                btn.blockSignals(True)
+                btn.setChecked(checked)
+                btn.setText(f"D{bit}: {'ON' if checked else 'OFF'}")
+                btn.blockSignals(False)
+
     def _create_control_panel(self) -> QGroupBox:
-        """좌측 제어 패널"""
-        group = QGroupBox("ADC 설정")
+        """Left control panel."""
+        group = QGroupBox("ADC Settings")
         layout = QVBoxLayout(group)
         layout.setSpacing(10)
 
@@ -228,7 +373,7 @@ class INA228Module(BaseModule):
         grid.setSpacing(6)
 
         # ADC Range
-        grid.addWidget(QLabel("ADC 범위:"), 0, 0)
+        grid.addWidget(QLabel("ADC range:"), 0, 0)
         self._adc_range_combo = QComboBox()
         for k, v in ADC_RANGE_OPTIONS.items():
             self._adc_range_combo.addItem(v, k)
@@ -236,7 +381,7 @@ class INA228Module(BaseModule):
         grid.addWidget(self._adc_range_combo, 0, 1)
 
         # Averaging
-        grid.addWidget(QLabel("평균 샘플:"), 1, 0)
+        grid.addWidget(QLabel("AVG samples:"), 1, 0)
         self._avg_combo = QComboBox()
         for k, v in AVG_COUNT_OPTIONS.items():
             self._avg_combo.addItem(v, k)
@@ -244,7 +389,7 @@ class INA228Module(BaseModule):
         grid.addWidget(self._avg_combo, 1, 1)
 
         # VBUSCT
-        grid.addWidget(QLabel("버스 전압 변환시간:"), 2, 0)
+        grid.addWidget(QLabel("VBUS conversion time:"), 2, 0)
         self._vbusct_combo = QComboBox()
         for k, v in CONV_TIME_OPTIONS.items():
             self._vbusct_combo.addItem(v, k)
@@ -252,7 +397,7 @@ class INA228Module(BaseModule):
         grid.addWidget(self._vbusct_combo, 2, 1)
 
         # VSHCT
-        grid.addWidget(QLabel("Shunt 전압 변환시간:"), 3, 0)
+        grid.addWidget(QLabel("Shunt conversion time:"), 3, 0)
         self._vshct_combo = QComboBox()
         for k, v in CONV_TIME_OPTIONS.items():
             self._vshct_combo.addItem(v, k)
@@ -260,7 +405,7 @@ class INA228Module(BaseModule):
         grid.addWidget(self._vshct_combo, 3, 1)
 
         # Shunt Resistor
-        grid.addWidget(QLabel("Shunt 저항 (Ω):"), 4, 0)
+        grid.addWidget(QLabel("Shunt resistor (Ohm):"), 4, 0)
         self._shunt_spinbox = QDoubleSpinBox()
         self._shunt_spinbox.setDecimals(4)
         self._shunt_spinbox.setRange(0.0001, 100.0)
@@ -268,8 +413,8 @@ class INA228Module(BaseModule):
         self._shunt_spinbox.setValue(0.01)
         grid.addWidget(self._shunt_spinbox, 4, 1)
 
-        # 폴링 간격
-        grid.addWidget(QLabel("폴링 간격 (ms):"), 5, 0)
+        # Polling interval
+        grid.addWidget(QLabel("Polling interval (ms):"), 5, 0)
         self._interval_spinbox = QSpinBox()
         self._interval_spinbox.setRange(50, 10000)
         self._interval_spinbox.setValue(100)
@@ -310,29 +455,29 @@ class INA228Module(BaseModule):
 
         layout.addLayout(grid)
 
-        # 구분선
+        # Divider
         sep = QFrame()
         sep.setFrameShape(QFrame.Shape.HLine)
         sep.setStyleSheet("color: #3a3f50;")
         layout.addWidget(sep)
 
-        # Start / Stop 버튼
+        # Start / Stop buttons
         btn_row = QHBoxLayout()
-        self._start_btn = QPushButton("모니터링 시작")
+        self._start_btn = QPushButton("Start Monitoring")
         self._start_btn.setObjectName("startBtn")
         self._start_btn.setEnabled(False)
         self._start_btn.clicked.connect(self.start_communication)
         btn_row.addWidget(self._start_btn)
 
-        self._stop_btn = QPushButton("모니터링 중지")
+        self._stop_btn = QPushButton("Stop Monitoring")
         self._stop_btn.setObjectName("stopBtn")
         self._stop_btn.setEnabled(False)
         self._stop_btn.clicked.connect(self.stop_communication)
         btn_row.addWidget(self._stop_btn)
         layout.addLayout(btn_row)
 
-        # 레지스터 맵 갱신 버튼
-        self._refresh_reg_btn = QPushButton("레지스터 맵 갱신")
+        # Register map refresh button
+        self._refresh_reg_btn = QPushButton("Refresh Register Map")
         self._refresh_reg_btn.clicked.connect(self._refresh_register_map)
         layout.addWidget(self._refresh_reg_btn)
 
@@ -340,12 +485,12 @@ class INA228Module(BaseModule):
         return group
 
     def _create_visualizer_panel(self) -> QGroupBox:
-        """우측 시각화 패널 (pyqtgraph + 수치 라벨)"""
-        group = QGroupBox("실시간 모니터링")
+        """Right visualization panel (pyqtgraph + metric labels)."""
+        group = QGroupBox("Real-Time Monitoring")
         layout = QVBoxLayout(group)
         layout.setContentsMargins(6, 6, 6, 6)
 
-        # 수치 라벨 행
+        # Metrics row
         metrics_layout = QHBoxLayout()
         metrics_layout.setSpacing(20)
         self._metric_containers: List[QWidget] = []
@@ -360,7 +505,7 @@ class INA228Module(BaseModule):
             t.setStyleSheet(f"color: {color}; font-size: 10px; font-weight: bold;")
             t.setAlignment(Qt.AlignmentFlag.AlignCenter)
             vl.addWidget(t)
-            val = QLabel("—")
+            val = QLabel("-")
             val.setStyleSheet(f"color: {color}; font-size: 14px; font-weight: bold;")
             val.setAlignment(Qt.AlignmentFlag.AlignCenter)
             vl.addWidget(val)
@@ -370,29 +515,29 @@ class INA228Module(BaseModule):
 
         self._vbus_label    = _make_metric("VBUS",    "V",  "#00d2ff")
         self._vshunt_label  = _make_metric("VSHUNT",  "mV", "#88d8ff")
-        self._current_label = _make_metric("전류",    "mA", "#ff64b4")
-        self._power_label   = _make_metric("전력",    "mW", "#ffcc44")
-        self._temp_label    = _make_metric("온도",    "°C", "#88cc88")
+        self._current_label = _make_metric("Current",    "mA", "#ff64b4")
+        self._power_label   = _make_metric("Power",    "mW", "#ffcc44")
+        self._temp_label    = _make_metric("Temp",    "C", "#88cc88")
 
         layout.addLayout(metrics_layout)
 
-        # pyqtgraph 듀얼 차트
+        # pyqtgraph dual charts
         self._visualizer = PowerVisualizer(show_toolbar=False)
         layout.addWidget(self._visualizer, 1)
 
         return group
 
     def _create_bottom_panel(self) -> QTabWidget:
-        """하단 레지스터 맵 + I2C 로그 (탭 위젯)"""
+        """Bottom register map + I2C log (tab widget)."""
         tabs = QTabWidget()
 
-        # ── 레지스터 맵 탭 ──
+        # -- Register map tab --
         reg_tab = QWidget()
         reg_layout = QVBoxLayout(reg_tab)
         reg_layout.setContentsMargins(6, 6, 6, 6)
 
         self._reg_table = QTableWidget(len(DISPLAY_REGISTERS), 4)
-        self._reg_table.setHorizontalHeaderLabels(["주소", "이름", "설명", "값 (Hex)"])
+        self._reg_table.setHorizontalHeaderLabels(["Addr", "Name", "Desc", "Value (Hex)"])
         self._reg_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Fixed)
         self._reg_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Fixed)
         self._reg_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
@@ -421,24 +566,24 @@ class INA228Module(BaseModule):
             desc_item.setFlags(desc_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
             self._reg_table.setItem(row, 2, desc_item)
 
-            val_item = QTableWidgetItem("—")
+            val_item = QTableWidgetItem("-")
             val_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
             val_item.setFont(QFont("Consolas", 10))
             val_item.setForeground(QColor(220, 255, 200))
             self._reg_table.setItem(row, 3, val_item)
 
         reg_layout.addWidget(self._reg_table)
-        tabs.addTab(reg_tab, "레지스터 맵")
+        tabs.addTab(reg_tab, "Register Map")
 
-        # ── I2C 로그 탭 ──
+        # -- I2C log tab --
         log_tab = QWidget()
         log_layout = QVBoxLayout(log_tab)
         log_layout.setContentsMargins(6, 6, 6, 6)
 
         log_header = QHBoxLayout()
-        log_header.addWidget(QLabel("I2C 패킷 로그"))
+        log_header.addWidget(QLabel("I2C Packet Log"))
         log_header.addStretch()
-        clear_btn = QPushButton("로그 지우기")
+        clear_btn = QPushButton("Clear Log")
         clear_btn.setFixedWidth(120)
         clear_btn.clicked.connect(lambda: self._log_text.clear())
         log_header.addWidget(clear_btn)
@@ -449,33 +594,34 @@ class INA228Module(BaseModule):
         self._log_text.setFont(QFont("Consolas", 10))
         log_layout.addWidget(self._log_text, 1)
 
-        tabs.addTab(log_tab, "I2C 로그")
+        tabs.addTab(log_tab, "I2C Log")
 
         return tabs
 
-    # ── 슬롯 ──
+    # -- Slots --
 
     @Slot()
     def _on_scan_addresses(self) -> None:
-        """0x40~0x4F 범위 I2C 스캔"""
+        """Scan I2C addresses in 0x40~0x4F range."""
         if not self._ftdi.is_connected:
             return
 
-        self._scan_result_label.setText("스캔 중...")
+        self._scan_result_label.setText("Scanning...")
         self._addr_combo.clear()
 
         found = self._ftdi.i2c_scan(self.INA228_SCAN_START, self.INA228_SCAN_END)
 
         if not found:
-            self._scan_result_label.setText("INA228 장치를 찾지 못했습니다")
+            self._scan_result_label.setText("INA228 device not found")
             self._start_btn.setEnabled(False)
             return
 
         for addr in found:
             self._addr_combo.addItem(f"0x{addr:02X}", addr)
 
-        self._scan_result_label.setText(f"{len(found)}개 장치 발견")
+        self._scan_result_label.setText(f"{len(found)} device(s) found")
         self._slave_addr = found[0]
+        self._addr_combo.setCurrentIndex(0)
         self._start_btn.setEnabled(True)
 
     @Slot(int)
@@ -487,7 +633,7 @@ class INA228Module(BaseModule):
 
     @Slot(object)
     def _on_measurement(self, m: INA228Measurement) -> None:
-        """Worker에서 측정 결과 수신 → 차트/라벨 업데이트"""
+        """Receive worker measurements -> update charts/labels."""
         if not all(
             math.isfinite(x)
             for x in (m.vbus_v, m.vshunt_mv, m.current_ma, m.power_mw, m.die_temp_c)
@@ -514,7 +660,7 @@ class INA228Module(BaseModule):
         self._vshunt_label.setText(f"{m.vshunt_mv:.4f} mV")
         self._current_label.setText(f"{m.current_ma:.4f} mA")
         self._power_label.setText(f"{m.power_mw:.4f} mW")
-        self._temp_label.setText(f"{m.die_temp_c:.2f} °C")
+        self._temp_label.setText(f"{m.die_temp_c:.2f} C")
 
     @Slot(int)
     def _on_window_seconds_changed(self, value: int) -> None:
@@ -529,7 +675,7 @@ class INA228Module(BaseModule):
 
     @Slot(str)
     def _on_worker_error(self, msg: str) -> None:
-        self._append_log(f"[INA228 오류] {msg}")
+        self._append_log(f"[INA228 ERROR] {msg}")
 
     @Slot(str)
     def _on_worker_log(self, msg: str) -> None:
@@ -538,16 +684,16 @@ class INA228Module(BaseModule):
     _MAX_LOG_BLOCKS = 3000
 
     def _append_log(self, message: str) -> None:
-        """I2C 로그 탭에 메시지 추가 (색상 코딩)"""
+        """Append a message to the I2C log tab (color-coded)."""
         if not hasattr(self, "_log_text"):
             return
-        if "[오류]" in message or "오류" in message:
+        if "[ERROR]" in message or "ERROR" in message:
             color = "#ff6666"
         elif "TX ->" in message:
             color = "#66ccff"
         elif "RX <-" in message:
             color = "#66ff99"
-        elif "[경고]" in message:
+        elif "[WARN]" in message or "WARN" in message:
             color = "#ffcc44"
         else:
             color = "#8899aa"
@@ -564,7 +710,7 @@ class INA228Module(BaseModule):
             cursor.deleteChar()
 
     def _refresh_register_map(self) -> None:
-        """레지스터 맵 테이블 갱신 (모니터링 중이 아닐 때 UI 스레드에서 직접 읽기)"""
+        """Refresh register map table (direct read in UI thread when idle)."""
         if not self._ftdi.is_connected:
             return
 
@@ -579,7 +725,7 @@ class INA228Module(BaseModule):
                     val = (raw[0] << 8) | raw[1]
                 hex_str = f"0x{val:04X}" if size == 2 else f"0x{val:05X}"
             else:
-                hex_str = "오류"
+                hex_str = "ERROR"
 
             val_item = self._reg_table.item(row, 3)
             if val_item:
@@ -588,7 +734,7 @@ class INA228Module(BaseModule):
 
     @Slot(int, int)
     def _on_reg_cell_changed(self, row: int, col: int) -> None:
-        """레지스터 맵 테이블에서 값 직접 수정"""
+        """Directly edit a value from the register map table."""
         if col != 3:
             return
         if not self._ftdi.is_connected or self._is_monitoring:
