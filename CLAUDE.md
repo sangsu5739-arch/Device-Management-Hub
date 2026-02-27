@@ -152,6 +152,13 @@ Device Management Hub/
     └── dark_theme.qss                # Application-wide dark stylesheet
 ```
 
+### MainWindow Signal Notes
+
+- `FtdiManager` does **not** have an `active_channel_changed` signal. Use `device_info_changed(object)` instead — it emits a dict containing `channel` on both connect and disconnect.
+- `_on_device_info_changed(info: dict)` in `main.py` extracts `info["channel"]` and forwards it to modules via `module.on_channel_changed(channel)`.
+
 ## Language & UI
 
 The application UI text is in Korean. Log messages mix Korean and English. Code comments are in Korean.
+
+**Korean string encoding**: Source files on this project are prone to Korean text corruption when edited on Windows (CP949/EUC-KR editors). If Korean characters appear garbled (e.g. `?꾨젰`, `紐⑤땲??`), use Unicode escape sequences (`\uXXXX`) instead of raw Korean literals in string values to prevent re-corruption. Raw Korean in comments and docstrings is acceptable.
