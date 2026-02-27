@@ -568,6 +568,22 @@ class FtdiVerifierModule(BaseModule):
 
         self._current_chip = spec
         self._pinout.set_chip(spec)
+        # Reset GPIO polling/state on channel change
+        try:
+            self._stop_worker()
+        except Exception:
+            pass
+        if hasattr(self, "_gpio_poll_btn"):
+            self._gpio_poll_btn.blockSignals(True)
+            self._gpio_poll_btn.setChecked(False)
+            self._gpio_poll_btn.setText("GPIO 폴링 시작 (전체)")
+            self._gpio_poll_btn.blockSignals(False)
+        if hasattr(self, "_gpio_poll_status"):
+            self._gpio_poll_status.setVisible(False)
+        if hasattr(self, "_pinout"):
+            self._pinout.set_polling_active(False)
+        self._gpio_poll_pin = -1
+        self._gpio_states = {}
 
         # 채널 적용 — 연결된 실제 채널 우선, 칩 스펙에 없으면 첫 번째 채널로 매핑
         ch = channel or "A"
@@ -815,7 +831,7 @@ class FtdiVerifierModule(BaseModule):
         is_gpio = active in (PinFunction.GPIO_OUT, PinFunction.GPIO_IN)
         self._refresh_gpio_controls(pin_selected=True, is_gpio=is_gpio)
 
-        state = self._gpio_states.get(pin_number, False)
+        state = self._gpio_states.get(pin_number, self._pinout._pin_states.get(pin_number, False))
         self._gpio_toggle_btn.blockSignals(True)
         self._gpio_toggle_btn.setChecked(state)
         self._gpio_toggle_btn.setText("GPIO: HIGH" if state else "GPIO: LOW")
@@ -963,6 +979,11 @@ class FtdiVerifierModule(BaseModule):
                 self._pinout.set_polling_active(False)
             if self._gpio_poll_blink is not None and self._gpio_poll_blink.isActive():
                 self._gpio_poll_blink.stop()
+            # Reset all pin states to LOW on poll stop
+            for pin_num in list(self._gpio_states.keys()):
+                self._gpio_states[pin_num] = False
+                self._pinout.set_pin_state(pin_num, False)
+            self._refresh_gpio_table()
 
     @Slot(int)
     def _on_gpio_poll_interval_changed(self, value: int) -> None:
@@ -1028,6 +1049,12 @@ class FtdiVerifierModule(BaseModule):
                     level_item.setForeground(QColor("#c8d2f0"))
             if pin_num in mapped:
                 self._pinout.set_pin_state(pin_num, mapped[pin_num])
+                self._gpio_states[pin_num] = mapped[pin_num]
+                if pin_num == self._pinout.get_selected_pin():
+                    self._gpio_toggle_btn.blockSignals(True)
+                    self._gpio_toggle_btn.setChecked(mapped[pin_num])
+                    self._gpio_toggle_btn.setText("GPIO: HIGH" if mapped[pin_num] else "GPIO: LOW")
+                    self._gpio_toggle_btn.blockSignals(False)
 
     def _on_gpio_mask_apply(self) -> None:
         text = (self._gpio_mask_edit.text() or "").strip().lower()
