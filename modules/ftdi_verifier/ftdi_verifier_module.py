@@ -58,6 +58,7 @@ class FtdiVerifierModule(BaseModule):
         self._uart_read_timer = None
         self._last_proto_mode: str = "I2C"
         self._gpio_poll_pin: int = -1
+        self._gpio_poll_blink = None
         super().__init__(ftdi_manager, parent)
 
     # ── BaseModule 구현 ──
@@ -95,6 +96,10 @@ class FtdiVerifierModule(BaseModule):
             self._uart_read_timer = QTimer(self)
             self._uart_read_timer.setInterval(50)
             self._uart_read_timer.timeout.connect(self._poll_uart)
+        if self._gpio_poll_blink is None:
+            self._gpio_poll_blink = QTimer(self)
+            self._gpio_poll_blink.setInterval(450)
+            self._gpio_poll_blink.timeout.connect(self._on_gpio_poll_blink)
 
     def on_device_connected(self) -> None:
         self._i2c_scan_btn.setEnabled(True)
@@ -140,8 +145,6 @@ class FtdiVerifierModule(BaseModule):
         super().on_tab_deactivated()
         if hasattr(self, "_proto_mode_combo"):
             self._last_proto_mode = self._proto_mode_combo.currentText()
-        if self._ftdi.is_connected:
-            self._ftdi.set_protocol_mode("I2C")
 
     def start_communication(self) -> None:
         pass  # GPIO 폴링은 별도 버튼으로 시작
@@ -397,7 +400,7 @@ class FtdiVerifierModule(BaseModule):
         poll_row.addWidget(self._gpio_poll_interval)
         poll_row.addStretch()
 
-        self._gpio_poll_btn = QPushButton("GPIO 폴링 시작")
+        self._gpio_poll_btn = QPushButton("GPIO 폴링 시작 (전체)")
         self._gpio_poll_btn.setCheckable(True)
         self._gpio_poll_btn.setEnabled(False)
         self._gpio_poll_btn.setMinimumHeight(32)
@@ -409,6 +412,13 @@ class FtdiVerifierModule(BaseModule):
         self._gpio_poll_btn.toggled.connect(self._on_gpio_poll_toggled)
         poll_row.addWidget(self._gpio_poll_btn)
         gpio_layout.addLayout(poll_row)
+
+        self._gpio_poll_status = QLabel("● 전역 폴링 중")
+        self._gpio_poll_status.setStyleSheet(
+            "color: #2ecc71; font-weight: 700; font-size: 11px;"
+        )
+        self._gpio_poll_status.setVisible(False)
+        gpio_layout.addWidget(self._gpio_poll_status)
 
         mask_row = QHBoxLayout()
         mask_row.addWidget(QLabel("Bitbang Mask (HEX):"))
@@ -930,25 +940,29 @@ class FtdiVerifierModule(BaseModule):
             # "채널 불일치: 연결된 채널에서만 GPIO 제어가 가능합니다."
             self._append_log("\ucc44\ub110 \ubd88\uc77c\uce58: \uc5f0\uacb0\ub41c \ucc44\ub110\uc5d0\uc11c\ub9cc GPIO \uc81c\uc5b4\uac00 \uac00\ub2a5\ud569\ub2c8\ub2e4.")
             return
-        pin_num = self._pinout.get_selected_pin()
-        if pin_num < 0:
-            self._gpio_poll_btn.setChecked(False)
-            # "GPIO 폴링을 시작하려면 먼저 핀을 선택해야 합니다."
-            self._append_log("GPIO \ud3f4\ub9c1\uc744 \uc2dc\uc791\ud558\ub824\uba74 \uba3c\uc800 \ud540\uc744 \uc120\ud0dd\ud574\uc57c \ud569\ub2c8\ub2e4.")
-            return
         if checked:
-            # "GPIO 폴링 중지"
-            self._gpio_poll_btn.setText("GPIO \ud3f4\ub9c1 \uc911\uc9c0")
-            self._gpio_poll_pin = pin_num
+            # "GPIO 폴링 중지 (실행)"
+            self._gpio_poll_btn.setText("GPIO \ud3f4\ub9c1 \uc911\uc9c0 (\uc2e4\ud589)")
             self._refresh_gpio_controls()
             interval = self._gpio_poll_interval.value()
             self._start_worker(interval)
+            if hasattr(self, "_gpio_poll_status"):
+                self._gpio_poll_status.setVisible(True)
+            if hasattr(self, "_pinout"):
+                self._pinout.set_polling_active(True)
+            if self._gpio_poll_blink is not None and not self._gpio_poll_blink.isActive():
+                self._gpio_poll_blink.start()
         else:
-            # "GPIO 폴링 시작"
-            self._gpio_poll_btn.setText("GPIO \ud3f4\ub9c1 \uc2dc\uc791")
-            self._gpio_poll_pin = -1
+            # "GPIO 폴링 시작 (대기)"
+            self._gpio_poll_btn.setText("GPIO \ud3f4\ub9c1 \uc2dc\uc791 (\ub300\uae30)")
             self._stop_worker()
             self._refresh_gpio_controls()
+            if hasattr(self, "_gpio_poll_status"):
+                self._gpio_poll_status.setVisible(False)
+            if hasattr(self, "_pinout"):
+                self._pinout.set_polling_active(False)
+            if self._gpio_poll_blink is not None and self._gpio_poll_blink.isActive():
+                self._gpio_poll_blink.stop()
 
     @Slot(int)
     def _on_gpio_poll_interval_changed(self, value: int) -> None:
@@ -1008,6 +1022,10 @@ class FtdiVerifierModule(BaseModule):
             level_item = self._gpio_table.item(row, 4)
             if level_item:
                 level_item.setText("1" if level else "0")
+                if self._gpio_poll_btn.isChecked():
+                    level_item.setForeground(QColor("#66ff99"))
+                else:
+                    level_item.setForeground(QColor("#c8d2f0"))
             if pin_num in mapped:
                 self._pinout.set_pin_state(pin_num, mapped[pin_num])
 
@@ -1112,6 +1130,22 @@ class FtdiVerifierModule(BaseModule):
         except Exception as e:
             self._append_log(f"[UART] 수신 오류: {e}")
             self._close_uart()
+
+    def _on_gpio_poll_blink(self) -> None:
+        if not hasattr(self, "_gpio_poll_status"):
+            return
+        # simple blink by toggling opacity
+        if self._gpio_poll_status.isVisible():
+            cur = self._gpio_poll_status.styleSheet()
+            if "opacity: 0.35" in cur:
+                self._gpio_poll_status.setStyleSheet(
+                    "color: #2ecc71; font-weight: 700; font-size: 11px; opacity: 1.0;"
+                )
+            else:
+                self._gpio_poll_status.setStyleSheet(
+                    "color: #2ecc71; font-weight: 700; font-size: 11px; opacity: 0.35;"
+                )
+
 
     def _append_uart_console(self, text: str) -> None:
         if hasattr(self, "_uart_timestamp") and self._uart_timestamp.isChecked():
@@ -1226,21 +1260,15 @@ class FtdiVerifierModule(BaseModule):
             return
 
         if poll_checked:
-            selected_pin = self._pinout.get_selected_pin()
-            same_pin = (selected_pin >= 0 and selected_pin == self._gpio_poll_pin)
-            # Polling is tied to a specific pin; enable the button only on that pin.
-            self._gpio_poll_btn.setEnabled(same_pin)
+            # Global polling active: keep poll enabled, disable toggle to avoid conflict.
+            self._gpio_poll_btn.setEnabled(True)
             self._gpio_toggle_btn.setEnabled(False)
             return
 
         allow = pin_selected and (is_gpio or mode == "GPIO")
-        if not allow:
-            self._gpio_toggle_btn.setEnabled(False)
-            self._gpio_poll_btn.setEnabled(False)
-            return
-
-        self._gpio_toggle_btn.setEnabled(True)
-        self._gpio_poll_btn.setEnabled(True)
+        self._gpio_toggle_btn.setEnabled(allow)
+        # Global polling can start without selecting a pin.
+        self._gpio_poll_btn.setEnabled(base_ok)
 
     # ── 로그 ──
 
