@@ -286,6 +286,7 @@ class FtdiManager(QObject):
                     self._configure_mpsse()
                     self._channel_modes[ch] = "mpsse"
                     self._bitbang_i2c_warned = False
+                    self._mode_switch_ts = 0  # MPSSE configured — release guard immediately
                 else:
                     self._channel_modes[ch] = "uart"
                     self._bitbang_i2c_warned = False

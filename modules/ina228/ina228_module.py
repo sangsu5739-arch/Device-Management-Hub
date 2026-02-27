@@ -133,18 +133,29 @@ class INA228Module(BaseModule):
     def on_tab_activated(self) -> None:
         super().on_tab_activated()
         self._apply_io_hold()
+        # Sync button state to actual GPIO — hardware is the source of truth on tab entry
+        if self._ftdi.is_connected and self._ftdi.supports_mpsse(self._ftdi.channel):
+            self._refresh_hold_status(sync_buttons=True)
 
     def on_channel_changed(self, channel: str) -> None:
         if not self._ftdi.supports_mpsse(channel):
             self.stop_communication()
             self._scan_btn.setEnabled(False)
             self._start_btn.setEnabled(False)
-            self.status_message.emit("INA228: Current channel does not support MPSSE.")
+            self.status_message.emit(f"INA228: Channel {channel} does not support MPSSE.")
         else:
             if self._ftdi.is_connected:
                 self._scan_btn.setEnabled(True)
                 self._start_btn.setEnabled(True)
                 self._apply_io_hold()
+
+    @Slot()
+    def _on_start_btn_clicked(self) -> None:
+        """Start button click — show MPSSE warning if channel is incompatible."""
+        if not self._ftdi.supports_mpsse(self._ftdi.channel):
+            self._show_mpsse_warning(self._ftdi.channel)
+            return
+        self.start_communication()
 
     def start_communication(self) -> None:
         """Start worker thread (monitoring ON)."""
@@ -152,6 +163,12 @@ class INA228Module(BaseModule):
             return
         if not self._ftdi.is_connected:
             return
+        if not self._ftdi.supports_mpsse(self._ftdi.channel):
+            return
+
+        # Ensure MPSSE mode is active — previous tab (e.g., FTDI Verifier GPIO) may have
+        # left the channel in bitbang mode which blocks I2C.
+        self._ftdi.set_protocol_mode("I2C")
 
         self._worker = INA228Worker(self._ftdi)
         self._worker.configure(
@@ -241,6 +258,13 @@ class INA228Module(BaseModule):
         self._scan_btn = QPushButton("Scan Addresses")
         self._scan_btn.setFixedWidth(140)
         self._scan_btn.setEnabled(False)
+        self._scan_btn.setStyleSheet(
+            "QPushButton { background: #1a2d20; color: #80c890; font-weight: 700; border-radius: 6px; "
+            "border: 1px solid #2a5a38; }"
+            "QPushButton:hover { background: #203828; color: #a0e0a8; border-color: #3a7048; }"
+            "QPushButton:pressed { background: #162218; border: 1px solid #4a8858; }"
+            "QPushButton:disabled { background: #1e2028; color: #4a5068; border: 1px solid #2a2e3a; }"
+        )
         self._scan_btn.clicked.connect(self._on_scan_addresses)
         layout.addWidget(self._scan_btn)
 
@@ -276,8 +300,11 @@ class INA228Module(BaseModule):
             btn.setMinimumWidth(80)
             btn.setMinimumHeight(28)
             btn.setStyleSheet(
-                "QPushButton { background: #2a303b; color: #cbd5e1; font-weight: 700; border-radius: 6px; }"
-                "QPushButton:checked { background: #2ecc71; color: #0b1a10; }"
+                "QPushButton { background: #2a303b; color: #cbd5e1; font-weight: 700; border-radius: 6px; "
+                "border: 1px solid #3b4458; }"
+                "QPushButton:hover { background: #343d4a; }"
+                "QPushButton:checked { background: #1a2d20; color: #80c890; border: 1px solid #2a5a38; }"
+                "QPushButton:checked:hover { background: #203828; color: #a0e0a8; }"
             )
             btn.toggled.connect(lambda checked, b=bit: self._on_hold_toggled(b, checked))
             self._hold_btns[bit] = btn
@@ -329,27 +356,45 @@ class INA228Module(BaseModule):
         self._ftdi.set_i2c_hold(self._io_hold_mask, self._io_hold_value)
         self._refresh_hold_status()
 
-    def _refresh_hold_status(self) -> None:
+    def _refresh_hold_status(self, sync_buttons: bool = False) -> None:
+        """Refresh GPIO Hold LED/bar from actual hardware state.
+
+        Args:
+            sync_buttons: if True, also update button checked/text to match hardware.
+        """
         if not hasattr(self, "_hold_leds"):
             return
         value = self._ftdi.read_gpio_low()
         if value is None:
             return
         for bit in range(4, 8):
-            led = self._hold_leds.get(bit)
-            if not led:
-                continue
             high = bool(value & (1 << bit))
-            color = "#2ecc71" if high else "#3b4458"
-            led.setStyleSheet(f"background: {color}; border-radius: 6px;")
+
+            led = self._hold_leds.get(bit)
+            if led:
+                color = "#80c890" if high else "#3b4458"
+                led.setStyleSheet(f"background: {color}; border-radius: 6px;")
+
             bar = self._hold_bars.get(bit)
             if bar:
                 if high:
                     bar.setGeometry(1, 1, 54, 6)
-                    bar.setStyleSheet("background: #2ecc71; border-radius: 3px;")
+                    bar.setStyleSheet("background: #80c890; border-radius: 3px;")
                 else:
                     bar.setGeometry(1, 1, 10, 6)
                     bar.setStyleSheet("background: #3b4458; border-radius: 3px;")
+
+            if sync_buttons:
+                btn = self._hold_btns.get(bit)
+                if btn:
+                    btn.blockSignals(True)
+                    btn.setChecked(high)
+                    btn.setText(f"D{bit}: {'ON' if high else 'OFF'}")
+                    btn.blockSignals(False)
+                if high:
+                    self._io_hold_value |= (1 << bit)
+                else:
+                    self._io_hold_value &= ~(1 << bit)
 
     def _save_io_hold_state(self) -> None:
         self._settings.setValue("io_hold_value", int(self._io_hold_value))
@@ -468,7 +513,7 @@ class INA228Module(BaseModule):
         self._start_btn = QPushButton("Start Monitoring")
         self._start_btn.setObjectName("startBtn")
         self._start_btn.setEnabled(False)
-        self._start_btn.clicked.connect(self.start_communication)
+        self._start_btn.clicked.connect(self._on_start_btn_clicked)
         btn_row.addWidget(self._start_btn)
 
         self._stop_btn = QPushButton("Stop Monitoring")
@@ -606,6 +651,9 @@ class INA228Module(BaseModule):
     def _on_scan_addresses(self) -> None:
         """Scan I2C addresses in 0x40~0x4F range."""
         if not self._ftdi.is_connected:
+            return
+        if not self._ftdi.supports_mpsse(self._ftdi.channel):
+            self._show_mpsse_warning(self._ftdi.channel)
             return
 
         self._scan_result_label.setText("Scanning...")

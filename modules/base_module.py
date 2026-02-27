@@ -9,7 +9,7 @@ from __future__ import annotations
 from abc import abstractmethod
 from typing import Optional
 
-from PySide6.QtWidgets import QWidget
+from PySide6.QtWidgets import QWidget, QMessageBox
 from PySide6.QtCore import Signal
 
 from core.ftdi_manager import FtdiManager
@@ -92,6 +92,7 @@ class BaseModule(QWidget):
                 f"{self.MODULE_NAME}: channel {active_ch} does not support MPSSE."
             )
             self.on_channel_changed(active_ch)
+            self._show_mpsse_warning(active_ch)  # subclasses may override to suppress
             return
 
         self._ftdi.set_protocol_mode(required)
@@ -100,3 +101,28 @@ class BaseModule(QWidget):
     def on_tab_deactivated(self) -> None:
         """Called when this module tab becomes inactive."""
         self._is_active = False
+
+    def _show_mpsse_warning(self, channel: str) -> None:
+        """Show MPSSE-not-supported warning dialog. Override to suppress (e.g., FTDI Verifier)."""
+        box = QMessageBox(self)
+        box.setWindowTitle("MPSSE Not Supported")
+        box.setIcon(QMessageBox.Icon.Warning)
+        box.setText(f"Channel {channel} does not support MPSSE.")
+        box.setInformativeText(
+            f"{self.MODULE_NAME} requires I2C/MPSSE communication.\n"
+            "For FT4232H, only channels A and B support MPSSE.\n\n"
+            "Switch to an MPSSE-capable channel (A or B) and try again."
+        )
+        box.setStandardButtons(QMessageBox.StandardButton.Ok)
+        box.setStyleSheet("""
+            QMessageBox { background-color: #22242e; }
+            QMessageBox QLabel { color: #c8cdd8; font-size: 12px; }
+            QMessageBox QPushButton {
+                min-width: 80px; min-height: 28px;
+                border-radius: 6px; border: 1px solid #4a6880;
+                background-color: #1d2d3a; color: #90d0e8;
+                font-weight: 600; padding: 4px 10px;
+            }
+            QMessageBox QPushButton:hover { background-color: #243548; }
+        """)
+        box.exec()

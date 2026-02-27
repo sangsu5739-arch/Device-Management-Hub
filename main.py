@@ -109,7 +109,7 @@ class MainWindow(QMainWindow):
         if self._device_combo.count() > 0:
             self._device_combo.setCurrentIndex(0)
 
-        self.statusBar().showMessage("Ready - scanning FTDI devices...")
+        self._set_status("Ready - scanning FTDI devices...")
 
         # Auto-scan on startup
         QTimer.singleShot(300, self._on_scan_devices)
@@ -290,7 +290,7 @@ class MainWindow(QMainWindow):
         devices = FtdiManager.scan_devices_with_channels()
         if not devices:
             self._device_combo.setPlaceholderText("No devices found")
-            self.statusBar().showMessage("No FTDI devices found")
+            self._set_status("No FTDI devices found", "warn")
             self._show_scan_dialog(0)
             return
 
@@ -302,7 +302,7 @@ class MainWindow(QMainWindow):
         if self._device_combo.count() > 0:
             self._device_combo.setCurrentIndex(0)
 
-        self.statusBar().showMessage(f"Found {len(devices)} FTDI device(s)")
+        self._set_status(f"Found {len(devices)} FTDI device(s)", "ok")
         self._show_scan_dialog(len(devices))
         self._on_device_selected(self._device_combo.currentIndex())
 
@@ -311,7 +311,7 @@ class MainWindow(QMainWindow):
         """Connect FTDI device."""
         if self._device_combo.currentIndex() < 0:
             self._show_warning_dialog("Device not selected", "Scan and select an FTDI device first.")
-            self.statusBar().showMessage("Select a device to connect")
+            self._set_status("Select a device to connect", "warn")
             return
 
         data = self._device_combo.currentData()
@@ -328,7 +328,7 @@ class MainWindow(QMainWindow):
                     "This device supports multiple channels.\n"
                     f"Select a channel to use. (Available: {', '.join(channels)})",
                 )
-                self.statusBar().showMessage("Select a channel")
+                self._set_status("Select a channel", "warn")
                 return
         else:
             channel = "A"
@@ -336,7 +336,7 @@ class MainWindow(QMainWindow):
         success = self._ftdi.open_device(serial, channel)
         if success:
             ch_label = f" CH-{channel}" if channel else ""
-            self.statusBar().showMessage(f"Connected: {serial}{ch_label}")
+            self._set_status(f"Connected: {serial}{ch_label}", "ok")
             self._active_channel_ui = channel
             if hasattr(self, "_active_channel_badge"):
                 self._active_channel_badge.setText(f"ACTIVE: {channel}")
@@ -403,26 +403,20 @@ class MainWindow(QMainWindow):
             self._channel_combo.blockSignals(True)
             self._channel_combo.setCurrentText(current)
             self._channel_combo.blockSignals(False)
-            # Optionally resume communication
-            for module in self._modules:
-                try:
-                    module.start_communication()
-                except Exception:
-                    pass
             return
 
         if self._ftdi.set_active_channel(new_channel):
             self._active_channel_ui = new_channel
-            self.statusBar().showMessage(f"Active channel changed: {new_channel}")
-            # Restart communications after switching
+            self._set_status(f"Active channel changed: {new_channel}", "ok")
+            # Notify modules of channel change (each module decides whether to re-enable itself)
             for module in self._modules:
                 try:
-                    module.start_communication()
+                    module.on_channel_changed(new_channel)
                 except Exception:
                     pass
             self._log_channel_switch(current, new_channel)
         else:
-            self.statusBar().showMessage("Failed to change channel")
+            self._set_status("Failed to change channel", "error")
 
     @Slot()
     def _on_disconnect(self) -> None:
@@ -481,7 +475,7 @@ class MainWindow(QMainWindow):
         if self._device_combo.count() > 0:
             self._device_combo.setCurrentIndex(0)
 
-        self.statusBar().showMessage("Disconnected")
+        self._set_status("Disconnected", "warn")
         self._show_disconnection_dialog(self._last_connected_serial)
 
         # Notify all modules
@@ -498,7 +492,7 @@ class MainWindow(QMainWindow):
         if self._device_combo.count() > 0:
             self._device_combo.setCurrentIndex(0)
 
-        self.statusBar().showMessage(f"Error: {error_msg}")
+        self._set_status(f"Error: {error_msg}", "error")
 
     @Slot(object)
     def _on_device_info_changed(self, info: dict) -> None:
@@ -513,12 +507,30 @@ class MainWindow(QMainWindow):
         if hasattr(self, "_active_channel_badge"):
             self._active_channel_badge.setText(f"ACTIVE: {channel}")
 
+    def _set_status(self, message: str, level: str = "info") -> None:
+        """Show a color-coded status bar message.
+
+        level: "info" | "ok" | "warn" | "error"
+        """
+        colors = {
+            "info":  "#7888a0",   # default gray
+            "ok":    "#80c890",   # muted green
+            "warn":  "#d4a84b",   # amber
+            "error": "#e07070",   # muted red
+        }
+        color = colors.get(level, colors["info"])
+        self.statusBar().setStyleSheet(
+            f"QStatusBar {{ color: {color}; background-color: #1a1c24; "
+            f"border-top: 1px solid #3a3f50; font-size: 11px; font-weight: {'700' if level in ('warn', 'error') else '400'}; }}"
+        )
+        self.statusBar().showMessage(message)
+
     def _log_channel_switch(self, prev: str, new: str) -> None:
         logger.info(f"Active channel switch: {prev} -> {new}")
         if self._device_combo.count() > 0:
             self._device_combo.setCurrentIndex(0)
 
-        self.statusBar().showMessage(f"Channel switched: {prev} -> {new}")
+        self._set_status(f"Channel switched: {prev} -> {new}", "ok")
 
     # -- Tab change handler --
 

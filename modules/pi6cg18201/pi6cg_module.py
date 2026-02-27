@@ -129,7 +129,7 @@ class PI6CGModule(BaseModule):
         if not self._ftdi.supports_mpsse(channel):
             self._read_btn.setEnabled(False)
             self._write_btn.setEnabled(False)
-            self.status_message.emit("PI6CG18201: Current channel does not support MPSSE.")
+            self.status_message.emit(f"PI6CG18201: Channel {channel} does not support MPSSE.")
         else:
             self._read_btn.setEnabled(True)
             self._write_btn.setEnabled(True)
@@ -536,6 +536,10 @@ class PI6CGModule(BaseModule):
     def _on_write_registers(self) -> None:
         if not self._ftdi.is_connected:
             return
+        if not self._ftdi.supports_mpsse(self._ftdi.channel):
+            self._show_mpsse_warning(self._ftdi.channel)
+            return
+        self._ftdi.set_protocol_mode("I2C")
         data = self._reg_map.get_all_bytes()
         self._ftdi.smbus_block_write(self._slave_address, 0x00, data)
 
@@ -543,6 +547,10 @@ class PI6CGModule(BaseModule):
     def _on_read_registers(self) -> None:
         if not self._ftdi.is_connected:
             return
+        if not self._ftdi.supports_mpsse(self._ftdi.channel):
+            self._show_mpsse_warning(self._ftdi.channel)
+            return
+        self._ftdi.set_protocol_mode("I2C")
         data = self._ftdi.smbus_block_read(self._slave_address, 0x00, TOTAL_BYTES)
         if data:
             self._reg_map.set_all_bytes(data)

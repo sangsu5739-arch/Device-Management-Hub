@@ -157,6 +157,10 @@ class FtdiVerifierModule(BaseModule):
         if hasattr(self, "_proto_mode_combo"):
             self._last_proto_mode = self._proto_mode_combo.currentText()
 
+    def _show_mpsse_warning(self, channel: str) -> None:
+        # FTDI Verifier mixes MPSSE and Bitbang intentionally — suppress popup.
+        pass
+
     def start_communication(self) -> None:
         pass  # GPIO polling starts from a separate button
 
@@ -234,11 +238,11 @@ class FtdiVerifierModule(BaseModule):
         self._i2c_scan_btn.setEnabled(False)
         self._i2c_scan_btn.setMinimumHeight(30)
         self._i2c_scan_btn.setStyleSheet(
-            "QPushButton { background: #1b2a4a; color: #cde3ff; font-weight: 800; border-radius: 8px; "
-            "border: 1px solid #3b5ea8; letter-spacing: 0.4px; }"
-            "QPushButton:hover { background: #21335a; }"
-            "QPushButton:pressed { background: #162340; border: 1px solid #5d7cc0; }"
-            "QPushButton:disabled { background: #2a303b; color: #9aa4b8; border: 1px solid #3b4458; }"
+            "QPushButton { background: #2a2510; color: #d4a84b; font-weight: 700; border-radius: 6px; "
+            "border: 1px solid #5a4820; letter-spacing: 0.4px; }"
+            "QPushButton:hover { background: #342e18; color: #e8c06a; border-color: #7a6030; }"
+            "QPushButton:pressed { background: #1e1b0c; border-color: #8a7040; }"
+            "QPushButton:disabled { background: #1e2028; color: #4a5068; border: 1px solid #2a2e3a; }"
         )
         self._i2c_scan_btn.clicked.connect(self._on_i2c_scan)
         i2c_layout.addWidget(self._i2c_scan_btn)
@@ -261,10 +265,11 @@ class FtdiVerifierModule(BaseModule):
         self._i2c_test_btn.setMinimumHeight(30)
         self._i2c_test_btn.setMinimumWidth(110)
         self._i2c_test_btn.setStyleSheet(
-            "QPushButton { background: #2f343f; color: #f3d28b; font-weight: 700; border-radius: 8px; "
-            "border: 1px solid #5a513f; }"
-            "QPushButton:hover { background: #3a404d; }"
-            "QPushButton:disabled { background: #2a303b; color: #9aa4b8; border: 1px solid #3b4458; }"
+            "QPushButton { background: #2a2510; color: #d4a84b; font-weight: 700; border-radius: 6px; "
+            "border: 1px solid #5a4820; }"
+            "QPushButton:hover { background: #342e18; color: #e8c06a; border-color: #7a6030; }"
+            "QPushButton:pressed { background: #1e1b0c; border-color: #8a7040; }"
+            "QPushButton:disabled { background: #1e2028; color: #4a5068; border: 1px solid #2a2e3a; }"
         )
         self._i2c_test_btn.clicked.connect(self._on_i2c_test)
         ack_row.addWidget(self._i2c_test_btn)
@@ -311,21 +316,41 @@ class FtdiVerifierModule(BaseModule):
         # SPI Test
         self._spi_group = QGroupBox("SPI Test")
         spi_layout = QVBoxLayout(self._spi_group)
+        spi_layout.setSpacing(4)
+        spi_layout.setContentsMargins(6, 4, 6, 4)
         self._spi_test_btn = QPushButton("SPI Loopback Test")
         self._spi_test_btn.setEnabled(False)
+        self._spi_test_btn.setMinimumHeight(30)
+        self._spi_test_btn.setStyleSheet(
+            "QPushButton { background: #2a2510; color: #d4a84b; font-weight: 700; border-radius: 6px; "
+            "border: 1px solid #5a4820; }"
+            "QPushButton:hover { background: #342e18; color: #e8c06a; border-color: #7a6030; }"
+            "QPushButton:pressed { background: #1e1b0c; border-color: #8a7040; }"
+            "QPushButton:disabled { background: #1e2028; color: #4a5068; border: 1px solid #2a2e3a; }"
+        )
         self._spi_test_btn.clicked.connect(self._on_spi_test)
         spi_layout.addWidget(self._spi_test_btn)
         self._spi_result_label = QLabel("-")
-        self._spi_result_label.setStyleSheet("color: #8899bb;")
+        self._spi_result_label.setStyleSheet("color: #d4a84b; font-size: 11px;")
         spi_layout.addWidget(self._spi_result_label)
         self._proto_tabs.addTab(self._spi_group, "SPI")
 
         # JTAG Test (GUI only)
         self._jtag_group = QGroupBox("JTAG Test")
         jtag_layout = QVBoxLayout(self._jtag_group)
-        jtag_layout.addWidget(QLabel("JTAG Read/Write Test"))
+        jtag_layout.setSpacing(4)
+        jtag_layout.setContentsMargins(6, 4, 6, 4)
+        jtag_layout.addWidget(QLabel("JTAG Boundary Scan / IDCODE Test"))
         self._jtag_test_btn = QPushButton("Run JTAG Test")
         self._jtag_test_btn.setEnabled(False)
+        self._jtag_test_btn.setMinimumHeight(30)
+        self._jtag_test_btn.setStyleSheet(
+            "QPushButton { background: #2a2510; color: #d4a84b; font-weight: 700; border-radius: 6px; "
+            "border: 1px solid #5a4820; }"
+            "QPushButton:hover { background: #342e18; color: #e8c06a; border-color: #7a6030; }"
+            "QPushButton:pressed { background: #1e1b0c; border-color: #8a7040; }"
+            "QPushButton:disabled { background: #1e2028; color: #4a5068; border: 1px solid #2a2e3a; }"
+        )
         jtag_layout.addWidget(self._jtag_test_btn)
         self._proto_tabs.addTab(self._jtag_group, "JTAG")
 
@@ -335,7 +360,7 @@ class FtdiVerifierModule(BaseModule):
         uart_layout.setSpacing(6)
         uart_layout.setContentsMargins(8, 8, 8, 8)
 
-        # ── 포트 + 새로고침 ──
+        # -- Port + Refresh --
         port_row = QHBoxLayout()
         port_row.addWidget(QLabel("COM Port:"))
         self._uart_port_combo = QComboBox()
@@ -345,7 +370,7 @@ class FtdiVerifierModule(BaseModule):
         )
         port_row.addWidget(self._uart_port_combo, 1)
         self._uart_refresh_btn = QPushButton("\u21ba")
-        self._uart_refresh_btn.setToolTip("\ud3ec\ud2b8 \ubaa9\ub85d \uc0c8\ub85c\uace0\uce68")
+        self._uart_refresh_btn.setToolTip("Refresh port list")
         self._uart_refresh_btn.setFixedSize(28, 28)
         self._uart_refresh_btn.setStyleSheet(
             "QPushButton { background: #2a303b; color: #c8d2f0; border-radius: 5px; font-size: 14px; }"
@@ -391,7 +416,7 @@ class FtdiVerifierModule(BaseModule):
         cfg_row2.addWidget(self._uart_flow)
         uart_layout.addLayout(cfg_row2)
 
-        # ── OPEN / CLOSE 버튼 (전체 너비) ──
+        # -- OPEN / CLOSE button (full width) --
         self._uart_open_btn = QPushButton("OPEN")
         self._uart_open_btn.setEnabled(False)
         self._uart_open_btn.setMinimumHeight(34)
@@ -399,7 +424,7 @@ class FtdiVerifierModule(BaseModule):
         self._apply_uart_open_style(opened=False)
         uart_layout.addWidget(self._uart_open_btn)
 
-        # ── 콘솔 툴바 (RX Format / 옵션 / Clear / Save) ──
+        # -- Console toolbar (RX Format / options / Clear / Save) --
         console_toolbar = QHBoxLayout()
         console_toolbar.setSpacing(8)
         console_toolbar.addWidget(QLabel("RX:"))
@@ -431,7 +456,7 @@ class FtdiVerifierModule(BaseModule):
         console_toolbar.addWidget(self._uart_save_btn)
         uart_layout.addLayout(console_toolbar)
 
-        # ── UART 콘솔 ──
+        # -- UART console --
         self._uart_console = QTextEdit()
         self._uart_console.setReadOnly(True)
         self._uart_console.setFont(QFont("Consolas", 11))
@@ -443,7 +468,7 @@ class FtdiVerifierModule(BaseModule):
         )
         uart_layout.addWidget(self._uart_console)
 
-        # ── 전송 행 ──
+        # -- Send row --
         send_row = QHBoxLayout()
         send_row.setSpacing(6)
         self._uart_input = QLineEdit()
@@ -495,9 +520,12 @@ class FtdiVerifierModule(BaseModule):
         self._gpio_poll_btn.setEnabled(False)
         self._gpio_poll_btn.setMinimumHeight(32)
         self._gpio_poll_btn.setStyleSheet(
-            "QPushButton { background: #1d2433; color: #c8d2f0; font-weight: 700; border-radius: 6px; }"
-            "QPushButton:checked { background: #2ecc71; color: #0b1a10; }"
-            "QPushButton:disabled { background: #2a303b; color: #9aa4b8; }"
+            "QPushButton { background: #1d2d3a; color: #70b8d0; font-weight: 700; border-radius: 6px; "
+            "border: 1px solid #2a5068; }"
+            "QPushButton:hover { background: #243548; color: #90d0e8; border-color: #3a6880; }"
+            "QPushButton:checked { background: #1a2d20; color: #80c890; border: 1px solid #2a5a38; }"
+            "QPushButton:checked:hover { background: #203828; color: #a0e0a8; border-color: #3a7048; }"
+            "QPushButton:disabled { background: #1e2028; color: #4a5068; border: 1px solid #2a2e3a; }"
         )
         self._gpio_poll_btn.toggled.connect(self._on_gpio_poll_toggled)
         poll_row.addWidget(self._gpio_poll_btn)
@@ -505,7 +533,7 @@ class FtdiVerifierModule(BaseModule):
 
         self._gpio_poll_status = QLabel(" Global polling active")
         self._gpio_poll_status.setStyleSheet(
-            "color: #2ecc71; font-weight: 800; font-size: 12px;"
+            "color: #80c890; font-weight: 800; font-size: 12px;"
         )
         self._gpio_poll_status.setVisible(False)
         gpio_layout.addWidget(self._gpio_poll_status)
@@ -545,9 +573,11 @@ class FtdiVerifierModule(BaseModule):
         self._gpio_toggle_btn.setMinimumHeight(32)
         self._gpio_toggle_btn.setStyleSheet(
             "QPushButton { font-weight: bold; border-radius: 6px; "
-            "background: #1d2433; color: #c8d2f0; }"
-            "QPushButton:checked { background: #2ecc71; color: #0b1a10; }"
-            "QPushButton:disabled { background: #2a303b; color: #9aa4b8; }"
+            "background: #1d2d3a; color: #70b8d0; border: 1px solid #2a5068; }"
+            "QPushButton:hover { background: #243548; color: #90d0e8; border-color: #3a6880; }"
+            "QPushButton:checked { background: #1a2d20; color: #80c890; border: 1px solid #2a5a38; }"
+            "QPushButton:checked:hover { background: #203828; color: #a0e0a8; border-color: #3a7048; }"
+            "QPushButton:disabled { background: #1e2028; color: #4a5068; border: 1px solid #2a2e3a; }"
         )
         self._gpio_toggle_btn.toggled.connect(self._on_gpio_toggle)
         pin_info_layout.addWidget(self._gpio_toggle_btn, 4, 0, 1, 2)
@@ -1057,8 +1087,8 @@ class FtdiVerifierModule(BaseModule):
             if result.success:
                 self._i2c_ack_led.setText("  ACK")
                 self._i2c_ack_led.setStyleSheet(
-                    "background: #2ecc71; color: #0b1a10; border-radius: 8px; padding: 4px 10px;"
-                    "font-weight: 800; letter-spacing: 0.5px;"
+                    "background: #1e4a2a; color: #80c890; border-radius: 8px; padding: 4px 10px;"
+                    "font-weight: 800; letter-spacing: 0.5px; border: 1px solid #2a7040;"
                 )
             else:
                 self._i2c_ack_led.setText("  NACK")
@@ -1340,11 +1370,11 @@ class FtdiVerifierModule(BaseModule):
             cur = self._gpio_poll_status.styleSheet()
             if "opacity: 0.35" in cur:
                 self._gpio_poll_status.setStyleSheet(
-                    "color: #2ecc71; font-weight: 700; font-size: 11px; opacity: 1.0;"
+                    "color: #80c890; font-weight: 700; font-size: 11px; opacity: 1.0;"
                 )
             else:
                 self._gpio_poll_status.setStyleSheet(
-                    "color: #2ecc71; font-weight: 700; font-size: 11px; opacity: 0.35;"
+                    "color: #80c890; font-weight: 700; font-size: 11px; opacity: 0.35;"
                 )
 
 
@@ -1381,19 +1411,19 @@ class FtdiVerifierModule(BaseModule):
         if not hasattr(self, "_uart_open_btn"):
             return
         if opened:
-            # CLOSE 상태 - 빨간색으로 "닫기" 의도 명확히
+            # CLOSE: dark background with muted red border + text
             self._uart_open_btn.setStyleSheet(
-                "QPushButton { background: #c0392b; color: #ffffff; font-weight: 800; "
-                "border-radius: 6px; padding: 4px 10px; letter-spacing: 1px; }"
-                "QPushButton:hover { background: #e74c3c; }"
+                "QPushButton { background: #2d1e20; color: #e07070; font-weight: 700; "
+                "border: 1px solid #6a3030; border-radius: 6px; padding: 4px 10px; }"
+                "QPushButton:hover { background: #3a2225; color: #f09090; border-color: #8a4040; }"
             )
         else:
-            # OPEN 상태 - 초록색으로 "연결 가능" 의도 명확히
+            # OPEN: muted teal matching app palette
             self._uart_open_btn.setStyleSheet(
-                "QPushButton { background: #27ae60; color: #ffffff; font-weight: 800; "
-                "border-radius: 6px; padding: 4px 10px; letter-spacing: 1px; }"
-                "QPushButton:hover { background: #2ecc71; }"
-                "QPushButton:disabled { background: #2a303b; color: #6a7488; border: 1px solid #3a4050; }"
+                "QPushButton { background: #1d2d3a; color: #70b8d0; font-weight: 700; "
+                "border: 1px solid #2a5068; border-radius: 6px; padding: 4px 10px; }"
+                "QPushButton:hover { background: #243548; color: #90d0e8; border-color: #3a6880; }"
+                "QPushButton:disabled { background: #1e2028; color: #4a5068; border: 1px solid #2a2e3a; }"
             )
 
     def _refresh_uart_ports(self) -> None:
