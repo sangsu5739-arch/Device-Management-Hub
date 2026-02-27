@@ -37,7 +37,7 @@ def discover_module_classes() -> List[Type[BaseModule]]:
     modules_dir = Path(__file__).parent / "modules"
     classes: List[Type[BaseModule]] = []
 
-    for finder, name, ispkg in pkgutil.iter_modules([str(modules_dir)]):
+    for _, name, ispkg in pkgutil.iter_modules([str(modules_dir)]):
         if not ispkg:
             continue
         try:
@@ -93,6 +93,7 @@ class MainWindow(QMainWindow):
         self._ftdi = FtdiManager.instance()
         self._modules: List[BaseModule] = []
         self._active_tab_index: int = -1
+        self._active_channel_ui: str = "A"
         self._settings = QSettings("UniversalDeviceStudio", "MainWindow")
         self._last_connected_serial: str = ""  # Disconnection message box
 

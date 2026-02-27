@@ -257,7 +257,7 @@ class INA228Conversion:
     def raw_to_bus_voltage_v(raw_20bit: int) -> float:
         """Convert 20-bit raw bus voltage to volts.
 
-        LSB = 7.8125 mC
+        LSB = 195.3125 uV
 
         Args:
             raw_20bit: 20-bit value (VBUS register >> 4)

@@ -145,6 +145,10 @@ class INA228Worker(QObject):
                     if vshunt_raw == 0 and abs(self._last_vshunt_mv) > 0.0001:
                         self._record_failure("vshunt_zero_spike")
                         continue
+                    # Negative spike filter: ignore sudden cross from valid to extreme negative
+                    if vshunt_mv < -1000.0 and abs(self._last_vshunt_mv) < 100.0:
+                        self._record_failure("vshunt_neg_spike")
+                        continue
 
                     current_ma = INA228Conversion.calculate_current_ma(vshunt_mv, self._shunt_resistor)
                     power_mw = INA228Conversion.calculate_power_mw(vbus_v, current_ma)

@@ -608,7 +608,7 @@ class FtdiManager(QObject):
             return False
 
     def close_device(self) -> None:
-        """Open FTDI device. """
+        """Close FTDI device and release all handles."""
         try:
             for ch, ft in list(self._ft_handles.items()):
                 if ft is None:

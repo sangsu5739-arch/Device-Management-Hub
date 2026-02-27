@@ -209,7 +209,9 @@ class INA228Module(BaseModule):
             self._worker.stop()
         if self._worker_thread is not None:
             self._worker_thread.quit()
-            self._worker_thread.wait(3000)
+            if not self._worker_thread.wait(3000):
+                self._worker_thread.terminate()
+                self._worker_thread.wait(1000)
             self._worker_thread.deleteLater()
             self._worker_thread = None
         self._worker = None
