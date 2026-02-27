@@ -85,11 +85,17 @@ class PinoutWidget(QWidget):
         self._channel_filter: str = ""
         self._blink_on: bool = True
         self._painting: bool = False
+        self._polling_active: bool = False
+        self._polling_blink_on: bool = True
         self._blink_timer = QTimer(self)
         self._blink_timer.setInterval(450)
         self._blink_timer.setSingleShot(False)
         self._blink_timer.timeout.connect(self._on_blink)
-        self._blink_timer.start()
+        # Start blinking only when a pin is selected.
+        self._polling_timer = QTimer(self)
+        self._polling_timer.setInterval(450)
+        self._polling_timer.setSingleShot(False)
+        self._polling_timer.timeout.connect(self._on_polling_blink)
 
     # ── 공개 API ──
 
@@ -118,6 +124,17 @@ class PinoutWidget(QWidget):
 
     def set_channel_filter(self, channel: str) -> None:
         self._channel_filter = channel
+        self.update()
+
+    def set_polling_active(self, active: bool) -> None:
+        self._polling_active = active
+        if active:
+            if not self._polling_timer.isActive():
+                self._polling_timer.start()
+        else:
+            if self._polling_timer.isActive():
+                self._polling_timer.stop()
+            self._polling_blink_on = True
         self.update()
 
     def get_selected_pin(self) -> int:
@@ -292,12 +309,23 @@ class PinoutWidget(QWidget):
             border_w = 1.2
 
         state = self._pin_states.get(pin.number, False)
-        if state and not dimmed:
-            fill = base_color.lighter(140)
-        else:
+        if active_func in (PinFunction.GPIO_OUT, PinFunction.GPIO_IN) and not dimmed:
+            # Keep GPIO pins uniform; state is shown in table/logs.
             fill = base_color
+        else:
+            if state and not dimmed:
+                fill = base_color.lighter(140)
+            else:
+                fill = base_color
         if is_selected and not dimmed:
             fill = fill.lighter(120)
+
+        if self._polling_active and active_func in (PinFunction.GPIO_OUT, PinFunction.GPIO_IN) and not dimmed:
+            glow = QColor("#ffe16b")
+            glow.setAlpha(90 if self._polling_blink_on else 35)
+            p.setPen(QPen(glow, 4.0))
+            p.setBrush(Qt.BrushStyle.NoBrush)
+            p.drawRoundedRect(rect.adjusted(-1, -1, 1, 1), 5, 5)
 
         # Selected glow / blink
         if is_selected and not dimmed:
@@ -312,6 +340,15 @@ class PinoutWidget(QWidget):
         p.setBrush(QBrush(fill))
         p.setPen(QPen(border_color, border_w))
         p.drawRoundedRect(rect, 4, 4)
+
+        # GPIO state LED (HIGH/LOW indicator) — 폴링 여부 무관하게 동일한 색상
+        if active_func in (PinFunction.GPIO_OUT, PinFunction.GPIO_IN) and not dimmed:
+            led_color = QColor("#2ecc71") if state else QColor("#3b4b66")
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(led_color)
+            led_r = 3.5
+            led_pos = QPointF(rect.right() - 8, rect.center().y())
+            p.drawEllipse(led_pos, led_r, led_r)
 
         # ── 핀 내부에 약어 표시 (좌/우 핀) ──
         func_label = _FUNC_SHORT_LABELS.get(active_func, "")
@@ -455,10 +492,14 @@ class PinoutWidget(QWidget):
                 if rect.contains(pos):
                     self._selected_pin = num
                     self.pin_clicked.emit(num)
+                    if not self._blink_timer.isActive():
+                        self._blink_timer.start()
                     self.update()
                     return
             self._selected_pin = -1
             self.pin_clicked.emit(-1)
+            if self._blink_timer.isActive():
+                self._blink_timer.stop()
             self.update()
 
     def leaveEvent(self, event) -> None:
@@ -467,6 +508,10 @@ class PinoutWidget(QWidget):
         self.update()
 
     def _on_blink(self) -> None:
+        if self._selected_pin < 0:
+            if self._blink_timer.isActive():
+                self._blink_timer.stop()
+            return
         self._blink_on = not self._blink_on
         if self._selected_pin >= 0 and not self._painting:
             rect = self._pin_rects.get(self._selected_pin)
@@ -475,6 +520,11 @@ class PinoutWidget(QWidget):
                 self.update(rect.adjusted(-8, -8, 8, 8).toAlignedRect())
             else:
                 self.update()
+
+    def _on_polling_blink(self) -> None:
+        self._polling_blink_on = not self._polling_blink_on
+        if not self._painting:
+            self.update()
 
     def sizeHint(self) -> QSize:
         return QSize(650, 550)
