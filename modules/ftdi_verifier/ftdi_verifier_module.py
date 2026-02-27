@@ -333,91 +333,105 @@ class FtdiVerifierModule(BaseModule):
         self._uart_group = QGroupBox("UART Test")
         uart_layout = QVBoxLayout(self._uart_group)
         uart_layout.setSpacing(6)
-        uart_layout.setContentsMargins(8, 6, 8, 6)
+        uart_layout.setContentsMargins(8, 8, 8, 8)
 
+        # ── 포트 + 새로고침 ──
         port_row = QHBoxLayout()
         port_row.addWidget(QLabel("COM Port:"))
         self._uart_port_combo = QComboBox()
-        self._uart_port_combo.addItem("Auto-Detect")
-        port_row.addWidget(self._uart_port_combo)
+        self._uart_port_combo.setSizePolicy(
+            self._uart_port_combo.sizePolicy().horizontalPolicy(),
+            self._uart_port_combo.sizePolicy().verticalPolicy()
+        )
+        port_row.addWidget(self._uart_port_combo, 1)
+        self._uart_refresh_btn = QPushButton("\u21ba")
+        self._uart_refresh_btn.setToolTip("\ud3ec\ud2b8 \ubaa9\ub85d \uc0c8\ub85c\uace0\uce68")
+        self._uart_refresh_btn.setFixedSize(28, 28)
+        self._uart_refresh_btn.setStyleSheet(
+            "QPushButton { background: #2a303b; color: #c8d2f0; border-radius: 5px; font-size: 14px; }"
+            "QPushButton:hover { background: #3a4050; }"
+        )
+        self._uart_refresh_btn.clicked.connect(self._refresh_uart_ports)
+        port_row.addWidget(self._uart_refresh_btn)
         uart_layout.addLayout(port_row)
 
+        # ── Baudrate ──
         baud_row = QHBoxLayout()
         baud_row.addWidget(QLabel("Baudrate:"))
         self._uart_baud_combo = QComboBox()
-        self._uart_baud_combo.addItems(["9600", "115200", "230400", "460800", "921600"])
-        baud_row.addWidget(self._uart_baud_combo)
+        self._uart_baud_combo.addItems(["9600", "19200", "38400", "57600", "115200", "230400", "460800", "921600"])
+        self._uart_baud_combo.setCurrentText("115200")
+        baud_row.addWidget(self._uart_baud_combo, 1)
         uart_layout.addLayout(baud_row)
 
+        # ── Data Bits / Parity ──
         cfg_row = QHBoxLayout()
-        cfg_row.addWidget(QLabel("Data Bits:"))
+        cfg_row.addWidget(QLabel("Data:"))
         self._uart_data_bits = QComboBox()
         self._uart_data_bits.addItems(["7", "8"])
+        self._uart_data_bits.setCurrentText("8")
         cfg_row.addWidget(self._uart_data_bits)
+        cfg_row.addSpacing(8)
         cfg_row.addWidget(QLabel("Parity:"))
         self._uart_parity = QComboBox()
-        self._uart_parity.addItems(["None", "Even", "Odd"])
+        self._uart_parity.addItems(["None", "Even", "Odd", "Mark", "Space"])
         cfg_row.addWidget(self._uart_parity)
         uart_layout.addLayout(cfg_row)
 
+        # ── Stop Bits / Flow Control ──
         cfg_row2 = QHBoxLayout()
-        cfg_row2.addWidget(QLabel("Stop Bits:"))
+        cfg_row2.addWidget(QLabel("Stop:"))
         self._uart_stop_bits = QComboBox()
         self._uart_stop_bits.addItems(["1", "1.5", "2"])
         cfg_row2.addWidget(self._uart_stop_bits)
+        cfg_row2.addSpacing(8)
         cfg_row2.addWidget(QLabel("Flow:"))
         self._uart_flow = QComboBox()
         self._uart_flow.addItems(["None", "RTS/CTS", "XON/XOFF"])
         cfg_row2.addWidget(self._uart_flow)
         uart_layout.addLayout(cfg_row2)
 
-        open_row = QHBoxLayout()
-        open_row.setSpacing(8)
+        # ── OPEN / CLOSE 버튼 (전체 너비) ──
         self._uart_open_btn = QPushButton("OPEN")
         self._uart_open_btn.setEnabled(False)
-        self._uart_open_btn.setMinimumWidth(96)
-        self._uart_open_btn.setMinimumHeight(30)
+        self._uart_open_btn.setMinimumHeight(34)
         self._uart_open_btn.clicked.connect(self._on_uart_open_clicked)
         self._apply_uart_open_style(opened=False)
-        open_row.addWidget(self._uart_open_btn)
+        uart_layout.addWidget(self._uart_open_btn)
 
-        open_row.addStretch()
-
-        self._uart_clear_btn = QPushButton("")
-        self._uart_clear_btn.setToolTip("Clear console")
-        self._uart_clear_btn.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_TrashIcon))
-        self._uart_clear_btn.setFixedSize(30, 30)
-        self._uart_clear_btn.setFlat(True)
-        self._uart_clear_btn.clicked.connect(self._on_uart_clear_clicked)
-        open_row.addWidget(self._uart_clear_btn)
-
-        self._uart_save_btn = QPushButton("")
-        self._uart_save_btn.setToolTip("Save log")
-        self._uart_save_btn.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_DialogSaveButton))
-        self._uart_save_btn.setFixedSize(30, 30)
-        self._uart_save_btn.setFlat(True)
-        self._uart_save_btn.clicked.connect(self._on_uart_save_clicked)
-        open_row.addWidget(self._uart_save_btn)
-        uart_layout.addLayout(open_row)
-
-        fmt_row = QHBoxLayout()
-        fmt_row.setSpacing(10)
-        fmt_row.addWidget(QLabel("RX Format:"))
+        # ── 콘솔 툴바 (RX Format / 옵션 / Clear / Save) ──
+        console_toolbar = QHBoxLayout()
+        console_toolbar.setSpacing(8)
+        console_toolbar.addWidget(QLabel("RX:"))
         self._uart_rx_format = QComboBox()
         self._uart_rx_format.addItems(["ASCII", "HEX"])
-        fmt_row.addWidget(self._uart_rx_format)
-        fmt_row.addSpacing(12)
-        self._uart_autoscroll = QCheckBox("Auto Scroll")
+        self._uart_rx_format.setFixedWidth(70)
+        console_toolbar.addWidget(self._uart_rx_format)
+        console_toolbar.addSpacing(6)
+        self._uart_autoscroll = QCheckBox("AutoScroll")
         self._uart_autoscroll.setChecked(True)
-        fmt_row.addWidget(self._uart_autoscroll)
-        fmt_row.addSpacing(12)
+        console_toolbar.addWidget(self._uart_autoscroll)
         self._uart_timestamp = QCheckBox("Timestamp")
         self._uart_timestamp.setChecked(False)
-        fmt_row.addWidget(self._uart_timestamp)
+        console_toolbar.addWidget(self._uart_timestamp)
+        console_toolbar.addStretch()
+        self._uart_clear_btn = QPushButton()
+        self._uart_clear_btn.setToolTip("Clear console")
+        self._uart_clear_btn.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_TrashIcon))
+        self._uart_clear_btn.setFixedSize(26, 26)
+        self._uart_clear_btn.setFlat(True)
+        self._uart_clear_btn.clicked.connect(self._on_uart_clear_clicked)
+        console_toolbar.addWidget(self._uart_clear_btn)
+        self._uart_save_btn = QPushButton()
+        self._uart_save_btn.setToolTip("Save log")
+        self._uart_save_btn.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_DialogSaveButton))
+        self._uart_save_btn.setFixedSize(26, 26)
+        self._uart_save_btn.setFlat(True)
+        self._uart_save_btn.clicked.connect(self._on_uart_save_clicked)
+        console_toolbar.addWidget(self._uart_save_btn)
+        uart_layout.addLayout(console_toolbar)
 
-        fmt_row.addStretch()
-        uart_layout.addLayout(fmt_row)
-
+        # ── UART 콘솔 ──
         self._uart_console = QTextEdit()
         self._uart_console.setReadOnly(True)
         self._uart_console.setFont(QFont("Consolas", 11))
@@ -429,24 +443,32 @@ class FtdiVerifierModule(BaseModule):
         )
         uart_layout.addWidget(self._uart_console)
 
+        # ── 전송 행 ──
         send_row = QHBoxLayout()
         send_row.setSpacing(6)
         self._uart_input = QLineEdit()
-        self._uart_input.setPlaceholderText("Type and send")
+        self._uart_input.setPlaceholderText("Send data...")
         self._uart_input.setMinimumHeight(32)
         self._uart_input.setStyleSheet(
-            "background: #f7f9fc; color: #111111; border: 1px solid #c9d3e6; "
-            "padding: 2px 6px;"
+            "background: #1a2030; color: #e7eef9; border: 1px solid #3a4560; "
+            "border-radius: 4px; padding: 2px 8px;"
         )
         self._uart_input.returnPressed.connect(self._on_uart_send_clicked)
-        send_row.addWidget(self._uart_input)
+        send_row.addWidget(self._uart_input, 1)
         self._uart_crlf = QComboBox()
         self._uart_crlf.addItems(["No EOL", "CR", "LF", "CRLF"])
-        self._uart_crlf.setFixedWidth(45)
+        self._uart_crlf.setCurrentText("CRLF")
+        self._uart_crlf.setFixedWidth(60)
         send_row.addWidget(self._uart_crlf)
         self._uart_send_btn = QPushButton("SEND")
         self._uart_send_btn.setEnabled(False)
         self._uart_send_btn.setFixedWidth(76)
+        self._uart_send_btn.setMinimumHeight(32)
+        self._uart_send_btn.setStyleSheet(
+            "QPushButton { background: #3a5a8a; color: #e7eef9; font-weight: 700; border-radius: 4px; }"
+            "QPushButton:hover { background: #4a6a9a; }"
+            "QPushButton:disabled { background: #2a303b; color: #6a7488; }"
+        )
         self._uart_send_btn.clicked.connect(self._on_uart_send_clicked)
         send_row.addWidget(self._uart_send_btn)
         uart_layout.addLayout(send_row)
@@ -1359,17 +1381,19 @@ class FtdiVerifierModule(BaseModule):
         if not hasattr(self, "_uart_open_btn"):
             return
         if opened:
+            # CLOSE 상태 - 빨간색으로 "닫기" 의도 명확히
             self._uart_open_btn.setStyleSheet(
-                "QPushButton { background: #e06c75; color: #0b0f14; font-weight: 800; "
-                "border-radius: 6px; padding: 4px 10px; }"
-                "QPushButton:hover { background: #f07d87; }"
+                "QPushButton { background: #c0392b; color: #ffffff; font-weight: 800; "
+                "border-radius: 6px; padding: 4px 10px; letter-spacing: 1px; }"
+                "QPushButton:hover { background: #e74c3c; }"
             )
         else:
+            # OPEN 상태 - 초록색으로 "연결 가능" 의도 명확히
             self._uart_open_btn.setStyleSheet(
-                "QPushButton { background: #4c8dff; color: #0b0f14; font-weight: 800; "
-                "border-radius: 6px; padding: 4px 10px; }"
-                "QPushButton:hover { background: #5a9bff; }"
-                "QPushButton:disabled { background: #2a303b; color: #9aa4b8; }"
+                "QPushButton { background: #27ae60; color: #ffffff; font-weight: 800; "
+                "border-radius: 6px; padding: 4px 10px; letter-spacing: 1px; }"
+                "QPushButton:hover { background: #2ecc71; }"
+                "QPushButton:disabled { background: #2a303b; color: #6a7488; border: 1px solid #3a4050; }"
             )
 
     def _refresh_uart_ports(self) -> None:
