@@ -137,12 +137,15 @@ class MainWindow(QMainWindow):
         layout = QHBoxLayout(group)
         layout.setContentsMargins(12, 8, 12, 8)
 
-        # Status LED
+        # Status LED + text
         self._status_led = QLabel("●")
         self._status_led.setObjectName("statusLed")
         self._status_led.setStyleSheet("color: #cc3333; font-size: 16px;")
         self._status_led.setFixedWidth(24)
         layout.addWidget(self._status_led)
+        self._status_text = QLabel("Disconnected")
+        self._status_text.setStyleSheet("color: #cc3333; font-weight: 700;")
+        layout.addWidget(self._status_text)
 
         # Device selection
         layout.addWidget(QLabel("Device:"))
@@ -175,19 +178,14 @@ class MainWindow(QMainWindow):
 
         layout.addSpacing(10)
 
-        # Connect/disconnect buttons
+        # Connect toggle button
         self._connect_btn = QPushButton("Connect")
-        self._connect_btn.setObjectName("connectBtn")
-        self._connect_btn.setFixedWidth(110)
-        self._connect_btn.clicked.connect(self._on_connect)
+        self._connect_btn.setObjectName("connectToggleBtn")
+        self._connect_btn.setCheckable(True)
+        self._connect_btn.setFixedWidth(120)
+        self._connect_btn.toggled.connect(self._on_connect_toggle)
+        self._apply_connect_btn_style(connected=False)
         layout.addWidget(self._connect_btn)
-
-        self._disconnect_btn = QPushButton("Disconnect")
-        self._disconnect_btn.setObjectName("disconnectBtn")
-        self._disconnect_btn.setFixedWidth(110)
-        self._disconnect_btn.setEnabled(False)
-        self._disconnect_btn.clicked.connect(self._on_disconnect)
-        layout.addWidget(self._disconnect_btn)
 
         layout.addStretch()
 
@@ -340,6 +338,13 @@ class MainWindow(QMainWindow):
             self._active_channel_ui = channel
             if hasattr(self, "_active_channel_badge"):
                 self._active_channel_badge.setText(f"ACTIVE: {channel}")
+        else:
+            if hasattr(self, "_connect_btn"):
+                self._connect_btn.blockSignals(True)
+                self._connect_btn.setChecked(False)
+                self._connect_btn.setText("Connect")
+                self._connect_btn.blockSignals(False)
+                self._apply_connect_btn_style(connected=False)
 
     @Slot(int)
     def _on_device_selected(self, index: int) -> None:
@@ -436,14 +441,26 @@ class MainWindow(QMainWindow):
                 pass
         self._ftdi.close_device()
 
+    def _on_connect_toggle(self, checked: bool) -> None:
+        if checked:
+            self._on_connect()
+        else:
+            self._on_disconnect()
+
     @Slot(str)
     def _on_hw_connected(self, info: str) -> None:
         """Update UI on successful connection."""
         self._status_led.setStyleSheet("color: #33cc33; font-size: 16px;")
+        if hasattr(self, "_status_text"):
+            self._status_text.setText("Connected")
+            self._status_text.setStyleSheet("color: #33cc33; font-weight: 700;")
         self._conn_info_label.setText(info)
         self._conn_info_label.setStyleSheet("color: #88cc88; font-style: normal;")
-        self._connect_btn.setEnabled(False)
-        self._disconnect_btn.setEnabled(True)
+        self._connect_btn.blockSignals(True)
+        self._connect_btn.setChecked(True)
+        self._connect_btn.setText("Disconnect")
+        self._connect_btn.blockSignals(False)
+        self._apply_connect_btn_style(connected=True)
         self._device_combo.setEnabled(False)
         self._scan_btn.setEnabled(False)
 
@@ -472,10 +489,16 @@ class MainWindow(QMainWindow):
     def _on_hw_disconnected(self) -> None:
         """Update UI on disconnection."""
         self._status_led.setStyleSheet("color: #cc3333; font-size: 16px;")
+        if hasattr(self, "_status_text"):
+            self._status_text.setText("Disconnected")
+            self._status_text.setStyleSheet("color: #cc3333; font-weight: 700;")
         self._conn_info_label.setText("Not connected")
         self._conn_info_label.setStyleSheet("color: #6a7088; font-style: italic;")
-        self._connect_btn.setEnabled(True)
-        self._disconnect_btn.setEnabled(False)
+        self._connect_btn.blockSignals(True)
+        self._connect_btn.setChecked(False)
+        self._connect_btn.setText("Connect")
+        self._connect_btn.blockSignals(False)
+        self._apply_connect_btn_style(connected=False)
         self._device_combo.setEnabled(True)
         self._scan_btn.setEnabled(True)
         self._channel_combo.setEnabled(True)
@@ -496,10 +519,30 @@ class MainWindow(QMainWindow):
     def _on_hw_error(self, error_msg: str) -> None:
         """Show hardware error."""
         self._status_led.setStyleSheet("color: #cccc33; font-size: 16px;")
+        if hasattr(self, "_status_text"):
+            self._status_text.setText("Error")
+            self._status_text.setStyleSheet("color: #cccc33; font-weight: 700;")
         if self._device_combo.count() > 0:
             self._device_combo.setCurrentIndex(0)
 
         self._set_status(f"Error: {error_msg}", "error")
+
+    def _apply_connect_btn_style(self, connected: bool) -> None:
+        if not hasattr(self, "_connect_btn"):
+            return
+        if connected:
+            self._connect_btn.setStyleSheet(
+                "QPushButton { background: #2d1e20; color: #e07070; font-weight: 700; "
+                "border: 1px solid #6a3030; border-radius: 6px; padding: 4px 10px; }"
+                "QPushButton:hover { background: #3a2225; color: #f09090; border-color: #8a4040; }"
+            )
+        else:
+            self._connect_btn.setStyleSheet(
+                "QPushButton { background: #1d2d3a; color: #70b8d0; font-weight: 700; "
+                "border: 1px solid #2a5068; border-radius: 6px; padding: 4px 10px; }"
+                "QPushButton:hover { background: #243548; color: #90d0e8; border-color: #3a6880; }"
+                "QPushButton:disabled { background: #1e2028; color: #4a5068; border: 1px solid #2a2e3a; }"
+            )
 
     @Slot(object)
     def _on_device_info_changed(self, info: dict) -> None:
