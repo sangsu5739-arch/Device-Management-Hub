@@ -64,24 +64,24 @@ class MainWindow(QMainWindow):
 
     _MSGBOX_STYLESHEET = """
         QMessageBox {
-            background-color: #f7f9fc;
+            background-color: #22242e;
         }
         QMessageBox QLabel {
-            color: #111111;
+            color: #c8cdd8;
             font-size: 13px;
         }
         QMessageBox QPushButton {
             min-width: 92px;
             min-height: 30px;
             border-radius: 6px;
-            border: 1px solid #6a8cc7;
-            background-color: #e9f1ff;
-            color: #111111;
+            border: 1px solid #4a6880;
+            background-color: #1d2d3a;
+            color: #90d0e8;
             font-weight: 600;
             padding: 4px 10px;
         }
         QMessageBox QPushButton:hover {
-            background-color: #dbe9ff;
+            background-color: #243548;
         }
     """
 
@@ -96,7 +96,6 @@ class MainWindow(QMainWindow):
         self._active_tab_index: int = -1
         self._active_channel_ui: str = "A"
         self._settings = QSettings("UniversalDeviceStudio", "MainWindow")
-        self._last_connected_serial: str = ""  # Disconnection message box
 
         self._init_ui()
         self._connect_signals()
@@ -325,52 +324,12 @@ class MainWindow(QMainWindow):
 
     # -- Message boxes --
 
-    def _show_scan_dialog(self, device_count: int) -> None:
-        """FTDI scan result message box."""
-        box = QMessageBox(self)
-        box.setWindowTitle("FTDI Scan")
-        if device_count > 0:
-            box.setIcon(QMessageBox.Icon.Information)
-            box.setText("Scan complete")
-            box.setInformativeText(f"Found {device_count} FTDI device(s).")
-        else:
-            box.setIcon(QMessageBox.Icon.Warning)
-            box.setText("No devices")
-            box.setInformativeText("No connectable devices found.")
-        box.setStandardButtons(QMessageBox.StandardButton.Ok)
-        box.setStyleSheet(self._MSGBOX_STYLESHEET)
-        box.exec()
-
-    def _show_connection_dialog(self, info: str) -> None:
-        """FTDI connection success message box."""
-        box = QMessageBox(self)
-        box.setWindowTitle("FTDI Connected")
-        box.setIcon(QMessageBox.Icon.Information)
-        serial = self._ftdi.serial_number or "-"
-        box.setText(f"SN {serial} connected")
-        box.setInformativeText("FTDI device connection is complete.")
-        box.setStandardButtons(QMessageBox.StandardButton.Ok)
-        box.setStyleSheet(self._MSGBOX_STYLESHEET)
-        box.exec()
-
     def _show_warning_dialog(self, title: str, message: str) -> None:
         """Warning message box."""
         box = QMessageBox(self)
         box.setWindowTitle(title)
         box.setIcon(QMessageBox.Icon.Warning)
-        box.setText(title)
-        box.setInformativeText(message)
-        box.setStandardButtons(QMessageBox.StandardButton.Ok)
-        box.setStyleSheet(self._MSGBOX_STYLESHEET)
-        box.exec()
-
-    def _show_disconnection_dialog(self, serial: str) -> None:
-        """FTDI disconnection message box."""
-        box = QMessageBox(self)
-        box.setWindowTitle("FTDI Disconnected")
-        box.setIcon(QMessageBox.Icon.Information)
-        box.setText(f"SN {serial} disconnected")
-        box.setInformativeText("FTDI device has been disconnected.")
+        box.setText(message)
         box.setStandardButtons(QMessageBox.StandardButton.Ok)
         box.setStyleSheet(self._MSGBOX_STYLESHEET)
         box.exec()
@@ -389,7 +348,6 @@ class MainWindow(QMainWindow):
             self._device_combo.setPlaceholderText("No devices found")
             self._device_combo.blockSignals(False)
             self._set_status("No FTDI devices found", "warn")
-            self._show_scan_dialog(0)
             return
 
         for serial, desc, channels, device_type in devices:
@@ -402,7 +360,6 @@ class MainWindow(QMainWindow):
         # Manually trigger device selection after combo is fully populated
         self._on_device_selected(0)
         self._set_status(f"Found {len(devices)} FTDI device(s)", "ok")
-        self._show_scan_dialog(len(devices))
 
     def _selected_channel(self) -> str:
         """Return the currently selected channel from the button group."""
@@ -520,7 +477,6 @@ class MainWindow(QMainWindow):
     @Slot()
     def _on_disconnect(self) -> None:
         """Disconnect FTDI device."""
-        self._last_connected_serial = self._ftdi.serial_number or "-"
         for module in self._modules:
             try:
                 module.stop_communication()
@@ -570,7 +526,6 @@ class MainWindow(QMainWindow):
             pass
 
         QApplication.beep()
-        self._show_connection_dialog(info)
 
     @Slot()
     def _on_hw_disconnected(self) -> None:
@@ -592,7 +547,6 @@ class MainWindow(QMainWindow):
             self._device_combo.setCurrentIndex(0)
 
         self._set_status("Disconnected", "warn")
-        self._show_disconnection_dialog(self._last_connected_serial)
 
         # Notify all modules
         for module in self._modules:

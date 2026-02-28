@@ -32,6 +32,29 @@ class BaseModule(QWidget):
     REQUIRED_MODE: Optional[str] = None
     REQUIRE_MPSSE: bool = False
 
+    _MSGBOX_STYLESHEET = """
+        QMessageBox {
+            background-color: #22242e;
+        }
+        QMessageBox QLabel {
+            color: #c8cdd8;
+            font-size: 13px;
+        }
+        QMessageBox QPushButton {
+            min-width: 92px;
+            min-height: 30px;
+            border-radius: 6px;
+            border: 1px solid #4a6880;
+            background-color: #1d2d3a;
+            color: #90d0e8;
+            font-weight: 600;
+            padding: 4px 10px;
+        }
+        QMessageBox QPushButton:hover {
+            background-color: #243548;
+        }
+    """
+
     # Signals
     status_message = Signal(str)
     log_message = Signal(str)
@@ -114,15 +137,5 @@ class BaseModule(QWidget):
             "Switch to an MPSSE-capable channel (A or B) and try again."
         )
         box.setStandardButtons(QMessageBox.StandardButton.Ok)
-        box.setStyleSheet("""
-            QMessageBox { background-color: #22242e; }
-            QMessageBox QLabel { color: #c8cdd8; font-size: 12px; }
-            QMessageBox QPushButton {
-                min-width: 80px; min-height: 28px;
-                border-radius: 6px; border: 1px solid #4a6880;
-                background-color: #1d2d3a; color: #90d0e8;
-                font-weight: 600; padding: 4px 10px;
-            }
-            QMessageBox QPushButton:hover { background-color: #243548; }
-        """)
+        box.setStyleSheet(self._MSGBOX_STYLESHEET)
         box.exec()
