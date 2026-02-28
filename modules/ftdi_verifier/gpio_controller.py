@@ -30,6 +30,15 @@ class GpioController:
         if pin is None or pin.mpsse_bit is None:
             self._m._append_log("GPIO write failed: invalid pin mapping.")
             return
+        # GPIO tab: auto switch backend per pin (low byte -> bitbang, high byte -> mpsse)
+        if pin.name.startswith(("AC", "BC")):
+            if not self._m._ftdi.set_gpio_backend("mpsse"):
+                self._m._append_log("GPIO write failed: MPSSE not available on this channel.")
+                return
+            self._m._set_gpio_backend_label("MPSSE")
+        else:
+            self._m._ftdi.set_gpio_backend("bitbang")
+            self._m._set_gpio_backend_label("BITBANG")
         if self._m._gpio_poll_btn.isChecked():
             self._m._gpio_poll_btn.setChecked(False)
         state_str = "HIGH" if high else "LOW"

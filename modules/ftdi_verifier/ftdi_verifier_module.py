@@ -67,6 +67,7 @@ class FtdiVerifierModule(BaseModule):
         self._last_i2c_scan_range: tuple[int, int] = (0x08, 0x77)
         self._gpio_poll_interval_value: int = 3000
         self._poll_blink_state: bool = False
+        self._gpio_backend: str = "BITBANG"
         self._pinmap = PinmapController(self)
         self._gpio = GpioController(self)
         super().__init__(ftdi_manager, parent)
@@ -164,7 +165,7 @@ class FtdiVerifierModule(BaseModule):
             self._last_proto_mode = self._proto_mode_combo.currentText()
 
     def _show_mpsse_warning(self, channel: str) -> None:
-        # FTDI Verifier mixes MPSSE and Bitbang intentionally — suppress popup.
+        # FTDI Verifier mixes MPSSE and Bitbang intentionally - suppress popup.
         pass
 
     def start_communication(self) -> None:
@@ -386,7 +387,7 @@ class FtdiVerifierModule(BaseModule):
         port_row.addWidget(self._uart_refresh_btn)
         uart_layout.addLayout(port_row)
 
-        # ── Baudrate ──
+        # -- Baudrate --
         baud_row = QHBoxLayout()
         baud_row.addWidget(QLabel("Baudrate:"))
         self._uart_baud_combo = QComboBox()
@@ -395,7 +396,7 @@ class FtdiVerifierModule(BaseModule):
         baud_row.addWidget(self._uart_baud_combo, 1)
         uart_layout.addLayout(baud_row)
 
-        # ── Data Bits / Parity ──
+        # -- Data Bits / Parity --
         cfg_row = QHBoxLayout()
         cfg_row.addWidget(QLabel("Data:"))
         self._uart_data_bits = QComboBox()
@@ -409,7 +410,7 @@ class FtdiVerifierModule(BaseModule):
         cfg_row.addWidget(self._uart_parity)
         uart_layout.addLayout(cfg_row)
 
-        # ── Stop Bits / Flow Control ──
+        # -- Stop Bits / Flow Control --
         cfg_row2 = QHBoxLayout()
         cfg_row2.addWidget(QLabel("Stop:"))
         self._uart_stop_bits = QComboBox()
@@ -537,6 +538,13 @@ class FtdiVerifierModule(BaseModule):
         self._gpio_poll_btn.toggled.connect(self._on_gpio_poll_toggled)
         poll_row.addWidget(self._gpio_poll_btn)
         gpio_layout.addLayout(poll_row)
+
+        # GPIO backend status
+        self._gpio_backend_label = QLabel("GPIO Backend: BITBANG")
+        self._gpio_backend_label.setStyleSheet(
+            "color: #d4a84b; font-weight: 700; font-size: 11px;"
+        )
+        gpio_layout.addWidget(self._gpio_backend_label)
 
         self._gpio_poll_status = QLabel(" Global polling active")
         self._gpio_poll_status.setStyleSheet(
@@ -816,8 +824,8 @@ class FtdiVerifierModule(BaseModule):
             self._proto_tabs.setCurrentIndex(idx)
 
         if mode == "GPIO":
-            self._append_log("GPIO mode: switching to Bitbang mode.")
-            self.status_message.emit("GPIO mode: switch to Bitbang mode")
+            self._append_log("GPIO mode: auto-switch Bitbang/MPSSE for GPIO control.")
+            self.status_message.emit("GPIO mode: auto Bitbang/MPSSE for GPIO")
 
         # Update pinout mapping based on mode
         self._pinmap.apply_mode(mode)
@@ -883,9 +891,9 @@ class FtdiVerifierModule(BaseModule):
             else:
                 self._pin_ch_label.setText(self._display_channel)
                 if mode == "GPIO":
-                    self._pin_desc_label.setText("GPIO (Bitbang mode)")
+                    self._pin_desc_label.setText("GPIO (Auto Bitbang/MPSSE)")
                 else:
-                    self._pin_desc_label.setText("GPIO is available in Bitbang mode.")
+                    self._pin_desc_label.setText("GPIO uses auto Bitbang/MPSSE in GPIO mode.")
             self._gpio.refresh_controls(pin_selected=True, is_gpio=False)
             return
 
@@ -904,7 +912,7 @@ class FtdiVerifierModule(BaseModule):
             supports_mpsse = bool(ch_spec and ch_spec.supports_mpsse)
             force_gpio = not supports_mpsse
         if mode == "GPIO" or force_gpio:
-            self._pin_desc_label.setText("GPIO (Bitbang mode)")
+            self._pin_desc_label.setText("GPIO (Auto Bitbang/MPSSE)")
         else:
             self._pin_desc_label.setText(pin.description)
 
@@ -1340,16 +1348,17 @@ class FtdiVerifierModule(BaseModule):
         if pin_states:
             # Apply hardware toggle first
             try:
-                mode = self._proto_mode_combo.currentText() if hasattr(self, "_proto_mode_combo") else ""
-                # Bitbang controls low byte only; MPSSE can control low/high.
-                if mode == "GPIO":
-                    if low_mask:
-                        self._ftdi.set_gpio_masked(low_mask, low_value)
-                else:
-                    if low_mask:
-                        self._ftdi.set_gpio_masked(low_mask, low_value)
-                    if high_mask:
+                # Bitbang controls low byte only; MPSSE required for high byte.
+                if low_mask:
+                    self._ftdi.set_gpio_backend("bitbang")
+                    self._set_gpio_backend_label("BITBANG")
+                    self._ftdi.set_gpio_masked(low_mask, low_value)
+                if high_mask:
+                    if self._ftdi.set_gpio_backend("mpsse"):
+                        self._set_gpio_backend_label("MPSSE")
                         self._ftdi.set_gpio_high_masked(high_mask, high_value)
+                    else:
+                        self._append_log("GPIO toggle: MPSSE not available on this channel (high byte skipped).")
             except Exception:
                 pass
             self._pinout.set_pin_states_bulk(pin_states)
@@ -1482,7 +1491,7 @@ class FtdiVerifierModule(BaseModule):
         _DESC = {
             # (supports_mpsse=False, mode)
             (False, "GPIO"): (
-                "Channel {ch}: GPIO uses Bitbang mode. Digital IO control is available.",
+                "Channel {ch}: GPIO uses Bitbang mode (low byte only).",
                 green_css,
             ),
             (False, "UART"): (
@@ -1495,7 +1504,7 @@ class FtdiVerifierModule(BaseModule):
             ),
             # (supports_mpsse=True, mode)
             (True, "GPIO"): (
-                "Channel {ch}: GPIO uses Bitbang mode.",
+                "Channel {ch}: GPIO auto-switches Bitbang (low) / MPSSE (high).",
                 green_css,
             ),
             (True, "UART"): (
@@ -1513,6 +1522,17 @@ class FtdiVerifierModule(BaseModule):
         text_tmpl, css = _DESC[key]
         self._mode_desc_label.setText(text_tmpl.format(ch=dch))
         self._mode_desc_label.setStyleSheet(css)
+
+    def _set_gpio_backend_label(self, backend: str) -> None:
+        self._gpio_backend = backend
+        if not hasattr(self, "_gpio_backend_label"):
+            return
+        if backend == "MPSSE":
+            css = "color: #70b8d0; font-weight: 700; font-size: 11px;"
+        else:
+            css = "color: #d4a84b; font-weight: 700; font-size: 11px;"
+        self._gpio_backend_label.setText(f"GPIO Backend: {backend}")
+        self._gpio_backend_label.setStyleSheet(css)
 
     def _append_log(self, message: str) -> None:
         if not hasattr(self, "_log_text"):

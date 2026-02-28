@@ -1,4 +1,4 @@
-﻿"""
+"""
 Universal Device Studio - FTDI MPSSE I2C manager (Singleton)
 
 FT4232H via ftd2xx + MPSSE for I2C access.
@@ -169,7 +169,7 @@ class FtdiManager(QObject):
                     self._configure_mpsse()
                     self._channel_modes[ch] = "mpsse"
                     self._bitbang_i2c_warned = False
-                    self._mode_switch_ts = 0  # MPSSE configured — release guard immediately
+                    self._mode_switch_ts = 0  # MPSSE configured - release guard immediately
                     try:
                         self._mpsse.apply_gpio_out(self._gpio_out_value)
                     except Exception:
@@ -185,6 +185,39 @@ class FtdiManager(QObject):
                 self._bitbang_i2c_warned = False
         except Exception as e:
             self._log(f"[ERROR] Operation failed: {e}")
+
+    def set_gpio_backend(self, backend: str) -> bool:
+        """Force GPIO backend without changing protocol selection (GPIO tab use)."""
+        if not self._is_connected or self._ft is None:
+            return False
+        ch = self._active_channel
+        backend = backend.lower()
+        try:
+            if backend == "bitbang":
+                self._bitbang.enable(self._bitbang_mask)
+                self._channel_modes[ch] = "bitbang"
+                self._bitbang_i2c_warned = False
+                try:
+                    self._ft.write(bytes([self._gpio_out_value & 0xFF]))
+                except Exception:
+                    pass
+                return True
+            if backend == "mpsse":
+                if not self.supports_mpsse(ch):
+                    return False
+                if self._channel_modes.get(ch) == "bitbang":
+                    self._bitbang.disable()
+                self._configure_mpsse()
+                self._channel_modes[ch] = "mpsse"
+                self._bitbang_i2c_warned = False
+                try:
+                    self._mpsse.apply_gpio_out(self._gpio_out_value)
+                except Exception:
+                    pass
+                return True
+        except Exception as e:
+            self._log(f"[ERROR] GPIO backend switch failed: {e}")
+        return False
 
     def _i2c_guard_active(self) -> bool:
         if self._mode_switch_ts <= 0:
