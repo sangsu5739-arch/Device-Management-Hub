@@ -17,13 +17,14 @@ import traceback
 from pathlib import Path
 from typing import List, Optional, Type
 
+from functools import partial
+
 from PySide6.QtCore import Qt, Slot, QSettings, QTimer
 from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
-    QGroupBox, QLabel, QPushButton, QComboBox, QTabWidget, QMessageBox,
-    QSplitter, QTableWidget, QTableWidgetItem, QHeaderView, QAbstractItemView,
-    QGraphicsOpacityEffect,
+    QLabel, QPushButton, QComboBox, QTabWidget, QMessageBox,
+    QFrame, QButtonGroup,
 )
 
 from core.ftdi_manager import FtdiManager
@@ -131,70 +132,166 @@ class MainWindow(QMainWindow):
         self._tab_widget.currentChanged.connect(self._on_tab_changed)
         main_layout.addWidget(self._tab_widget, 1)
 
-    def _create_connection_panel(self) -> QGroupBox:
-        """Top FTDI connection panel."""
-        group = QGroupBox("FTDI Connection")
-        layout = QHBoxLayout(group)
-        layout.setContentsMargins(12, 8, 12, 8)
+    def _make_separator(self) -> QFrame:
+        """Vertical toolbar separator."""
+        sep = QFrame()
+        sep.setFrameShape(QFrame.Shape.VLine)
+        sep.setFixedWidth(1)
+        sep.setStyleSheet("background: #3a3f50; border: none;")
+        return sep
 
-        # Status LED + text
-        self._status_led = QLabel("●")
-        self._status_led.setObjectName("statusLed")
-        self._status_led.setStyleSheet("color: #cc3333; font-size: 16px;")
-        self._status_led.setFixedWidth(24)
-        layout.addWidget(self._status_led)
-        self._status_text = QLabel("Disconnected")
-        self._status_text.setStyleSheet("color: #cc3333; font-weight: 700;")
-        layout.addWidget(self._status_text)
+    def _create_connection_panel(self) -> QWidget:
+        """Toolbar-style FTDI connection panel (single row, grouped by separators)."""
+        bar = QWidget()
+        bar.setFixedHeight(46)
+        bar.setStyleSheet(
+            "QWidget { background: #1e2130; border-bottom: 1px solid #2e3348; }"
+            "QLabel { background: transparent; border: none; }"
+        )
+        layout = QHBoxLayout(bar)
+        layout.setContentsMargins(12, 0, 12, 0)
+        layout.setSpacing(0)
 
-        # Device selection
-        layout.addWidget(QLabel("Device:"))
+        # ── Group 1: Device ──────────────────────────────────────
+        scan_btn = QPushButton("\u27f3")   # ⟳
+        scan_btn.setToolTip("Scan FTDI devices")
+        scan_btn.setFixedSize(28, 28)
+        scan_btn.setStyleSheet(
+            "QPushButton { background: #252838; color: #8898b8; border: 1px solid #3a3f50;"
+            " border-radius: 5px; font-size: 14px; }"
+            "QPushButton:hover { background: #2e334a; color: #b0c0e0; }"
+            "QPushButton:pressed { background: #1e2130; }"
+            "QPushButton:disabled { color: #404560; border-color: #2a2e3a; }"
+        )
+        scan_btn.clicked.connect(self._on_scan_devices)
+        self._scan_btn = scan_btn
+        layout.addWidget(scan_btn)
+        layout.addSpacing(6)
+
         self._device_combo = QComboBox()
-        self._device_combo.setMinimumWidth(260)
-        self._device_combo.setPlaceholderText("Scan FTDI devices")
+        self._device_combo.setFixedHeight(28)
+        self._device_combo.setMinimumWidth(230)
+        self._device_combo.setPlaceholderText("No devices — press \u27f3 to scan")
+        self._device_combo.setStyleSheet(
+            "QComboBox { background: #252838; color: #c0cce0; border: 1px solid #3a3f50;"
+            " border-radius: 5px; padding: 0 8px; }"
+            "QComboBox:hover { border-color: #5a6080; }"
+            "QComboBox::drop-down { border: none; width: 20px; }"
+            "QComboBox QAbstractItemView { background: #1e2130; color: #c0cce0;"
+            " selection-background-color: #2e3a54; border: 1px solid #3a3f50; }"
+        )
         self._device_combo.currentIndexChanged.connect(self._on_device_selected)
         layout.addWidget(self._device_combo)
 
-        # Scan button
-        self._scan_btn = QPushButton("Scan")
-        self._scan_btn.setFixedWidth(80)
-        self._scan_btn.clicked.connect(self._on_scan_devices)
-        layout.addWidget(self._scan_btn)
-
-        # Channel selection
-        layout.addWidget(QLabel("Channel:"))
-        self._channel_combo = QComboBox()
-        self._channel_combo.setMinimumWidth(80)
-        self._channel_combo.setPlaceholderText("-")
-        self._channel_combo.currentIndexChanged.connect(self._on_channel_combo_changed)
-        layout.addWidget(self._channel_combo)
-
-        self._active_channel_badge = QLabel("ACTIVE: -")
-        self._active_channel_badge.setStyleSheet(
-            "color: #e8f0ff; background: #2a3142; border-radius: 6px; padding: 4px 8px;"
-            "font-weight: 700;"
-        )
-        layout.addWidget(self._active_channel_badge)
-
+        layout.addSpacing(10)
+        layout.addWidget(self._make_separator())
         layout.addSpacing(10)
 
-        # Connect toggle button
+        # ── Group 2: Channel buttons ──────────────────────────────
+        ch_lbl = QLabel("CH")
+        ch_lbl.setStyleSheet("color: #606880; font-size: 10px; font-weight: 600;"
+                             " letter-spacing: 1px;")
+        layout.addWidget(ch_lbl)
+        layout.addSpacing(6)
+
+        self._channel_btn_group = QButtonGroup(self)
+        self._channel_btn_group.setExclusive(True)
+        self._channel_buttons: dict[str, QPushButton] = {}
+        self._channel_btn_container = QWidget()
+        self._channel_btn_container.setStyleSheet("background: transparent; border: none;")
+        ch_row = QHBoxLayout(self._channel_btn_container)
+        ch_row.setContentsMargins(0, 0, 0, 0)
+        ch_row.setSpacing(3)
+
+        for ch in ["A", "B", "C", "D"]:
+            btn = QPushButton(ch)
+            btn.setCheckable(True)
+            btn.setFixedSize(28, 28)
+            btn.setStyleSheet(self._ch_btn_style(active=False))
+            btn.clicked.connect(partial(self._on_channel_btn_clicked, ch))
+            self._channel_buttons[ch] = btn
+            self._channel_btn_group.addButton(btn)
+            ch_row.addWidget(btn)
+
+        layout.addWidget(self._channel_btn_container)
+
+        layout.addSpacing(10)
+        layout.addWidget(self._make_separator())
+        layout.addSpacing(10)
+
+        # ── Group 3: Status + info ────────────────────────────────
+        self._status_led = QLabel("●")
+        self._status_led.setStyleSheet("color: #cc3333; font-size: 13px; background: transparent;")
+        self._status_led.setFixedWidth(18)
+        layout.addWidget(self._status_led)
+        layout.addSpacing(4)
+
+        self._status_text = QLabel("Disconnected")
+        self._status_text.setStyleSheet("color: #cc3333; font-weight: 700; font-size: 11px;"
+                                        " background: transparent;")
+        layout.addWidget(self._status_text)
+
+        layout.addSpacing(8)
+
+        self._conn_info_label = QLabel("")
+        self._conn_info_label.setStyleSheet("color: #505870; font-size: 10px;"
+                                            " background: transparent;")
+        layout.addWidget(self._conn_info_label)
+
+        layout.addStretch()
+
+        # ── Group 4: Connect button ───────────────────────────────
         self._connect_btn = QPushButton("Connect")
         self._connect_btn.setObjectName("connectToggleBtn")
         self._connect_btn.setCheckable(True)
-        self._connect_btn.setFixedWidth(120)
+        self._connect_btn.setFixedSize(100, 30)
         self._connect_btn.toggled.connect(self._on_connect_toggle)
         self._apply_connect_btn_style(connected=False)
         layout.addWidget(self._connect_btn)
 
-        layout.addStretch()
+        # Compatibility: keep _active_channel_badge as hidden attribute
+        self._active_channel_badge = QLabel()
+        self._active_channel_badge.hide()
 
-        # Connection info
-        self._conn_info_label = QLabel("Not connected")
-        self._conn_info_label.setStyleSheet("color: #6a7088; font-style: italic;")
-        layout.addWidget(self._conn_info_label)
+        # Populate channel buttons for initial state (show only A visible)
+        self._sync_channel_buttons(["A"], "A")
 
-        return group
+        return bar
+
+    @staticmethod
+    def _ch_btn_style(active: bool, enabled: bool = True) -> str:
+        if not enabled:
+            return (
+                "QPushButton { background: #1e2130; color: #383d50; border: 1px solid #2a2e3a;"
+                " border-radius: 5px; font-size: 11px; font-weight: 600; }"
+            )
+        if active:
+            return (
+                "QPushButton { background: #1d3a4a; color: #70c8e8; border: 1px solid #2a6880;"
+                " border-radius: 5px; font-size: 11px; font-weight: 700; }"
+                "QPushButton:hover { background: #1e4055; }"
+            )
+        return (
+            "QPushButton { background: #252838; color: #7888a8; border: 1px solid #3a3f50;"
+            " border-radius: 5px; font-size: 11px; font-weight: 600; }"
+            "QPushButton:hover { background: #2e334a; color: #a0b0c8; border-color: #505870; }"
+            "QPushButton:checked { background: #1d3a4a; color: #70c8e8; border-color: #2a6880; }"
+        )
+
+    def _sync_channel_buttons(self, channels: list[str], selected: str) -> None:
+        """Show/enable only relevant channel buttons; highlight selected."""
+        all_ch = ["A", "B", "C", "D"]
+        for ch in all_ch:
+            btn = self._channel_buttons[ch]
+            if ch in channels:
+                btn.show()
+                btn.setEnabled(True)
+                is_active = (ch == selected)
+                btn.setChecked(is_active)
+                btn.setStyleSheet(self._ch_btn_style(active=is_active))
+            else:
+                btn.hide()
+                btn.setChecked(False)
 
 
     def _connect_signals(self) -> None:
@@ -304,6 +401,13 @@ class MainWindow(QMainWindow):
         self._show_scan_dialog(len(devices))
         self._on_device_selected(self._device_combo.currentIndex())
 
+    def _selected_channel(self) -> str:
+        """Return the currently selected channel from the button group."""
+        for ch, btn in self._channel_buttons.items():
+            if btn.isChecked() and btn.isVisible():
+                return ch
+        return "A"
+
     @Slot()
     def _on_connect(self) -> None:
         """Connect FTDI device."""
@@ -314,80 +418,62 @@ class MainWindow(QMainWindow):
 
         data = self._device_combo.currentData()
         serial = data["serial"] if isinstance(data, dict) else data
-
-        # Single-channel devices pass an empty channel parameter
         channels = list((data.get("channels") or []) if isinstance(data, dict) else [])
+        channel = self._selected_channel() if channels else "A"
 
-        if channels:
-            channel = self._channel_combo.currentText() or "A"
-            if self._channel_combo.currentIndex() < 0 or channel not in channels:
-                self._show_warning_dialog(
-                    "Channel not selected",
-                    "This device supports multiple channels.\n"
-                    f"Select a channel to use. (Available: {', '.join(channels)})",
-                )
-                self._set_status("Select a channel", "warn")
-                return
-        else:
-            channel = "A"
+        if channels and channel not in channels:
+            self._show_warning_dialog(
+                "Channel not selected",
+                "This device supports multiple channels.\n"
+                f"Select a channel to use. (Available: {', '.join(channels)})",
+            )
+            self._set_status("Select a channel", "warn")
+            return
 
         success = self._ftdi.open_device(serial, channel)
         if success:
-            ch_label = f" CH-{channel}" if channel else ""
-            self._set_status(f"Connected: {serial}{ch_label}", "ok")
+            self._set_status(f"Connected: {serial}  CH-{channel}", "ok")
             self._active_channel_ui = channel
-            if hasattr(self, "_active_channel_badge"):
-                self._active_channel_badge.setText(f"ACTIVE: {channel}")
         else:
-            if hasattr(self, "_connect_btn"):
-                self._connect_btn.blockSignals(True)
-                self._connect_btn.setChecked(False)
-                self._connect_btn.setText("Connect")
-                self._connect_btn.blockSignals(False)
-                self._apply_connect_btn_style(connected=False)
+            self._connect_btn.blockSignals(True)
+            self._connect_btn.setChecked(False)
+            self._connect_btn.setText("Connect")
+            self._connect_btn.blockSignals(False)
+            self._apply_connect_btn_style(connected=False)
 
     @Slot(int)
     def _on_device_selected(self, index: int) -> None:
         data = self._device_combo.itemData(index)
-        channels: List[str] = []
-        if isinstance(data, dict):
-            channels = list(data.get("channels") or [])
-        current = self._channel_combo.currentText()
-        self._channel_combo.blockSignals(True)
-        self._channel_combo.clear()
-
+        channels: List[str] = list(data.get("channels") or []) if isinstance(data, dict) else []
         if not channels:
             channels = ["A"]
-        # Multi-channel devices (FT2232, FT4232) or single-channel
-        self._channel_combo.addItems(channels)
-        if current in channels:
-            self._channel_combo.setCurrentText(current)
-        else:
-            self._channel_combo.setCurrentIndex(0)
-        self._channel_combo.setEnabled(True)
-        self._channel_combo.setToolTip("Select an FTDI channel to use")
 
-        self._channel_combo.blockSignals(False)
-        # Reflect auto-selected channel in UI badge (even before connect)
-        selected = self._channel_combo.currentText() or "A"
+        # Keep previously selected channel if still available
+        current = self._active_channel_ui or "A"
+        selected = current if current in channels else channels[0]
         self._active_channel_ui = selected
-        if hasattr(self, "_active_channel_badge"):
-            self._active_channel_badge.setText(f"ACTIVE: {selected}")
+        self._sync_channel_buttons(channels, selected)
 
-    @Slot(int)
-    def _on_channel_combo_changed(self, index: int) -> None:
-        new_channel = self._channel_combo.currentText()
-        if not new_channel:
-            return
+        # Notify modules (not yet connected, just UI preview)
+        for module in self._modules:
+            try:
+                module.on_channel_changed(selected)
+            except Exception as e:
+                logger.error(f"Module on_channel_changed error: {e}")
+
+    def _on_channel_btn_clicked(self, new_channel: str) -> None:
+        """Handle channel button press (pre-connect selection or live switch)."""
         if not self._ftdi.is_connected:
             self._active_channel_ui = new_channel
+            self._sync_channel_buttons(
+                [ch for ch, btn in self._channel_buttons.items() if btn.isVisible()],
+                new_channel,
+            )
             for module in self._modules:
                 try:
                     module.on_channel_changed(new_channel)
                 except Exception as e:
                     logger.error(f"Module on_channel_changed error: {e}")
-            if hasattr(self, "_active_channel_badge"):
-                self._active_channel_badge.setText(f"ACTIVE: {new_channel}")
             return
 
         current = getattr(self, "_active_channel_ui", self._ftdi.channel)
@@ -401,7 +487,6 @@ class MainWindow(QMainWindow):
             except Exception:
                 pass
 
-        # Confirmation dialog
         msg = QMessageBox(self)
         msg.setWindowTitle("Confirm Channel Switch")
         msg.setIcon(QMessageBox.Icon.Question)
@@ -411,16 +496,15 @@ class MainWindow(QMainWindow):
         msg.setDefaultButton(QMessageBox.StandardButton.No)
         msg.setStyleSheet(self._MSGBOX_STYLESHEET)
         if msg.exec() != QMessageBox.StandardButton.Yes:
-            # restore previous selection
-            self._channel_combo.blockSignals(True)
-            self._channel_combo.setCurrentText(current)
-            self._channel_combo.blockSignals(False)
+            # Restore button highlight to current channel
+            visible = [ch for ch, btn in self._channel_buttons.items() if btn.isVisible()]
+            self._sync_channel_buttons(visible, current)
             return
 
         if self._ftdi.set_active_channel(new_channel):
             self._active_channel_ui = new_channel
-            self._set_status(f"Active channel changed: {new_channel}", "ok")
-            # Notify modules of channel change (each module decides whether to re-enable itself)
+            visible = [ch for ch, btn in self._channel_buttons.items() if btn.isVisible()]
+            self._sync_channel_buttons(visible, new_channel)
             for module in self._modules:
                 try:
                     module.on_channel_changed(new_channel)
@@ -450,12 +534,12 @@ class MainWindow(QMainWindow):
     @Slot(str)
     def _on_hw_connected(self, info: str) -> None:
         """Update UI on successful connection."""
-        self._status_led.setStyleSheet("color: #33cc33; font-size: 16px;")
-        if hasattr(self, "_status_text"):
-            self._status_text.setText("Connected")
-            self._status_text.setStyleSheet("color: #33cc33; font-weight: 700;")
+        self._status_led.setStyleSheet("color: #33cc33; font-size: 13px; background: transparent;")
+        self._status_text.setText("Connected")
+        self._status_text.setStyleSheet("color: #33cc33; font-weight: 700; font-size: 11px;"
+                                        " background: transparent;")
         self._conn_info_label.setText(info)
-        self._conn_info_label.setStyleSheet("color: #88cc88; font-style: normal;")
+        self._conn_info_label.setStyleSheet("color: #607870; font-size: 10px; background: transparent;")
         self._connect_btn.blockSignals(True)
         self._connect_btn.setChecked(True)
         self._connect_btn.setText("Disconnect")
@@ -488,12 +572,12 @@ class MainWindow(QMainWindow):
     @Slot()
     def _on_hw_disconnected(self) -> None:
         """Update UI on disconnection."""
-        self._status_led.setStyleSheet("color: #cc3333; font-size: 16px;")
-        if hasattr(self, "_status_text"):
-            self._status_text.setText("Disconnected")
-            self._status_text.setStyleSheet("color: #cc3333; font-weight: 700;")
-        self._conn_info_label.setText("Not connected")
-        self._conn_info_label.setStyleSheet("color: #6a7088; font-style: italic;")
+        self._status_led.setStyleSheet("color: #cc3333; font-size: 13px; background: transparent;")
+        self._status_text.setText("Disconnected")
+        self._status_text.setStyleSheet("color: #cc3333; font-weight: 700; font-size: 11px;"
+                                        " background: transparent;")
+        self._conn_info_label.setText("")
+        self._conn_info_label.setStyleSheet("color: #505870; font-size: 10px; background: transparent;")
         self._connect_btn.blockSignals(True)
         self._connect_btn.setChecked(False)
         self._connect_btn.setText("Connect")
@@ -501,7 +585,6 @@ class MainWindow(QMainWindow):
         self._apply_connect_btn_style(connected=False)
         self._device_combo.setEnabled(True)
         self._scan_btn.setEnabled(True)
-        self._channel_combo.setEnabled(True)
         if self._device_combo.count() > 0:
             self._device_combo.setCurrentIndex(0)
 
@@ -518,10 +601,10 @@ class MainWindow(QMainWindow):
     @Slot(str)
     def _on_hw_error(self, error_msg: str) -> None:
         """Show hardware error."""
-        self._status_led.setStyleSheet("color: #cccc33; font-size: 16px;")
-        if hasattr(self, "_status_text"):
-            self._status_text.setText("Error")
-            self._status_text.setStyleSheet("color: #cccc33; font-weight: 700;")
+        self._status_led.setStyleSheet("color: #cccc33; font-size: 13px; background: transparent;")
+        self._status_text.setText("Error")
+        self._status_text.setStyleSheet("color: #cccc33; font-weight: 700; font-size: 11px;"
+                                        " background: transparent;")
         if self._device_combo.count() > 0:
             self._device_combo.setCurrentIndex(0)
 
@@ -554,8 +637,9 @@ class MainWindow(QMainWindow):
                 module.on_channel_changed(channel)
             except Exception as e:
                 logger.error(f"Module on_channel_changed error: {e}")
-        if hasattr(self, "_active_channel_badge"):
-            self._active_channel_badge.setText(f"ACTIVE: {channel}")
+        self._active_channel_ui = channel
+        visible = [ch for ch, btn in self._channel_buttons.items() if btn.isVisible()]
+        self._sync_channel_buttons(visible, channel)
 
     def _set_status(self, message: str, level: str = "info") -> None:
         """Show a color-coded status bar message.
