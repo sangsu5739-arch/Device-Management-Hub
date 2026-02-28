@@ -380,11 +380,14 @@ class MainWindow(QMainWindow):
     @Slot()
     def _on_scan_devices(self) -> None:
         """Scan FTDI devices."""
-        self._device_combo.clear()
-
         devices = FtdiManager.scan_devices_with_channels()
+
+        # Block signals while rebuilding combo to avoid spurious _on_device_selected calls
+        self._device_combo.blockSignals(True)
+        self._device_combo.clear()
         if not devices:
             self._device_combo.setPlaceholderText("No devices found")
+            self._device_combo.blockSignals(False)
             self._set_status("No FTDI devices found", "warn")
             self._show_scan_dialog(0)
             return
@@ -393,13 +396,13 @@ class MainWindow(QMainWindow):
             self._device_combo.addItem(
                 f"{serial}  ({desc})", {"serial": serial, "channels": channels, "device_type": device_type}
             )
+        self._device_combo.setCurrentIndex(0)
+        self._device_combo.blockSignals(False)
 
-        if self._device_combo.count() > 0:
-            self._device_combo.setCurrentIndex(0)
-
+        # Manually trigger device selection after combo is fully populated
+        self._on_device_selected(0)
         self._set_status(f"Found {len(devices)} FTDI device(s)", "ok")
         self._show_scan_dialog(len(devices))
-        self._on_device_selected(self._device_combo.currentIndex())
 
     def _selected_channel(self) -> str:
         """Return the currently selected channel from the button group."""
