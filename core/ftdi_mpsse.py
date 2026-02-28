@@ -44,27 +44,47 @@ class MpsseController:
             raise RuntimeError("FTDI handle is not open.")
 
         self._o._ft.resetDevice()
+        time.sleep(0.05)
+        self._o._ft.purge(self._PURGE_RXTX)
+        time.sleep(0.05)
         self._o._ft.purge(self._PURGE_RXTX)
         self._o._ft.setUSBParameters(65536, 65536)
         self._o._ft.setLatencyTimer(2)
         self._o._ft.setTimeouts(3000, 3000)
 
         self._o._ft.setBitMode(0x00, 0x00)
-        time.sleep(0.05)
+        time.sleep(0.08)
         self._o._ft.setBitMode(0x00, 0x02)  # MPSSE
+        time.sleep(0.08)
+        self._o._ft.purge(self._PURGE_RXTX)
         time.sleep(0.05)
         self._o._ft.purge(self._PURGE_RXTX)
+        time.sleep(0.05)
 
         # MPSSE sync
-        self.write(b"\xAA")
-        time.sleep(0.02)
-        rxn = self._o._ft.getQueueStatus()
-        if rxn > 0:
-            resp = self.read(rxn)
-            if b"\xFA\xAA" not in resp:
-                self._o._log(f"[WARN] MPSSE sync mismatch: {resp.hex(' ')}")
-        else:
-            self._o._log("[WARN] MPSSE sync timeout (no response)")
+        synced = False
+        for _ in range(3):
+            self.write(b"\xAA")
+            time.sleep(0.03)
+            rxn = self._o._ft.getQueueStatus()
+            if rxn > 0:
+                resp = self.read(rxn)
+                if b"\xFA\xAA" in resp:
+                    synced = True
+                    break
+                # Trim log to avoid huge spam
+                hex_str = resp.hex(" ")
+                if len(hex_str) > 200:
+                    hex_str = hex_str[:200] + " ..."
+                self._o._log(f"[WARN] MPSSE sync mismatch: {hex_str}")
+            else:
+                self._o._log("[WARN] MPSSE sync timeout (no response)")
+        if not synced:
+            # extra purge to avoid stale data in further ops
+            try:
+                self._o._ft.purge(self._PURGE_RXTX)
+            except Exception:
+                pass
 
         # 60MHz, adaptive off, 3-phase on, loopback off
         self.write(bytes([0x8A, 0x97, 0x8C, 0x85]))

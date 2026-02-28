@@ -59,6 +59,10 @@ class BaseModule(QWidget):
     status_message = Signal(str)
     log_message = Signal(str)
 
+    # True while a module is switching FTDI between D2XX and VCP mode.
+    # MainWindow checks this to skip signal propagation to other modules.
+    is_uart_switching: bool = False
+
     def __init__(self, ftdi_manager: FtdiManager, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
         self._ftdi = ftdi_manager

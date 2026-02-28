@@ -490,9 +490,39 @@ class MainWindow(QMainWindow):
         else:
             self._on_disconnect()
 
+    def _is_uart_switching(self) -> bool:
+        """Check if any module is switching between D2XX and VCP mode."""
+        return any(getattr(m, "is_uart_switching", False) for m in self._modules)
+
+    def set_vcp_mode(self, active: bool, port: str = "") -> None:
+        """Update toolbar to reflect VCP (UART) mode. Called by modules."""
+        if active:
+            self._status_led.setStyleSheet("color: #d4a84b; font-size: 13px; background: transparent;")
+            self._status_text.setText("VCP Mode")
+            self._status_text.setStyleSheet("color: #d4a84b; font-weight: 700; font-size: 11px;"
+                                            " background: transparent;")
+            self._conn_info_label.setText(f"UART: {port}" if port else "UART")
+            self._conn_info_label.setStyleSheet("color: #607050; font-size: 10px; background: transparent;")
+            self._connect_btn.blockSignals(True)
+            self._connect_btn.setChecked(False)
+            self._connect_btn.setText("Connect")
+            self._connect_btn.setEnabled(False)
+            self._connect_btn.blockSignals(False)
+            self._apply_connect_btn_style(connected=False)
+            self._device_combo.setEnabled(False)
+            self._scan_btn.setEnabled(False)
+            self._set_status(f"VCP Mode: {port}", "ok")
+        else:
+            self._connect_btn.setEnabled(True)
+
     @Slot(str)
     def _on_hw_connected(self, info: str) -> None:
         """Update UI on successful connection."""
+        # If a module is switching FTDI for UART/VCP, skip MainWindow UI updates
+        # and module notifications — the switching module manages its own state.
+        if self._is_uart_switching():
+            return
+
         self._status_led.setStyleSheet("color: #33cc33; font-size: 13px; background: transparent;")
         self._status_text.setText("Connected")
         self._status_text.setStyleSheet("color: #33cc33; font-weight: 700; font-size: 11px;"
@@ -530,6 +560,10 @@ class MainWindow(QMainWindow):
     @Slot()
     def _on_hw_disconnected(self) -> None:
         """Update UI on disconnection."""
+        # If a module is switching FTDI for UART/VCP, skip — it will restore later.
+        if self._is_uart_switching():
+            return
+
         self._status_led.setStyleSheet("color: #cc3333; font-size: 13px; background: transparent;")
         self._status_text.setText("Disconnected")
         self._status_text.setStyleSheet("color: #cc3333; font-weight: 700; font-size: 11px;"
@@ -588,6 +622,8 @@ class MainWindow(QMainWindow):
 
     @Slot(object)
     def _on_device_info_changed(self, info: dict) -> None:
+        if self._is_uart_switching():
+            return
         channel = info.get("channel", "")
         if not channel:
             return

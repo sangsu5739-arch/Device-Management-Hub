@@ -59,6 +59,12 @@ class FtdiVerifierModule(BaseModule):
         self._uart_serial = None
         self._uart_read_timer = None
         self._last_proto_mode: str = "I2C"
+        self._last_non_uart_mode: str = "I2C"
+        self._uart_prev_connected: bool = False
+        self._uart_prev_serial: str = ""
+        self._uart_prev_channel: str = "A"
+        self._uart_restore_in_progress: bool = False
+        self._suppress_protocol_sync: bool = False
         self._gpio_poll_pin: int = -1
         self._gpio_poll_blink = None
         self._bitbang_mask: int = 0xFF
@@ -119,6 +125,9 @@ class FtdiVerifierModule(BaseModule):
             self._gpio_poll_blink.timeout.connect(self._on_gpio_poll_blink)
 
     def on_device_connected(self) -> None:
+        # Skip if UART mode switching triggered this signal.
+        if self.is_uart_switching:
+            return
         self._i2c_scan_btn.setEnabled(True)
         self._i2c_test_btn.setEnabled(True)
         self._spi_test_btn.setEnabled(True)
@@ -133,6 +142,12 @@ class FtdiVerifierModule(BaseModule):
         self.status_message.emit("FTDI Verifier: device connected")
 
     def on_device_disconnected(self) -> None:
+        # Skip if UART mode switching triggered this signal.
+        if self.is_uart_switching:
+            return
+        # If UART (VCP) is active, avoid protocol/tabs reset.
+        if self._uart_serial is not None:
+            return
         self.stop_communication()
         self._i2c_scan_btn.setEnabled(False)
         self._i2c_test_btn.setEnabled(False)
@@ -146,6 +161,8 @@ class FtdiVerifierModule(BaseModule):
         self.status_message.emit("FTDI Verifier: device disconnected")
 
     def on_channel_changed(self, channel: str) -> None:
+        if self.is_uart_switching:
+            return
         info = self._ftdi.get_device_info()
         chip = info.get("device_type", "FT232H")
         self._apply_chip_and_channel(chip, channel)
@@ -163,6 +180,9 @@ class FtdiVerifierModule(BaseModule):
         super().on_tab_deactivated()
         if hasattr(self, "_proto_mode_combo"):
             self._last_proto_mode = self._proto_mode_combo.currentText()
+        # If UART is open, close and restore FTDI connection on tab leave.
+        if self._uart_serial is not None:
+            self._close_uart()
 
     def _show_mpsse_warning(self, channel: str) -> None:
         # FTDI Verifier mixes MPSSE and Bitbang intentionally - suppress popup.
@@ -173,7 +193,8 @@ class FtdiVerifierModule(BaseModule):
 
     def stop_communication(self) -> None:
         self._stop_worker()
-        self._close_uart()
+        # On global stop (disconnect or channel switch), do not restore FTDI from UART.
+        self._close_uart(restore=False)
 
     def update_data(self) -> None:
         pass
@@ -761,10 +782,17 @@ class FtdiVerifierModule(BaseModule):
         """Update mode combo using supported protocols for current chip/channel."""
         if self._current_chip is None:
             return
+        if self._uart_serial is not None:
+            # UART/VCP active - do not force protocol/tabs reset.
+            return
 
         ch_spec = self._current_chip.channels.get(self._current_channel)
         if ch_spec is None:
             return
+
+        # Capture and clear suppress flag once — used throughout this function.
+        suppressed = self._suppress_protocol_sync
+        self._suppress_protocol_sync = False
 
         current = self._proto_mode_combo.currentText()
         self._proto_mode_combo.blockSignals(True)
@@ -773,9 +801,15 @@ class FtdiVerifierModule(BaseModule):
             self._proto_mode_combo.addItem(name)
         self._proto_mode_combo.blockSignals(False)
 
-        if self._proto_mode_combo.count() > 0:
-            if current in [self._proto_mode_combo.itemText(i) for i in range(self._proto_mode_combo.count())]:
-                self._proto_mode_combo.setCurrentText(current)
+        if self._proto_mode_combo.count() > 0 and not suppressed:
+            items = [self._proto_mode_combo.itemText(i) for i in range(self._proto_mode_combo.count())]
+            desired = current
+            if desired == "UART" and self._uart_serial is None and self._last_non_uart_mode in items:
+                desired = self._last_non_uart_mode
+            if self._last_proto_mode in items:
+                desired = self._last_proto_mode
+            if desired in items:
+                self._proto_mode_combo.setCurrentText(desired)
             else:
                 self._proto_mode_combo.setCurrentIndex(0)
             self._on_protocol_mode_changed(self._proto_mode_combo.currentText())
@@ -801,12 +835,16 @@ class FtdiVerifierModule(BaseModule):
         self._update_mode_desc(self._proto_mode_combo.currentText())
 
         # Protocol mode UI enable/disable
-        self._apply_protocol_mode(self._proto_mode_combo.currentText())
+        if not suppressed:
+            self._apply_protocol_mode(self._proto_mode_combo.currentText())
         self._gpio.refresh_controls()
 
     def _apply_protocol_mode(self, mode: str) -> None:
         required = ("_i2c_group", "_spi_group", "_jtag_group", "_uart_group", "_gpio_group")
         if not all(hasattr(self, name) for name in required):
+            return
+        if self._uart_serial is not None and mode != "UART":
+            # Keep UART tab active while VCP is open.
             return
         groups = {
             "I2C": self._i2c_group,
@@ -830,6 +868,8 @@ class FtdiVerifierModule(BaseModule):
         # Update pinout mapping based on mode
         self._pinmap.apply_mode(mode)
         self._update_mode_desc(mode)
+        if mode != "UART":
+            self._last_non_uart_mode = mode
         if self._ftdi.is_connected:
             self._ftdi.set_protocol_mode(mode)
 
@@ -1212,6 +1252,21 @@ class FtdiVerifierModule(BaseModule):
                 self._append_log("[UART] No available ports.")
                 return
 
+            # If FTDI is connected via D2XX, close it before opening VCP.
+            # Guard with _uart_switching to block signal cascade from close_device().
+            if self._ftdi.is_connected:
+                self._uart_prev_connected = True
+                self._uart_prev_serial = self._ftdi.serial_number
+                self._uart_prev_channel = self._ftdi.channel
+                self.is_uart_switching = True
+                try:
+                    self._ftdi.close_device()
+                finally:
+                    self.is_uart_switching = False
+                self._append_log("[UART] Switched to VCP - D2XX connection closed.")
+            else:
+                self._uart_prev_connected = False
+
             baud = int(self._uart_baud_combo.currentText())
             data_bits = int(self._uart_data_bits.currentText())
             parity_map = {
@@ -1241,6 +1296,10 @@ class FtdiVerifierModule(BaseModule):
             self._uart_send_btn.setEnabled(True)
             self._uart_read_timer.start()
             self._append_log(f"[UART] OPEN: {port} @ {baud}")
+            # Notify MainWindow to show VCP mode in toolbar.
+            main_win = self.window()
+            if hasattr(main_win, "set_vcp_mode"):
+                main_win.set_vcp_mode(True, port)
         except Exception as e:
             self._append_log(f"[UART] OPEN failed: {e}")
             self._uart_serial = None
@@ -1382,7 +1441,7 @@ class FtdiVerifierModule(BaseModule):
             cursor.movePosition(cursor.MoveOperation.End)
             self._uart_console.setTextCursor(cursor)
 
-    def _close_uart(self) -> None:
+    def _close_uart(self, restore: bool = True) -> None:
         if self._uart_read_timer is not None and self._uart_read_timer.isActive():
             self._uart_read_timer.stop()
         if self._uart_serial is not None:
@@ -1394,6 +1453,47 @@ class FtdiVerifierModule(BaseModule):
         self._uart_open_btn.setText("OPEN")
         self._apply_uart_open_style(opened=False)
         self._uart_send_btn.setEnabled(False)
+        # Clear VCP mode in MainWindow toolbar.
+        main_win = self.window()
+        if hasattr(main_win, "set_vcp_mode"):
+            main_win.set_vcp_mode(False)
+        # Restore FTDI connection if we closed it for UART.
+        if not restore or self._uart_restore_in_progress:
+            return
+        if self._uart_prev_connected and self._uart_prev_serial:
+            if self._ftdi.is_connected:
+                self._uart_prev_connected = False
+                return
+            self._uart_restore_in_progress = True
+            self.is_uart_switching = True
+            restored = False
+            try:
+                # Avoid protocol tab switching during restore.
+                self._suppress_protocol_sync = True
+                if self._ftdi.open_device(self._uart_prev_serial, self._uart_prev_channel):
+                    mode = self._last_non_uart_mode or "I2C"
+                    self._ftdi.set_protocol_mode(mode)
+                    self._append_log(f"[UART] Restored FTDI: {self._uart_prev_serial} CH-{self._uart_prev_channel}")
+                    restored = True
+            except Exception as e:
+                self._append_log(f"[UART] Restore failed: {e}")
+            finally:
+                self._uart_prev_connected = False
+                self._uart_restore_in_progress = False
+                self.is_uart_switching = False
+            # Re-emit signals now that is_uart_switching is cleared,
+            # so MainWindow and other modules update their state.
+            if restored and self._ftdi.is_connected:
+                info = f"Connected: SN={self._ftdi.serial_number}, CH={self._ftdi.channel}"
+                self._ftdi.device_connected.emit(info)
+                self._ftdi.device_info_changed.emit({
+                    "serial": self._ftdi.serial_number,
+                    "channel": self._ftdi.channel,
+                    "desc": "",
+                    "channels": self._ftdi._available_channels,
+                    "device_type": "",
+                    "connected": True,
+                })
 
     def _apply_uart_open_style(self, opened: bool) -> None:
         if not hasattr(self, "_uart_open_btn"):
