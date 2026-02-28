@@ -1,8 +1,8 @@
-"""
+﻿"""
 Universal Device Studio - FTDI MPSSE I2C manager (Singleton)
 
 FT4232H via ftd2xx + MPSSE for I2C access.
-Thread-safe FTDI access.
+Thread-safe FTDI access.a
 """
 
 from __future__ import annotations
@@ -14,99 +14,10 @@ from typing import List, Optional, Tuple
 
 from PySide6.QtCore import QObject, Signal, QMutex, QMutexLocker
 
+from core.ftdi_mpsse import MpsseController
+from core.ftdi_bitbang import BitbangController
+
 logger = logging.getLogger(__name__)
-
-
-class MpsseController:
-    """MPSSE control for FTDI devices."""
-
-    def __init__(self, owner: "FtdiManager") -> None:
-        self._o = owner
-
-    def configure(self) -> None:
-        if self._o._ft is None:
-            raise RuntimeError("FTDI handle is not open.")
-
-        self._o._ft.resetDevice()
-        self._o._ft.purge(self._o._PURGE_RXTX)
-        self._o._ft.setUSBParameters(65536, 65536)
-        self._o._ft.setLatencyTimer(2)
-        self._o._ft.setTimeouts(3000, 3000)
-
-        self._o._ft.setBitMode(0x00, 0x00)
-        time.sleep(0.05)
-        self._o._ft.setBitMode(0x00, 0x02)  # MPSSE
-        time.sleep(0.05)
-        self._o._ft.purge(self._o._PURGE_RXTX)
-
-        # MPSSE sync
-        self.write(b"\xAA")
-        time.sleep(0.02)
-        rxn = self._o._ft.getQueueStatus()
-        if rxn > 0:
-            resp = self.read(rxn)
-            if b"\xFA\xAA" not in resp:
-                self._o._log(f"[WARN] MPSSE sync mismatch: {resp.hex(' ')}")
-        else:
-            self._o._log("[WARN] MPSSE sync timeout (no response)")
-
-        # 60MHz, adaptive off, 3-phase on, loopback off
-        self.write(bytes([0x8A, 0x97, 0x8C, 0x85]))
-
-        # I2C clock
-        self._o._apply_i2c_clock()
-
-        self.set_lines(scl_high=True, sda_high=True)
-
-    def write(self, data: bytes) -> None:
-        if self._o._ft is None:
-            raise RuntimeError("FTDI handle is not open.")
-        self._o._ft.write(data)
-
-    def read(self, length: int) -> bytes:
-        if self._o._ft is None:
-            raise RuntimeError("FTDI handle is not open.")
-        return self._o._ft.read(length)
-
-    def set_lines(self, scl_high: bool, sda_high: bool) -> None:
-        value = 0x00
-        if scl_high:
-            value |= self._o._PIN_SCL
-        if sda_high:
-            value |= self._o._PIN_SDA
-        cmd = bytes([self._o._MPSSE_SET_BITS_LOW, value & 0xFF, self._o._I2C_DIR_SDA_OUT])
-        self.write(cmd)
-
-    def read_gpio_low(self) -> Optional[int]:
-        if self._o._ft is None:
-            return None
-        self.write(bytes([self._o._MPSSE_READ_BITS_LOW, self._o._MPSSE_SEND_IMMEDIATE]))
-        resp = self.read(1)
-        return resp[0] if resp else None
-
-
-class BitbangController:
-    """Bit-bang GPIO control for FTDI devices."""
-
-    def __init__(self, owner: "FtdiManager") -> None:
-        self._o = owner
-
-    def enable(self, direction_mask: int = 0xFF) -> None:
-        if self._o._ft is None:
-            raise RuntimeError("FTDI handle is not open.")
-        self._o._ft.setBitMode(direction_mask & 0xFF, 0x01)  # BITBANG
-        time.sleep(0.01)
-
-    def disable(self) -> None:
-        if self._o._ft is None:
-            return
-        self._o._ft.setBitMode(0x00, 0x00)
-        time.sleep(0.01)
-
-    def read_pins(self) -> Optional[int]:
-        if self._o._ft is None:
-            return None
-        return self._o._ft.getBitMode()
 
 
 class FtdiManager(QObject):
@@ -138,31 +49,6 @@ class FtdiManager(QObject):
     _initialized: bool = False
     _device_cache: dict = {}
 
-    # FTDI ADBUS GPIO pins
-    _PIN0_SK = 1 << 0   # AD0 ? SCL
-    _PIN1_DO = 1 << 1   # AD1 ? SDA out
-    _PIN2_DI = 1 << 2   # AD2 ? SDA in
-    _PIN3_CS = 1 << 3   # AD3 CS (chip select)
-
-    _PIN_SCL = _PIN0_SK
-    _PIN_SDA = _PIN1_DO
-    _PIN_SDA_IN = _PIN2_DI
-
-    _PURGE_RXTX = 3
-
-    # MPSSE opcodes
-    _MPSSE_SET_BITS_LOW = 0x80
-    _MPSSE_READ_BITS_LOW = 0x81
-    _MPSSE_SEND_IMMEDIATE = 0x87
-    _MPSSE_DATA_OUT_BYTES_NEG = 0x11
-    _MPSSE_DATA_OUT_BITS_POS = 0x12
-    _MPSSE_DATA_IN_BYTES_POS = 0x20
-    _MPSSE_DATA_IN_BITS_POS = 0x22
-
-    # I2C
-    _I2C_DIR_SDA_OUT = _PIN_SCL | _PIN_SDA  # 0x03
-    _I2C_DIR_SDA_IN = _PIN_SCL               # 0x01
-
     def __new__(cls, parent: Optional[QObject] = None) -> FtdiManager:
         if cls._instance is None:
             cls._instance = super().__new__(cls)
@@ -191,6 +77,7 @@ class FtdiManager(QObject):
         self._i2c_clock_khz: int = 100
         self._i2c_hold_mask: int = 0x00
         self._i2c_hold_value: int = 0x00
+        self._gpio_out_value: int = 0x00
         self._mpsse = MpsseController(self)
         self._bitbang = BitbangController(self)
         FtdiManager._initialized = True
@@ -226,18 +113,10 @@ class FtdiManager(QObject):
 
     def set_i2c_clock_khz(self, khz: int) -> None:
         self._i2c_clock_khz = max(10, int(khz))
-        self._apply_i2c_clock()
-
-    def _apply_i2c_clock(self) -> None:
-        if self._ft is None:
+        if self._ft is None or not self.supports_mpsse(self._active_channel):
             return
-        if not self.supports_mpsse(self._active_channel):
-            return
-        freq_hz = self._i2c_clock_khz * 1000
-        div = int((60_000_000 / (2 * freq_hz)) - 1)
-        div = max(0, min(0xFFFF, div))
         try:
-            self._mpsse_write(bytes([0x86, div & 0xFF, (div >> 8) & 0xFF]))
+            self._mpsse.set_i2c_clock(self._i2c_clock_khz)
         except Exception as e:
             self._log(f"[WARN] Failed to set I2C clock: {e}")
 
@@ -275,6 +154,10 @@ class FtdiManager(QObject):
                 self._bitbang.enable(self._bitbang_mask)
                 self._channel_modes[ch] = "bitbang"
                 self._bitbang_i2c_warned = False
+                try:
+                    self._ft.write(bytes([self._gpio_out_value & 0xFF]))
+                except Exception:
+                    pass
                 return
 
             # Leave bitbang when switching away from GPIO
@@ -287,6 +170,10 @@ class FtdiManager(QObject):
                     self._channel_modes[ch] = "mpsse"
                     self._bitbang_i2c_warned = False
                     self._mode_switch_ts = 0  # MPSSE configured — release guard immediately
+                    try:
+                        self._mpsse.apply_gpio_out(self._gpio_out_value)
+                    except Exception:
+                        pass
                 else:
                     self._channel_modes[ch] = "uart"
                     self._bitbang_i2c_warned = False
@@ -318,6 +205,48 @@ class FtdiManager(QObject):
                 self._bitbang.enable(self._bitbang_mask)
             except Exception as e:
                 self._log(f"[ERROR] Bitbang mask set failed: {e}")
+
+    def set_gpio_low(self, bit: int, high: bool) -> None:
+        """Set a single ADBUS GPIO bit high/low in current mode."""
+        if bit < 0 or bit > 7:
+            return
+        if high:
+            self._gpio_out_value |= (1 << bit)
+        else:
+            self._gpio_out_value &= ~(1 << bit)
+        self._apply_gpio_out()
+
+    def set_gpio_masked(self, mask: int, value: int) -> None:
+        """Set GPIO outputs with mask."""
+        self._gpio_out_value = (self._gpio_out_value & ~mask) | (value & mask)
+        self._apply_gpio_out()
+
+    def _apply_gpio_out(self) -> None:
+        if not self._is_connected or self._ft is None:
+            return
+        mode = self._channel_modes.get(self._active_channel, "mpsse")
+        try:
+            if mode == "bitbang":
+                self._ft.write(bytes([self._gpio_out_value & 0xFF]))
+                return
+            if mode == "mpsse":
+                self._mpsse.apply_gpio_out(self._gpio_out_value)
+        except Exception as e:
+            self._log(f"[ERROR] GPIO write failed: {e}")
+
+    def set_gpio_high_masked(self, mask: int, value: int) -> None:
+        """Set GPIO outputs on the high byte (ACBUS/BCBUS) in MPSSE."""
+        if not self._is_connected or self._ft is None:
+            return
+        mode = self._channel_modes.get(self._active_channel, "mpsse")
+        if mode != "mpsse":
+            return
+        try:
+            val = value & mask
+            direction = mask & 0xFF
+            self._mpsse.set_bits_high(val & 0xFF, direction)
+        except Exception as e:
+            self._log(f"[ERROR] GPIO high write failed: {e}")
 
     def get_device_info(self, serial: Optional[str] = None) -> dict:
         key = serial or self._serial_number
@@ -462,37 +391,9 @@ class FtdiManager(QObject):
                 fallback_index = i
         return fallback_index
 
-    # MPSSE
-
-    def _mpsse_write(self, data: bytes) -> None:
-        self._mpsse.write(data)
-
-    def _mpsse_read(self, length: int) -> bytes:
-        if length <= 0:
-            return b""
-        # Wait briefly for data to arrive to avoid empty reads
-        for _ in range(5):
-            try:
-                queued = self._ft.getQueueStatus() if self._ft is not None else 0
-            except Exception:
-                queued = 0
-            if queued >= length:
-                break
-            time.sleep(0.005)
-        try:
-            return self._mpsse.read(length)
-        except Exception:
-            return b""
-
     def _set_lines(self, scl_high: bool, sda_high: bool) -> None:
         """Configure SCL/SDA GPIO lines."""
         self._mpsse.set_lines(scl_high=scl_high, sda_high=sda_high)
-
-    def _merge_i2c_hold(self, value: int, direction: int) -> tuple[int, int]:
-        if self._i2c_hold_mask:
-            value = (value & ~self._i2c_hold_mask) | (self._i2c_hold_value & self._i2c_hold_mask)
-            direction |= self._i2c_hold_mask
-        return value & 0xFF, direction & 0xFF
 
     def set_i2c_hold(self, mask: int, value: int) -> None:
         """Hold GPIO states on ADBUS while in MPSSE I2C (bits 4-7 recommended)."""
@@ -503,8 +404,7 @@ class FtdiManager(QObject):
         if not self.supports_mpsse(self._active_channel):
             return
         try:
-            val, direction = self._merge_i2c_hold(self._PIN_SCL | self._PIN_SDA, self._I2C_DIR_SDA_OUT)
-            self._mpsse_write(bytes([self._MPSSE_SET_BITS_LOW, val, direction]))
+            self._mpsse.apply_i2c_hold()
         except Exception as e:
             self._log(f"[WARN] I2C hold apply failed: {e}")
 
@@ -654,77 +554,7 @@ class FtdiManager(QObject):
 
     # I2C access (with mutex)
 
-    def _i2c_start(self) -> None:
-        """Send I2C START condition."""
-        buf = bytearray()
-        val, dir_mask = self._merge_i2c_hold(self._PIN_SCL | self._PIN_SDA, self._I2C_DIR_SDA_OUT)
-        buf.extend([self._MPSSE_SET_BITS_LOW, val, dir_mask])
-        val, dir_mask = self._merge_i2c_hold(self._PIN_SCL, self._I2C_DIR_SDA_OUT)
-        buf.extend([self._MPSSE_SET_BITS_LOW, val, dir_mask])
-        val, dir_mask = self._merge_i2c_hold(0x00, self._I2C_DIR_SDA_OUT)
-        buf.extend([self._MPSSE_SET_BITS_LOW, val, dir_mask])
-        self._mpsse_write(bytes(buf))
-
-    def _i2c_stop(self) -> None:
-        """Send I2C STOP condition."""
-        buf = bytearray()
-        for _ in range(4):
-            val, dir_mask = self._merge_i2c_hold(0x00, self._I2C_DIR_SDA_OUT)
-            buf.extend([self._MPSSE_SET_BITS_LOW, val, dir_mask])
-        for _ in range(4):
-            val, dir_mask = self._merge_i2c_hold(self._PIN_SCL, self._I2C_DIR_SDA_OUT)
-            buf.extend([self._MPSSE_SET_BITS_LOW, val, dir_mask])
-        for _ in range(4):
-            val, dir_mask = self._merge_i2c_hold(self._PIN_SCL | self._PIN_SDA, self._I2C_DIR_SDA_OUT)
-            buf.extend([self._MPSSE_SET_BITS_LOW, val, dir_mask])
-        self._mpsse_write(bytes(buf))
-
-    def _i2c_write_byte(self, value: int) -> bool:
-        """Write 1 byte and read ACK.
-
-        Returns:
-            True if ACK, False if NACK.
-        """
-        buf = bytearray()
-        val, dir_mask = self._merge_i2c_hold(0x00, self._I2C_DIR_SDA_OUT)
-        buf.extend([self._MPSSE_SET_BITS_LOW, val, dir_mask])
-        buf.extend([self._MPSSE_DATA_OUT_BYTES_NEG, 0x00, 0x00, value & 0xFF])
-        val, dir_mask = self._merge_i2c_hold(0x00, self._I2C_DIR_SDA_IN)
-        buf.extend([self._MPSSE_SET_BITS_LOW, val, dir_mask])
-        buf.extend([self._MPSSE_DATA_IN_BITS_POS, 0x00])
-        buf.append(self._MPSSE_SEND_IMMEDIATE)
-        self._mpsse_write(bytes(buf))
-        resp = self._mpsse_read(1)
-        if not resp:
-            raise RuntimeError("MPSSE read timeout (ACK)")
-        ack_bit = resp[0] & 0x01
-        return ack_bit == 0
-
-    def _i2c_read_byte(self, ack: bool) -> int:
-        """Read 1 byte and send ACK/NACK.
-
-        Args:
-            ack: True=ACK, False=NACK
-
-        Returns:
-            The byte read from the bus.
-        """
-        buf = bytearray()
-        val, dir_mask = self._merge_i2c_hold(0x00, self._I2C_DIR_SDA_IN)
-        buf.extend([self._MPSSE_SET_BITS_LOW, val, dir_mask])
-        buf.extend([self._MPSSE_DATA_IN_BYTES_POS, 0x00, 0x00])
-        ack_byte = 0x00 if ack else 0xFF
-        val, dir_mask = self._merge_i2c_hold(self._PIN_SDA if not ack else 0x00, self._I2C_DIR_SDA_OUT)
-        buf.extend([self._MPSSE_SET_BITS_LOW, val, dir_mask])
-        buf.extend([self._MPSSE_DATA_OUT_BITS_POS, 0x00, ack_byte])
-        buf.append(self._MPSSE_SEND_IMMEDIATE)
-        self._mpsse_write(bytes(buf))
-        resp = self._mpsse_read(1)
-        if not resp:
-            raise RuntimeError("MPSSE read timeout (DATA)")
-        return resp[0]
-
-    # I2C( ) 
+    # I2C (delegated to MPSSE controller)
 
     def i2c_write(self, slave_addr: int, data: bytes) -> bool:
         # I2C write transaction (thread-safe)
@@ -746,32 +576,7 @@ class FtdiManager(QObject):
             return False
 
         locker = QMutexLocker(self._mutex)
-        attempts = self._i2c_retry_count + 1
-        for attempt in range(attempts):
-            try:
-                addr_w = (slave_addr << 1) | 0
-                self._i2c_start()
-                if not self._i2c_write_byte(addr_w):
-                    self._i2c_stop()
-                    raise RuntimeError(f"Address NACK: 0x{slave_addr:02X}")
-                for b in data:
-                    if not self._i2c_write_byte(b):
-                        self._i2c_stop()
-                        raise RuntimeError(f"Data NACK: 0x{b:02X}")
-                self._i2c_stop()
-
-                hex_str = " ".join(f"{b:02X}" for b in data)
-                timestamp = datetime.now().strftime("%H:%M:%S.%f")[:-3]
-                self.data_sent.emit(f"[{timestamp}] TX -> [0x{slave_addr:02X}] {hex_str}")
-                return True
-            except Exception as e:
-                if attempt < attempts - 1:
-                    time.sleep(self._i2c_retry_delay_s)
-                    continue
-                err = f"I2C write error: {e}"
-                self._log(f"[Error] {err}")
-                self.comm_error.emit(err)
-                return False
+        return self._mpsse.i2c_write(slave_addr, data)
 
     def i2c_read(self, slave_addr: int, write_prefix: bytes, read_len: int) -> Optional[bytes]:
         # I2C read transaction (thread-safe)
@@ -791,49 +596,8 @@ class FtdiManager(QObject):
         if not self.supports_mpsse(self._active_channel):
             self.comm_error.emit("MPSSE is required for I2C.")
             return None
-        if read_len <= 0:
-            return b""
-
         locker = QMutexLocker(self._mutex)
-        attempts = self._i2c_retry_count + 1
-        for attempt in range(attempts):
-            try:
-                addr_w = (slave_addr << 1) | 0
-                addr_r = (slave_addr << 1) | 1
-
-                # Write phase
-                self._i2c_start()
-                if not self._i2c_write_byte(addr_w):
-                    self._i2c_stop()
-                    raise RuntimeError(f"Address NACK(Write): 0x{slave_addr:02X}")
-                for b in write_prefix:
-                    if not self._i2c_write_byte(b):
-                        self._i2c_stop()
-                        raise RuntimeError(f"Prefix NACK: 0x{b:02X}")
-
-                # Repeated Start + Read phase
-                self._i2c_start()
-                if not self._i2c_write_byte(addr_r):
-                    self._i2c_stop()
-                    raise RuntimeError(f"Address NACK(Read): 0x{slave_addr:02X}")
-
-                out = bytearray()
-                for i in range(read_len):
-                    out.append(self._i2c_read_byte(ack=(i < read_len - 1)))
-                self._i2c_stop()
-
-                hex_str = " ".join(f"{b:02X}" for b in out)
-                timestamp = datetime.now().strftime("%H:%M:%S.%f")[:-3]
-                self.data_received.emit(f"[{timestamp}] RX <- [0x{slave_addr:02X}] {hex_str}")
-                return bytes(out)
-            except Exception as e:
-                if attempt < attempts - 1:
-                    time.sleep(self._i2c_retry_delay_s)
-                    continue
-                err = f"I2C read error: {e}"
-                self._log(f"[Error] {err}")
-                self.comm_error.emit(err)
-                return None
+        return self._mpsse.i2c_read(slave_addr, write_prefix, read_len)
 
     def i2c_scan(self, addr_start: int = 0x08, addr_end: int = 0x77) -> List[int]:
         """Scan I2C addresses.
@@ -862,21 +626,7 @@ class FtdiManager(QObject):
             return []
 
         locker = QMutexLocker(self._mutex)
-        found: List[int] = []
-        for addr in range(addr_start, addr_end + 1):
-            try:
-                addr_w = (addr << 1) | 0
-                self._i2c_start()
-                ack = self._i2c_write_byte(addr_w)
-                self._i2c_stop()
-                if ack:
-                    found.append(addr)
-            except Exception:
-                try:
-                    self._i2c_stop()
-                except Exception:
-                    pass
-        return found
+        return self._mpsse.i2c_scan(addr_start, addr_end)
 
     def read_gpio_low(self) -> Optional[int]:
         """Read low GPIO bits (ADBUS) in MPSSE mode."""
@@ -888,11 +638,23 @@ class FtdiManager(QObject):
             if mode == "bitbang":
                 value = self._bitbang.read_pins()
                 return value if value is not None else None
-            self._mpsse_write(bytes([self._MPSSE_READ_BITS_LOW, self._MPSSE_SEND_IMMEDIATE]))
-            resp = self._mpsse_read(1)
-            return resp[0] if resp else None
+            return self._mpsse.read_gpio_low()
         except Exception as e:
             self._log(f"[ERROR] GPIO read failed: {e}")
+            return None
+
+    def read_gpio_high(self) -> Optional[int]:
+        """Read high GPIO bits (ACBUS/BCBUS) in MPSSE mode."""
+        if not self._is_connected or self._ft is None:
+            return None
+        locker = QMutexLocker(self._mutex)
+        try:
+            mode = self._channel_modes.get(self._active_channel, "mpsse")
+            if mode != "mpsse":
+                return None
+            return self._mpsse.read_gpio_high()
+        except Exception as e:
+            self._log(f"[ERROR] GPIO high read failed: {e}")
             return None
 
     # SMBus helpers (PI6CG18201)

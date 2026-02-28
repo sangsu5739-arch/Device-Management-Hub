@@ -181,12 +181,11 @@ def _build_ft232h() -> ChipSpec:
             channel="A", mpsse_bit=i, description=desc,
         )
 
-    # -- ACBUS 0-9 (right side) --
+    # -- ACBUS 0-7 (right side) --
     ac_names = [
         ("AC0", "GPIOH0"), ("AC1", "GPIOH1"), ("AC2", "GPIOH2"),
         ("AC3", "GPIOH3"), ("AC4", "GPIOH4"), ("AC5", "GPIOH5"),
-        ("AC6", "GPIOH6"), ("AC7", "GPIOH7"), ("AC8", "GPIOH8"),
-        ("AC9", "GPIOH9"),
+        ("AC6", "GPIOH6"), ("AC7", "GPIOH7"),
     ]
     for i, (name, desc) in enumerate(ac_names):
         pins[21 + i] = PinSpec(
@@ -249,7 +248,7 @@ def _build_ft2232h() -> ChipSpec:
                 ProtocolMode.JTAG, ProtocolMode.UART, ProtocolMode.GPIO,
             ],
             data_pins=[f"AD{i}" for i in range(8)],
-            ctrl_pins=[f"AC{i}" for i in range(10)],
+            ctrl_pins=[f"AC{i}" for i in range(8)],
         ),
         "B": ChannelSpec(
             name="B", supports_mpsse=True,
@@ -258,7 +257,7 @@ def _build_ft2232h() -> ChipSpec:
                 ProtocolMode.JTAG, ProtocolMode.UART, ProtocolMode.GPIO,
             ],
             data_pins=[f"BD{i}" for i in range(8)],
-            ctrl_pins=[f"BC{i}" for i in range(10)],
+            ctrl_pins=[f"BC{i}" for i in range(8)],
         ),
     }
 
@@ -294,7 +293,7 @@ def _build_ft2232h() -> ChipSpec:
         )
 
     # Channel A ACBUS
-    for i in range(10):
+    for i in range(8):
         pins[26 + i] = PinSpec(
             number=26 + i, name=f"AC{i}", direction=PinDirection.LEFT,
             functions=[PinFunction.GPIO_OUT, PinFunction.GPIO_IN],
@@ -321,7 +320,7 @@ def _build_ft2232h() -> ChipSpec:
         )
 
     # Channel B BCBUS
-    for i in range(10):
+    for i in range(8):
         pins[48 + i] = PinSpec(
             number=48 + i, name=f"BC{i}", direction=PinDirection.RIGHT,
             functions=[PinFunction.GPIO_OUT, PinFunction.GPIO_IN],

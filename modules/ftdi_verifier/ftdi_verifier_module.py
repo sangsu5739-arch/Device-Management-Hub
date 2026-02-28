@@ -27,11 +27,13 @@ from PySide6.QtWidgets import (
 from core.ftdi_manager import FtdiManager
 from modules.base_module import BaseModule
 from modules.ftdi_verifier.ftdi_chip_specs import (
-    CHIP_SPECS, ChipSpec, PinSpec, PinFunction, PinDirection,
+    CHIP_SPECS, ChipSpec, PinSpec, PinFunction,
     ProtocolMode, ChannelSpec, PIN_COLORS, PROTOCOL_COLORS,
     get_chip_spec, get_channel_protocols,
 )
 from modules.ftdi_verifier.pinout_widget import PinoutWidget
+from modules.ftdi_verifier.pinmap_controller import PinmapController
+from modules.ftdi_verifier.gpio_controller import GpioController
 from modules.ftdi_verifier.verifier_worker import (
     VerifierWorker, I2CScanResult, ProtocolTestResult,
 )
@@ -63,6 +65,10 @@ class FtdiVerifierModule(BaseModule):
         self._bitbang_btns: list[QPushButton] = []
         self._last_i2c_scan_t0: float | None = None
         self._last_i2c_scan_range: tuple[int, int] = (0x08, 0x77)
+        self._gpio_poll_interval_value: int = 3000
+        self._poll_blink_state: bool = False
+        self._pinmap = PinmapController(self)
+        self._gpio = GpioController(self)
         super().__init__(ftdi_manager, parent)
 
     # -- BaseModule implementation --
@@ -507,11 +513,12 @@ class FtdiVerifierModule(BaseModule):
         poll_row = QHBoxLayout()
         poll_row.addWidget(QLabel("Polling interval (ms):"))
         self._gpio_poll_interval = QSpinBox()
-        self._gpio_poll_interval.setRange(50, 2000)
-        self._gpio_poll_interval.setValue(200)
-        self._gpio_poll_interval.setSingleStep(50)
+        self._gpio_poll_interval.setRange(50, 10000)
+        self._gpio_poll_interval.setValue(3000)
+        self._gpio_poll_interval.setSingleStep(100)
         self._gpio_poll_interval.setMinimumWidth(110)
         self._gpio_poll_interval.valueChanged.connect(self._on_gpio_poll_interval_changed)
+        self._gpio_poll_interval_value = self._gpio_poll_interval.value()
         poll_row.addWidget(self._gpio_poll_interval)
         poll_row.addStretch()
 
@@ -639,6 +646,7 @@ class FtdiVerifierModule(BaseModule):
         # Pinmap widget
         self._pinout = PinoutWidget()
         self._pinout.pin_clicked.connect(self._on_pin_clicked)
+        self._pinout.pin_double_clicked.connect(self._on_pin_double_clicked)
         self._pinout.pin_hovered.connect(self._on_pin_hovered)
         layout.addWidget(self._pinout, 1)
 
@@ -786,7 +794,7 @@ class FtdiVerifierModule(BaseModule):
 
         # Protocol mode UI enable/disable
         self._apply_protocol_mode(self._proto_mode_combo.currentText())
-        self._refresh_gpio_controls()
+        self._gpio.refresh_controls()
 
     def _apply_protocol_mode(self, mode: str) -> None:
         required = ("_i2c_group", "_spi_group", "_jtag_group", "_uart_group", "_gpio_group")
@@ -812,7 +820,7 @@ class FtdiVerifierModule(BaseModule):
             self.status_message.emit("GPIO mode: switch to Bitbang mode")
 
         # Update pinout mapping based on mode
-        self._on_mode_changed(mode)
+        self._pinmap.apply_mode(mode)
         self._update_mode_desc(mode)
         if self._ftdi.is_connected:
             self._ftdi.set_protocol_mode(mode)
@@ -842,70 +850,7 @@ class FtdiVerifierModule(BaseModule):
 
     @Slot(str)
     def _on_mode_changed(self, text: str) -> None:
-        """Update pinmap features on protocol mode change."""
-        if self._current_chip is None:
-            return
-
-        mode_map = {
-            "I2C": {
-                0: PinFunction.I2C_SCL,
-                1: PinFunction.I2C_SDA_OUT,
-                2: PinFunction.I2C_SDA_IN,
-            },
-            "SPI": {
-                0: PinFunction.SPI_SCK,
-                1: PinFunction.SPI_MOSI,
-                2: PinFunction.SPI_MISO,
-                3: PinFunction.SPI_CS,
-            },
-            "JTAG": {
-                0: PinFunction.JTAG_TCK,
-                1: PinFunction.JTAG_TDI,
-                2: PinFunction.JTAG_TDO,
-                3: PinFunction.JTAG_TMS,
-            },
-            "UART": {
-                0: PinFunction.UART_TX,
-                1: PinFunction.UART_RX,
-                2: PinFunction.UART_RTS,
-                3: PinFunction.UART_CTS,
-                4: PinFunction.UART_DTR,
-                5: PinFunction.UART_DSR,
-                6: PinFunction.UART_DCD,
-                7: PinFunction.UART_RI,
-            },
-        }
-
-        func_map = mode_map.get(text, {})
-
-        ch_spec = self._current_chip.channels.get(self._current_channel)
-        supports_mpsse = bool(ch_spec and ch_spec.supports_mpsse)
-        force_gpio = (not supports_mpsse) and text in ("I2C", "SPI", "JTAG")
-
-        for num, pin in self._current_chip.pins.items():
-            if pin.channel != self._current_channel:
-                continue
-
-            if text == "GPIO" or force_gpio:
-                if PinFunction.GPIO_OUT in pin.functions:
-                    self._pinout.set_pin_function(num, PinFunction.GPIO_OUT)
-                elif PinFunction.GPIO_IN in pin.functions:
-                    self._pinout.set_pin_function(num, PinFunction.GPIO_IN)
-                elif pin.direction == PinDirection.INPUT:
-                    self._pinout.set_pin_function(num, PinFunction.GPIO_IN)
-                elif pin.direction in (PinDirection.OUTPUT, PinDirection.BIDIRECTIONAL):
-                    self._pinout.set_pin_function(num, PinFunction.GPIO_OUT)
-                continue
-
-            assigned = func_map.get(pin.mpsse_bit)
-            if assigned and assigned in pin.functions:
-                self._pinout.set_pin_function(num, assigned)
-            elif PinFunction.GPIO_OUT in pin.functions:
-                self._pinout.set_pin_function(num, PinFunction.GPIO_OUT)
-            elif PinFunction.GPIO_IN in pin.functions:
-                self._pinout.set_pin_function(num, PinFunction.GPIO_IN)
-            else:
-                self._pinout.set_pin_function(num, pin.default_function)
+        self._pinmap.apply_mode(text)
 
     @Slot()
     def _on_pin_clicked(self, pin_number: int) -> None:
@@ -914,20 +859,34 @@ class FtdiVerifierModule(BaseModule):
             self._pin_func_label.setText("-")
             self._pin_ch_label.setText("-")
             self._pin_desc_label.setText("-")
-            self._refresh_gpio_controls(pin_selected=False, is_gpio=False)
+            self._gpio.refresh_controls(pin_selected=False, is_gpio=False)
             return
 
         ch_spec = self._current_chip.channels.get(self._current_channel)
-        if ch_spec is None or not ch_spec.supports_mpsse or not self._ftdi.is_connected or (self._ftdi.channel != self._current_channel):
+        mode = self._proto_mode_combo.currentText() if hasattr(self, "_proto_mode_combo") else ""
+        connected = self._ftdi.is_connected
+        ch_match = (not connected) or (self._ftdi.channel == self._current_channel)
+        supports_mpsse = bool(ch_spec and ch_spec.supports_mpsse)
+
+        # Allow GPIO (Bitbang) on any channel; require MPSSE for I2C/SPI/JTAG.
+        if ch_spec is None or (not connected) or (not ch_match) or ((mode in ("I2C", "SPI", "JTAG")) and not supports_mpsse):
             self._pin_name_label.setText("Unavailable")
-            self._pin_func_label.setText("MPSSE not supported on this channel")
-            if self._ftdi.is_connected and self._ftdi.channel != self._current_channel:
+            if not connected:
+                self._pin_func_label.setText("Device not connected")
+            elif not ch_match:
+                self._pin_func_label.setText("Connected channel differs")
+            else:
+                self._pin_func_label.setText("MPSSE not supported on this channel")
+            if connected and not ch_match:
                 self._pin_ch_label.setText(f"{self._display_channel} (Connected: {self._ftdi.channel})")
                 self._pin_desc_label.setText("Connected channel and selected channel differ.")
             else:
                 self._pin_ch_label.setText(self._display_channel)
-                self._pin_desc_label.setText("GPIO control is only available on channels A/B.")
-            self._refresh_gpio_controls(pin_selected=True, is_gpio=False)
+                if mode == "GPIO":
+                    self._pin_desc_label.setText("GPIO (Bitbang mode)")
+                else:
+                    self._pin_desc_label.setText("GPIO is available in Bitbang mode.")
+            self._gpio.refresh_controls(pin_selected=True, is_gpio=False)
             return
 
         pin = self._current_chip.pins.get(pin_number)
@@ -939,7 +898,6 @@ class FtdiVerifierModule(BaseModule):
         self._pin_func_label.setText(active.name)
         self._pin_ch_label.setText(pin.channel or "N/A")
 
-        mode = self._proto_mode_combo.currentText() if hasattr(self, "_proto_mode_combo") else ""
         force_gpio = False
         if mode in ("I2C", "SPI", "JTAG"):
             ch_spec = self._current_chip.channels.get(self._current_channel) if self._current_chip else None
@@ -952,7 +910,7 @@ class FtdiVerifierModule(BaseModule):
 
         # Enable toggle button for GPIO pins
         is_gpio = active in (PinFunction.GPIO_OUT, PinFunction.GPIO_IN)
-        self._refresh_gpio_controls(pin_selected=True, is_gpio=is_gpio)
+        self._gpio.refresh_controls(pin_selected=True, is_gpio=is_gpio)
 
         state = self._gpio_states.get(pin_number, self._pinout._pin_states.get(pin_number, False))
         self._gpio_toggle_btn.blockSignals(True)
@@ -966,6 +924,21 @@ class FtdiVerifierModule(BaseModule):
     @Slot(int)
     def _on_pin_hovered(self, pin_number: int) -> None:
         pass  # Handled inside PinoutWidget
+
+    @Slot(int)
+    def _on_pin_double_clicked(self, pin_number: int) -> None:
+        if pin_number < 0:
+            return
+        # Ensure selection context is updated
+        self._on_pin_clicked(pin_number)
+        if not self._gpio_toggle_btn.isEnabled():
+            return
+        current = self._gpio_states.get(pin_number, False)
+        self._gpio_toggle_btn.blockSignals(True)
+        self._gpio_toggle_btn.setChecked(not current)
+        self._gpio_toggle_btn.setText("GPIO: HIGH" if not current else "GPIO: LOW")
+        self._gpio_toggle_btn.blockSignals(False)
+        self._on_gpio_toggle(not current)
 
     # -- I2C --
 
@@ -1112,8 +1085,13 @@ class FtdiVerifierModule(BaseModule):
         if checked:
             # "GPIO polling stop (active)"
             self._gpio_poll_btn.setText("Polling ON")
-            self._refresh_gpio_controls()
+            if hasattr(self, "_gpio_poll_interval"):
+                self._gpio_poll_interval.setEnabled(False)
+                self._gpio_poll_interval_value = self._gpio_poll_interval.value()
+            self._gpio.refresh_controls()
             interval = self._gpio_poll_interval.value()
+            if self._gpio_poll_blink is not None:
+                self._gpio_poll_blink.setInterval(max(50, interval))
             self._start_worker(interval)
             # Polling start: clear all LED states (show OFF)
             for pin_num in list(self._gpio_states.keys()):
@@ -1130,7 +1108,9 @@ class FtdiVerifierModule(BaseModule):
             # "GPIO polling start (idle)"
             self._gpio_poll_btn.setText("Polling OFF")
             self._stop_worker()
-            self._refresh_gpio_controls()
+            self._gpio.refresh_controls()
+            if hasattr(self, "_gpio_poll_interval"):
+                self._gpio_poll_interval.setEnabled(True)
             if hasattr(self, "_gpio_poll_status"):
                 self._gpio_poll_status.setVisible(False)
             if hasattr(self, "_pinout"):
@@ -1145,6 +1125,14 @@ class FtdiVerifierModule(BaseModule):
 
     @Slot(int)
     def _on_gpio_poll_interval_changed(self, value: int) -> None:
+        if self._gpio_poll_btn.isChecked():
+            # Prevent changing interval while polling is active.
+            if hasattr(self, "_gpio_poll_interval"):
+                self._gpio_poll_interval.blockSignals(True)
+                self._gpio_poll_interval.setValue(self._gpio_poll_interval_value)
+                self._gpio_poll_interval.blockSignals(False)
+            return
+        self._gpio_poll_interval_value = value
         if self._worker is not None and self._gpio_poll_btn.isChecked():
             try:
                 self._worker.start_gpio_polling(value)
@@ -1154,65 +1142,11 @@ class FtdiVerifierModule(BaseModule):
 
     @Slot(bool)
     def _on_gpio_toggle(self, high: bool) -> None:
-        if self._ftdi.is_connected and self._ftdi.channel != self._current_channel:
-            self._gpio_toggle_btn.setChecked(False)
-            self._append_log("Channel mismatch: GPIO control is only available on the connected channel.")
-            return
-        pin_num = self._pinout.get_selected_pin()
-        if pin_num < 0:
-            return
-        if self._gpio_poll_btn.isChecked():
-            self._gpio_poll_btn.setChecked(False)
-        self._pinout.set_pin_state(pin_num, high)
-        self._gpio_states[pin_num] = high
-        self._gpio_toggle_btn.setText("GPIO: HIGH" if high else "GPIO: LOW")
-        self._refresh_gpio_controls(pin_selected=True, is_gpio=True)
-        self._pin_desc_label.setText(
-            (self._pin_desc_label.text().split("\n")[0]) + f"\nCurrent status: {'HIGH' if high else 'LOW'}"
-        )
-        state_str = "HIGH" if high else "LOW"
-        pin = self._current_chip.pins.get(pin_num) if self._current_chip else None
-        name = pin.name if pin else f"#{pin_num}"
-        self._append_log(f"[GPIO] {name} -> {state_str}")
-        self._refresh_gpio_table()
+        self._gpio.toggle_selected(high)
 
     @Slot(object)
     def _on_gpio_updated(self, state: object) -> None:
-        if self._gpio_table is None or self._current_chip is None:
-            return
-        # Prefer hardware read-back if provided
-        pin_states = getattr(state, "pin_states", None) or {}
-        # Map MPSSE bit -> pin number if mapping exists
-        mapped = {}
-        if hasattr(self, "_gpio_bit_to_pin"):
-            for bit, val in pin_states.items():
-                pin_num = self._gpio_bit_to_pin.get(bit)
-                if pin_num is not None:
-                    mapped[pin_num] = val
-        for row in range(self._gpio_table.rowCount()):
-            pin_num_item = self._gpio_table.item(row, 0)
-            if pin_num_item is None:
-                continue
-            try:
-                pin_num = int(pin_num_item.text().lstrip("D"))
-            except ValueError:
-                continue
-            level = mapped.get(pin_num, self._gpio_states.get(pin_num, False))
-            level_item = self._gpio_table.item(row, 4)
-            if level_item:
-                level_item.setText("1" if level else "0")
-                if self._gpio_poll_btn.isChecked():
-                    level_item.setForeground(QColor("#66ff99"))
-                else:
-                    level_item.setForeground(QColor("#c8d2f0"))
-            if pin_num in mapped:
-                self._pinout.set_pin_state(pin_num, mapped[pin_num])
-                self._gpio_states[pin_num] = mapped[pin_num]
-                if pin_num == self._pinout.get_selected_pin():
-                    self._gpio_toggle_btn.blockSignals(True)
-                    self._gpio_toggle_btn.setChecked(mapped[pin_num])
-                    self._gpio_toggle_btn.setText("GPIO: HIGH" if mapped[pin_num] else "GPIO: LOW")
-                    self._gpio_toggle_btn.blockSignals(False)
+        self._gpio.on_gpio_updated(state)
 
     
     def _set_bitbang_controls_enabled(self, enabled: bool) -> None:
@@ -1376,6 +1310,51 @@ class FtdiVerifierModule(BaseModule):
                 self._gpio_poll_status.setStyleSheet(
                     "color: #80c890; font-weight: 700; font-size: 11px; opacity: 0.35;"
                 )
+        # Blink all GPIO pins visually while polling is active.
+        if not self._gpio_poll_btn.isChecked():
+            return
+        if self._current_chip is None or not hasattr(self, "_pinout"):
+            return
+        self._poll_blink_state = not self._poll_blink_state
+        pin_states: dict[int, bool] = {}
+        low_mask = 0
+        high_mask = 0
+        high_value = 0
+        low_value = 0
+        for pin_num, pin in self._current_chip.pins.items():
+            active = self._pinout._pin_active_funcs.get(pin.number, pin.default_function)
+            if active in (PinFunction.GPIO_OUT, PinFunction.GPIO_IN):
+                pin_states[pin.number] = self._poll_blink_state
+                if pin.name.startswith(("AC", "BC")):
+                    if pin.mpsse_bit is not None:
+                        bit = 1 << pin.mpsse_bit
+                        high_mask |= bit
+                        if self._poll_blink_state:
+                            high_value |= bit
+                else:
+                    if pin.mpsse_bit is not None:
+                        bit = 1 << pin.mpsse_bit
+                        low_mask |= bit
+                        if self._poll_blink_state:
+                            low_value |= bit
+        if pin_states:
+            # Apply hardware toggle first
+            try:
+                mode = self._proto_mode_combo.currentText() if hasattr(self, "_proto_mode_combo") else ""
+                # Bitbang controls low byte only; MPSSE can control low/high.
+                if mode == "GPIO":
+                    if low_mask:
+                        self._ftdi.set_gpio_masked(low_mask, low_value)
+                else:
+                    if low_mask:
+                        self._ftdi.set_gpio_masked(low_mask, low_value)
+                    if high_mask:
+                        self._ftdi.set_gpio_high_masked(high_mask, high_value)
+            except Exception:
+                pass
+            self._pinout.set_pin_states_bulk(pin_states)
+            self._gpio_states.update(pin_states)
+            self._refresh_gpio_table()
 
 
     def _append_uart_console(self, text: str, kind: str = "RX") -> None:
@@ -1479,57 +1458,7 @@ class FtdiVerifierModule(BaseModule):
         self._worker = None
 
     def _refresh_gpio_controls(self, pin_selected: bool | None = None, is_gpio: bool | None = None) -> None:
-        if self._current_chip is None:
-            self._gpio_toggle_btn.setEnabled(False)
-            self._gpio_poll_btn.setEnabled(False)
-            self._set_bitbang_controls_enabled(False)
-            return
-
-        ch_spec = self._current_chip.channels.get(self._current_channel)
-        has_mpsse = bool(ch_spec and ch_spec.supports_mpsse)
-        connected = self._ftdi.is_connected
-        ch_match = (not connected) or (self._ftdi.channel == self._current_channel)
-
-        if pin_selected is None:
-            pin_selected = self._pinout.get_selected_pin() >= 0
-
-        if is_gpio is None:
-            is_gpio = False
-            if pin_selected:
-                pin_num = self._pinout.get_selected_pin()
-                if self._current_chip and pin_num in self._current_chip.pins:
-                    pin = self._current_chip.pins[pin_num]
-                    active = self._pinout._pin_active_funcs.get(pin.number, pin.default_function)
-                    is_gpio = active in (PinFunction.GPIO_OUT, PinFunction.GPIO_IN)
-
-        mode = self._proto_mode_combo.currentText() if hasattr(self, "_proto_mode_combo") else ""
-        base_ok = connected and ch_match and (has_mpsse or mode == "GPIO")
-        poll_checked = self._gpio_poll_btn.isChecked()
-
-        if not base_ok:
-            if poll_checked:
-                self._gpio_poll_btn.blockSignals(True)
-                self._gpio_poll_btn.setChecked(False)
-                self._gpio_poll_btn.blockSignals(False)
-                self._gpio_poll_btn.setText("Start Polling")
-                self._stop_worker()
-            self._gpio_toggle_btn.setEnabled(False)
-            self._gpio_poll_btn.setEnabled(False)
-            self._set_bitbang_controls_enabled(False)
-            return
-
-        if poll_checked:
-            # Global polling active: keep poll enabled, disable toggle to avoid conflict.
-            self._gpio_poll_btn.setEnabled(True)
-            self._gpio_toggle_btn.setEnabled(False)
-            self._set_bitbang_controls_enabled(mode == "GPIO" )
-            return
-
-        allow = pin_selected and (is_gpio or mode == "GPIO")
-        self._gpio_toggle_btn.setEnabled(allow)
-        # Global polling can start without selecting a pin.
-        self._gpio_poll_btn.setEnabled(base_ok)
-        self._set_bitbang_controls_enabled(mode == "GPIO" )
+        self._gpio.refresh_controls(pin_selected, is_gpio)
 
     # -- Logs --
 
@@ -1566,7 +1495,7 @@ class FtdiVerifierModule(BaseModule):
             ),
             # (supports_mpsse=True, mode)
             (True, "GPIO"): (
-                "Channel {ch}: GPIO uses Bitbang mode. I2C/SPI/JTAG use MPSSE; UART uses a separate mode.",
+                "Channel {ch}: GPIO uses Bitbang mode.",
                 green_css,
             ),
             (True, "UART"): (

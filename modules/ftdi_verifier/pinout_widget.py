@@ -62,6 +62,7 @@ class PinoutWidget(QWidget):
 
     pin_clicked = Signal(int)
     pin_hovered = Signal(int)
+    pin_double_clicked = Signal(int)
 
     # -- Layout constants (scaled up) --
     _CHIP_BODY_RATIO = 0.38
@@ -505,6 +506,18 @@ class PinoutWidget(QWidget):
             if self._blink_timer.isActive():
                 self._blink_timer.stop()
             self.update()
+
+    def mouseDoubleClickEvent(self, event: QMouseEvent) -> None:
+        if event.button() == Qt.MouseButton.LeftButton:
+            pos = event.position()
+            for num, rect in self._pin_rects.items():
+                if rect.contains(pos):
+                    self._selected_pin = num
+                    self.pin_double_clicked.emit(num)
+                    if not self._blink_timer.isActive():
+                        self._blink_timer.start()
+                    self.update()
+                    return
 
     def leaveEvent(self, event) -> None:
         self._hovered_pin = -1

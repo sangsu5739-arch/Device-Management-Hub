@@ -357,10 +357,17 @@ class MainWindow(QMainWindow):
         self._channel_combo.addItems(channels)
         if current in channels:
             self._channel_combo.setCurrentText(current)
+        else:
+            self._channel_combo.setCurrentIndex(0)
         self._channel_combo.setEnabled(True)
         self._channel_combo.setToolTip("Select an FTDI channel to use")
 
         self._channel_combo.blockSignals(False)
+        # Reflect auto-selected channel in UI badge (even before connect)
+        selected = self._channel_combo.currentText() or "A"
+        self._active_channel_ui = selected
+        if hasattr(self, "_active_channel_badge"):
+            self._active_channel_badge.setText(f"ACTIVE: {selected}")
 
     @Slot(int)
     def _on_channel_combo_changed(self, index: int) -> None:
