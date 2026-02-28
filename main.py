@@ -244,7 +244,7 @@ class MainWindow(QMainWindow):
         self._connect_btn = QPushButton("Connect")
         self._connect_btn.setObjectName("connectToggleBtn")
         self._connect_btn.setCheckable(True)
-        self._connect_btn.setFixedSize(100, 30)
+        self._connect_btn.setFixedSize(110, 32)
         self._connect_btn.toggled.connect(self._on_connect_toggle)
         self._apply_connect_btn_style(connected=False)
         layout.addWidget(self._connect_btn)
@@ -615,16 +615,18 @@ class MainWindow(QMainWindow):
             return
         if connected:
             self._connect_btn.setStyleSheet(
-                "QPushButton { background: #2d1e20; color: #e07070; font-weight: 700; "
-                "border: 1px solid #6a3030; border-radius: 6px; padding: 4px 10px; }"
-                "QPushButton:hover { background: #3a2225; color: #f09090; border-color: #8a4040; }"
+                "QPushButton { background: #5a1e20; color: #f0a0a0; font-weight: 700; "
+                "font-size: 12px; border: 1px solid #a03030; border-radius: 6px; padding: 4px 10px; }"
+                "QPushButton:hover { background: #6e2225; color: #ffc0c0; border-color: #c04040; }"
+                "QPushButton:pressed { background: #3a1215; }"
             )
         else:
             self._connect_btn.setStyleSheet(
-                "QPushButton { background: #1d2d3a; color: #70b8d0; font-weight: 700; "
-                "border: 1px solid #2a5068; border-radius: 6px; padding: 4px 10px; }"
-                "QPushButton:hover { background: #243548; color: #90d0e8; border-color: #3a6880; }"
-                "QPushButton:disabled { background: #1e2028; color: #4a5068; border: 1px solid #2a2e3a; }"
+                "QPushButton { background: #0e4a5a; color: #a0e8f8; font-weight: 700; "
+                "font-size: 12px; border: 1px solid #1a7090; border-radius: 6px; padding: 4px 10px; }"
+                "QPushButton:hover { background: #145870; color: #c0f0ff; border-color: #2090b0; }"
+                "QPushButton:pressed { background: #0a3040; }"
+                "QPushButton:disabled { background: #1a2030; color: #404860; border: 1px solid #252a38; }"
             )
 
     @Slot(object)
