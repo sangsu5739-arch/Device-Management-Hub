@@ -500,28 +500,30 @@ class FtdiVerifierModule(BaseModule):
         self._uart_console = QTableWidget(0, 3)
         self._uart_console.setHorizontalHeaderLabels(["Time", "Dir", "Data"])
         self._uart_console.verticalHeader().setVisible(False)
+        self._uart_console.verticalHeader().setDefaultSectionSize(22)
         self._uart_console.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
-        self._uart_console.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
-        self._uart_console.setFont(QFont("Consolas", 11))
+        self._uart_console.setSelectionMode(QAbstractItemView.SelectionMode.ContiguousSelection)
+        self._uart_console.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self._uart_console.setFont(QFont("Consolas", 10))
         self._uart_console.setMinimumHeight(230)
         self._uart_console.horizontalHeader().setStretchLastSection(True)
-        self._uart_console.setColumnWidth(0, 90)
-        self._uart_console.setColumnWidth(1, 40)
+        self._uart_console.setColumnWidth(0, 72)
+        self._uart_console.setColumnWidth(1, 52)
         self._uart_console.setColumnHidden(0, True)
         self._uart_console.setWordWrap(False)
-        self._uart_console.setTextElideMode(Qt.ElideNone)
-        self._uart_console.horizontalHeader().setTextElideMode(Qt.ElideNone)
-        self._uart_console.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
-        self._uart_console.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
+        self._uart_console.setTextElideMode(Qt.TextElideMode.ElideNone)
+        self._uart_console.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Fixed)
+        self._uart_console.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Fixed)
         self._uart_console.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
         self._uart_console.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         self._uart_console.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         self._uart_console.setStyleSheet(
             "QTableWidget { background: #0b0f14; color: #e7eef9; border: 1px solid #273043; "
-            "border-radius: 6px; }"
-            "QHeaderView::section { background: #141a22; color: #9fb0c8; padding: 4px; border: 0px; }"
-            "QTableWidget::item { padding: 2px 6px; }"
-            "QTableWidget::item:selected { background: #2b4365; }"
+            "border-radius: 6px; gridline-color: transparent; }"
+            "QHeaderView::section { background: #141a22; color: #708090; padding: 2px 6px;"
+            " border: 0px; font-size: 10px; }"
+            "QTableWidget::item { padding: 1px 4px; border-bottom: 1px solid #161c26; }"
+            "QTableWidget::item:selected { background: #1e3050; }"
         )
         uart_layout.addWidget(self._uart_console)
 
@@ -1434,7 +1436,7 @@ class FtdiVerifierModule(BaseModule):
             return
         if checked:
             self._uart_console.setColumnHidden(0, False)
-            self._uart_console.setColumnWidth(0, 90)
+            self._uart_console.setColumnWidth(0, 72)
         else:
             self._uart_console.setColumnHidden(0, True)
 
@@ -1504,26 +1506,37 @@ class FtdiVerifierModule(BaseModule):
         if not hasattr(self, "_uart_console"):
             return
         ts = time.strftime("%H:%M:%S") if (hasattr(self, "_uart_timestamp") and self._uart_timestamp.isChecked()) else ""
-        direction = "RX" if kind == "RX" else "TX"
+        is_rx = (kind == "RX")
+        direction = "\u25c0 RX" if is_rx else "TX \u25b6"  # ◀ RX / TX ▶
+        dir_color = QColor("#66ff99") if is_rx else QColor("#66ccff")
+        bg_color = QColor("#0d1a10") if is_rx else QColor("#0d1420")  # subtle row tint
+
         row = self._uart_console.rowCount()
         self._uart_console.insertRow(row)
+
+        # Time column
         time_item = QTableWidgetItem(ts)
-        time_item.setForeground(QBrush(QColor("#8fa0b8")))
+        time_item.setForeground(QBrush(QColor("#607080")))
+        time_item.setBackground(QBrush(bg_color))
         self._uart_console.setItem(row, 0, time_item)
+
+        # Direction column
         dir_item = QTableWidgetItem(direction)
-        dir_color = QColor("#66ff99") if kind == "RX" else QColor("#66ccff")
         dir_item.setForeground(QBrush(dir_color))
-        dir_item.setData(Qt.ItemDataRole.ForegroundRole, QBrush(dir_color))
         dir_font = dir_item.font()
         dir_font.setBold(True)
         dir_item.setFont(dir_font)
+        dir_item.setBackground(QBrush(bg_color))
+        dir_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
         self._uart_console.setItem(row, 1, dir_item)
+
+        # Data column
         data_item = QTableWidgetItem(text)
-        data_item.setForeground(QBrush(dir_color))
-        data_item.setData(Qt.ItemDataRole.ForegroundRole, QBrush(dir_color))
+        data_item.setForeground(QBrush(QColor("#d0d8e4")))
+        data_item.setBackground(QBrush(bg_color))
         self._uart_console.setItem(row, 2, data_item)
 
-        # Enforce max rows (stack behavior)
+        # Enforce max rows
         max_rows = 3000
         if self._uart_console.rowCount() > max_rows:
             self._uart_console.removeRow(0)
