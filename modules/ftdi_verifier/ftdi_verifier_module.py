@@ -16,12 +16,12 @@ import time
 from typing import Dict, List, Optional
 
 from PySide6.QtCore import Qt, Slot, QThread, QTimer
-from PySide6.QtGui import QFont, QColor
+from PySide6.QtGui import QFont, QColor, QBrush
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QGridLayout,
     QGroupBox, QLabel, QPushButton, QComboBox, QSpinBox,
     QSplitter, QTabWidget, QFrame, QTextEdit,
-    QTableWidget, QTableWidgetItem, QHeaderView, QLineEdit, QCheckBox, QFileDialog, QStyle,
+    QTableWidget, QTableWidgetItem, QHeaderView, QLineEdit, QCheckBox, QFileDialog, QStyle, QAbstractItemView,
 )
 
 from core.ftdi_manager import FtdiManager
@@ -65,13 +65,18 @@ class FtdiVerifierModule(BaseModule):
         self._uart_prev_channel: str = "A"
         self._uart_restore_in_progress: bool = False
         self._suppress_protocol_sync: bool = False
+        self._suppress_protocol_until_ts: float = 0.0
         self._gpio_poll_pin: int = -1
         self._gpio_poll_blink = None
+        self._uart_poll_skip_count: int = 0
+        self._uart_poll_burst_guard: bool = False
+        self._gpio_poll_was_active: bool = False
+        self._gpio_poll_restore_interval: int = 500
         self._bitbang_mask: int = 0xFF
         self._bitbang_btns: list[QPushButton] = []
         self._last_i2c_scan_t0: float | None = None
         self._last_i2c_scan_range: tuple[int, int] = (0x08, 0x77)
-        self._gpio_poll_interval_value: int = 3000
+        self._gpio_poll_interval_value: int = 500
         self._poll_blink_state: bool = False
         self._gpio_backend: str = "BITBANG"
         self._pinmap = PinmapController(self)
@@ -180,8 +185,14 @@ class FtdiVerifierModule(BaseModule):
         super().on_tab_deactivated()
         if hasattr(self, "_proto_mode_combo"):
             self._last_proto_mode = self._proto_mode_combo.currentText()
+        # Clear VCP mode indicator when leaving this tab.
+        main_win = self.window()
+        if hasattr(main_win, "set_vcp_mode"):
+            main_win.set_vcp_mode(False)
         # If UART is open, close and restore FTDI connection on tab leave.
         if self._uart_serial is not None:
+            self._append_log("[UART] Auto-closed (left Verifier tab)")
+            self.status_message.emit("UART auto-closed (left Verifier tab)")
             self._close_uart()
 
     def _show_mpsse_warning(self, channel: str) -> None:
@@ -388,15 +399,20 @@ class FtdiVerifierModule(BaseModule):
         uart_layout.setSpacing(6)
         uart_layout.setContentsMargins(8, 8, 8, 8)
 
-        # -- Port + Refresh --
-        port_row = QHBoxLayout()
-        port_row.addWidget(QLabel("COM Port:"))
+        # -- Port, Baud, Data, Parity, Stop, Flow (Grid Layout) --
+        cfg_layout = QGridLayout()
+        cfg_layout.setSpacing(6)
+
+        # Row 0: Port & Refresh, Baudrate
+        cfg_layout.addWidget(QLabel("COM Port:"), 0, 0)
+        port_hbox = QHBoxLayout()
+        port_hbox.setSpacing(4)
         self._uart_port_combo = QComboBox()
         self._uart_port_combo.setSizePolicy(
             self._uart_port_combo.sizePolicy().horizontalPolicy(),
             self._uart_port_combo.sizePolicy().verticalPolicy()
         )
-        port_row.addWidget(self._uart_port_combo, 1)
+        port_hbox.addWidget(self._uart_port_combo, 1)
         self._uart_refresh_btn = QPushButton("\u21ba")
         self._uart_refresh_btn.setToolTip("Refresh port list")
         self._uart_refresh_btn.setFixedSize(28, 28)
@@ -405,44 +421,39 @@ class FtdiVerifierModule(BaseModule):
             "QPushButton:hover { background: #3a4050; }"
         )
         self._uart_refresh_btn.clicked.connect(self._refresh_uart_ports)
-        port_row.addWidget(self._uart_refresh_btn)
-        uart_layout.addLayout(port_row)
+        port_hbox.addWidget(self._uart_refresh_btn)
+        cfg_layout.addLayout(port_hbox, 0, 1)
 
-        # -- Baudrate --
-        baud_row = QHBoxLayout()
-        baud_row.addWidget(QLabel("Baudrate:"))
+        cfg_layout.addWidget(QLabel("Baudrate:"), 0, 2)
         self._uart_baud_combo = QComboBox()
         self._uart_baud_combo.addItems(["9600", "19200", "38400", "57600", "115200", "230400", "460800", "921600"])
         self._uart_baud_combo.setCurrentText("115200")
-        baud_row.addWidget(self._uart_baud_combo, 1)
-        uart_layout.addLayout(baud_row)
+        cfg_layout.addWidget(self._uart_baud_combo, 0, 3)
 
-        # -- Data Bits / Parity --
-        cfg_row = QHBoxLayout()
-        cfg_row.addWidget(QLabel("Data:"))
+        # Row 1: Data, Parity
+        cfg_layout.addWidget(QLabel("Data:"), 1, 0)
         self._uart_data_bits = QComboBox()
         self._uart_data_bits.addItems(["7", "8"])
         self._uart_data_bits.setCurrentText("8")
-        cfg_row.addWidget(self._uart_data_bits)
-        cfg_row.addSpacing(8)
-        cfg_row.addWidget(QLabel("Parity:"))
+        cfg_layout.addWidget(self._uart_data_bits, 1, 1)
+
+        cfg_layout.addWidget(QLabel("Parity:"), 1, 2)
         self._uart_parity = QComboBox()
         self._uart_parity.addItems(["None", "Even", "Odd", "Mark", "Space"])
-        cfg_row.addWidget(self._uart_parity)
-        uart_layout.addLayout(cfg_row)
+        cfg_layout.addWidget(self._uart_parity, 1, 3)
 
-        # -- Stop Bits / Flow Control --
-        cfg_row2 = QHBoxLayout()
-        cfg_row2.addWidget(QLabel("Stop:"))
+        # Row 2: Stop, Flow
+        cfg_layout.addWidget(QLabel("Stop:"), 2, 0)
         self._uart_stop_bits = QComboBox()
         self._uart_stop_bits.addItems(["1", "1.5", "2"])
-        cfg_row2.addWidget(self._uart_stop_bits)
-        cfg_row2.addSpacing(8)
-        cfg_row2.addWidget(QLabel("Flow:"))
+        cfg_layout.addWidget(self._uart_stop_bits, 2, 1)
+
+        cfg_layout.addWidget(QLabel("Flow:"), 2, 2)
         self._uart_flow = QComboBox()
         self._uart_flow.addItems(["None", "RTS/CTS", "XON/XOFF"])
-        cfg_row2.addWidget(self._uart_flow)
-        uart_layout.addLayout(cfg_row2)
+        cfg_layout.addWidget(self._uart_flow, 2, 3)
+
+        uart_layout.addLayout(cfg_layout)
 
         # -- OPEN / CLOSE button (full width) --
         self._uart_open_btn = QPushButton("OPEN")
@@ -458,7 +469,7 @@ class FtdiVerifierModule(BaseModule):
         console_toolbar.addWidget(QLabel("RX:"))
         self._uart_rx_format = QComboBox()
         self._uart_rx_format.addItems(["ASCII", "HEX"])
-        self._uart_rx_format.setFixedWidth(70)
+        self._uart_rx_format.setFixedWidth(45)
         console_toolbar.addWidget(self._uart_rx_format)
         console_toolbar.addSpacing(6)
         self._uart_autoscroll = QCheckBox("AutoScroll")
@@ -466,6 +477,7 @@ class FtdiVerifierModule(BaseModule):
         console_toolbar.addWidget(self._uart_autoscroll)
         self._uart_timestamp = QCheckBox("Timestamp")
         self._uart_timestamp.setChecked(False)
+        self._uart_timestamp.toggled.connect(self._on_uart_timestamp_toggled)
         console_toolbar.addWidget(self._uart_timestamp)
         console_toolbar.addStretch()
         self._uart_clear_btn = QPushButton()
@@ -485,14 +497,31 @@ class FtdiVerifierModule(BaseModule):
         uart_layout.addLayout(console_toolbar)
 
         # -- UART console --
-        self._uart_console = QTextEdit()
-        self._uart_console.setReadOnly(True)
+        self._uart_console = QTableWidget(0, 3)
+        self._uart_console.setHorizontalHeaderLabels(["Time", "Dir", "Data"])
+        self._uart_console.verticalHeader().setVisible(False)
+        self._uart_console.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self._uart_console.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
         self._uart_console.setFont(QFont("Consolas", 11))
-        self._uart_console.setPlaceholderText("UART Console")
         self._uart_console.setMinimumHeight(230)
+        self._uart_console.horizontalHeader().setStretchLastSection(True)
+        self._uart_console.setColumnWidth(0, 90)
+        self._uart_console.setColumnWidth(1, 40)
+        self._uart_console.setColumnHidden(0, True)
+        self._uart_console.setWordWrap(False)
+        self._uart_console.setTextElideMode(Qt.ElideNone)
+        self._uart_console.horizontalHeader().setTextElideMode(Qt.ElideNone)
+        self._uart_console.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
+        self._uart_console.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
+        self._uart_console.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
+        self._uart_console.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self._uart_console.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         self._uart_console.setStyleSheet(
-            "background: #0b0f14; color: #e7eef9; border: 1px solid #273043; "
-            "selection-background-color: #2b4365;"
+            "QTableWidget { background: #0b0f14; color: #e7eef9; border: 1px solid #273043; "
+            "border-radius: 6px; }"
+            "QHeaderView::section { background: #141a22; color: #9fb0c8; padding: 4px; border: 0px; }"
+            "QTableWidget::item { padding: 2px 6px; }"
+            "QTableWidget::item:selected { background: #2b4365; }"
         )
         uart_layout.addWidget(self._uart_console)
 
@@ -536,7 +565,7 @@ class FtdiVerifierModule(BaseModule):
         poll_row.addWidget(QLabel("Polling interval (ms):"))
         self._gpio_poll_interval = QSpinBox()
         self._gpio_poll_interval.setRange(50, 10000)
-        self._gpio_poll_interval.setValue(3000)
+        self._gpio_poll_interval.setValue(500)
         self._gpio_poll_interval.setSingleStep(100)
         self._gpio_poll_interval.setMinimumWidth(110)
         self._gpio_poll_interval.valueChanged.connect(self._on_gpio_poll_interval_changed)
@@ -702,6 +731,7 @@ class FtdiVerifierModule(BaseModule):
         self._log_text = QTextEdit()
         self._log_text.setReadOnly(True)
         self._log_text.setFont(QFont("Consolas", 10))
+        self._log_text.document().setMaximumBlockCount(3000)
         log_layout.addWidget(self._log_text, 1)
 
         tabs.addTab(log_tab, "Communication Log")
@@ -790,7 +820,7 @@ class FtdiVerifierModule(BaseModule):
         if ch_spec is None:
             return
 
-        # Capture and clear suppress flag once — used throughout this function.
+        # Capture and clear suppress flag once used throughout this function.
         suppressed = self._suppress_protocol_sync
         self._suppress_protocol_sync = False
 
@@ -804,7 +834,12 @@ class FtdiVerifierModule(BaseModule):
         if self._proto_mode_combo.count() > 0 and not suppressed:
             items = [self._proto_mode_combo.itemText(i) for i in range(self._proto_mode_combo.count())]
             desired = current
-            if desired == "UART" and self._uart_serial is None and self._last_non_uart_mode in items:
+            if (
+                desired == "UART"
+                and self._uart_serial is None
+                and self._last_proto_mode != "UART"
+                and self._last_non_uart_mode in items
+            ):
                 desired = self._last_non_uart_mode
             if self._last_proto_mode in items:
                 desired = self._last_proto_mode
@@ -876,12 +911,16 @@ class FtdiVerifierModule(BaseModule):
         if mode == "UART":
             self._refresh_uart_ports()
         else:
+            if self._uart_serial is not None:
+                self._append_log(f"[UART] Auto-closed (switched to {mode})")
+                self.status_message.emit(f"UART auto-closed (switched to {mode})")
             self._close_uart()
             if hasattr(self, "_uart_open_btn"):
                 self._uart_open_btn.setEnabled(False)
 
     @Slot(str)
     def _on_protocol_mode_changed(self, text: str) -> None:
+        self._last_proto_mode = text
         self._apply_protocol_mode(text)
 
     @Slot(int)
@@ -894,6 +933,7 @@ class FtdiVerifierModule(BaseModule):
             self._proto_mode_combo.blockSignals(True)
             self._proto_mode_combo.setCurrentText(names[index])
             self._proto_mode_combo.blockSignals(False)
+            self._last_proto_mode = names[index]
             self._apply_protocol_mode(names[index])
 
     @Slot(str)
@@ -1012,8 +1052,13 @@ class FtdiVerifierModule(BaseModule):
         worker.log_message.connect(self._append_log)
         worker.error_occurred.connect(self._append_log)
 
-        # Run synchronously in UI thread (short operation)
-        worker.run_i2c_scan(start, end)
+        self._i2c_scan_thread = QThread()
+        worker.moveToThread(self._i2c_scan_thread)
+        self._i2c_scan_thread.started.connect(lambda: worker.run_i2c_scan(start, end))
+        worker.i2c_scan_done.connect(self._i2c_scan_thread.quit)
+        worker.i2c_scan_done.connect(worker.deleteLater)
+        self._i2c_scan_thread.finished.connect(self._i2c_scan_thread.deleteLater)
+        self._i2c_scan_thread.start()
 
     @Slot(object)
     def _on_i2c_scan_result(self, result: I2CScanResult) -> None:
@@ -1084,7 +1129,14 @@ class FtdiVerifierModule(BaseModule):
         worker.protocol_test_done.connect(self._on_protocol_result)
         worker.log_message.connect(self._append_log)
         worker.error_occurred.connect(self._append_log)
-        worker.test_i2c_address(addr)
+
+        self._i2c_test_thread = QThread()
+        worker.moveToThread(self._i2c_test_thread)
+        self._i2c_test_thread.started.connect(lambda: worker.test_i2c_address(addr))
+        worker.protocol_test_done.connect(self._i2c_test_thread.quit)
+        worker.protocol_test_done.connect(worker.deleteLater)
+        self._i2c_test_thread.finished.connect(self._i2c_test_thread.deleteLater)
+        self._i2c_test_thread.start()
 
     # -- SPI --
 
@@ -1096,7 +1148,14 @@ class FtdiVerifierModule(BaseModule):
         worker.protocol_test_done.connect(self._on_protocol_result)
         worker.log_message.connect(self._append_log)
         worker.run_i2c_scan = lambda: None  # unused
-        worker.test_spi_loopback()
+
+        self._spi_test_thread = QThread()
+        worker.moveToThread(self._spi_test_thread)
+        self._spi_test_thread.started.connect(worker.test_spi_loopback)
+        worker.protocol_test_done.connect(self._spi_test_thread.quit)
+        worker.protocol_test_done.connect(worker.deleteLater)
+        self._spi_test_thread.finished.connect(self._spi_test_thread.deleteLater)
+        self._spi_test_thread.start()
 
     @Slot(object)
     def _on_protocol_result(self, result: ProtocolTestResult) -> None:
@@ -1346,7 +1405,7 @@ class FtdiVerifierModule(BaseModule):
 
     def _on_uart_clear_clicked(self) -> None:
         if hasattr(self, "_uart_console"):
-            self._uart_console.clear()
+            self._uart_console.setRowCount(0)
 
     def _on_uart_save_clicked(self) -> None:
         if not hasattr(self, "_uart_console"):
@@ -1358,10 +1417,26 @@ class FtdiVerifierModule(BaseModule):
             return
         try:
             with open(path, "w", encoding="utf-8") as f:
-                f.write(self._uart_console.toPlainText())
+                for row in range(self._uart_console.rowCount()):
+                    time_item = self._uart_console.item(row, 0)
+                    dir_item = self._uart_console.item(row, 1)
+                    data_item = self._uart_console.item(row, 2)
+                    time_val = time_item.text() if time_item else ""
+                    dir_val = dir_item.text() if dir_item else ""
+                    data_val = data_item.text() if data_item else ""
+                    f.write(f"{time_val}\t{dir_val}\t{data_val}\n")
             self._append_log(f"[UART] Log saved: {path}")
         except Exception as e:
             self._append_log(f"[UART] Save failed: {e}")
+
+    def _on_uart_timestamp_toggled(self, checked: bool) -> None:
+        if not hasattr(self, "_uart_console"):
+            return
+        if checked:
+            self._uart_console.setColumnHidden(0, False)
+            self._uart_console.setColumnWidth(0, 90)
+        else:
+            self._uart_console.setColumnHidden(0, True)
 
     def _on_gpio_poll_blink(self) -> None:
         if not hasattr(self, "_gpio_poll_status"):
@@ -1428,18 +1503,33 @@ class FtdiVerifierModule(BaseModule):
     def _append_uart_console(self, text: str, kind: str = "RX") -> None:
         if not hasattr(self, "_uart_console"):
             return
-        ts = ""
-        if hasattr(self, "_uart_timestamp") and self._uart_timestamp.isChecked():
-            ts = f"[{time.strftime('%H:%M:%S')}] "
-        prefix = "RX< " if kind == "RX" else "TX> "
-        if kind not in ("RX", "TX"):
-            prefix = ""
-        line = f"{ts}{prefix}{text}"
-        self._uart_console.append(line)
+        ts = time.strftime("%H:%M:%S") if (hasattr(self, "_uart_timestamp") and self._uart_timestamp.isChecked()) else ""
+        direction = "RX" if kind == "RX" else "TX"
+        row = self._uart_console.rowCount()
+        self._uart_console.insertRow(row)
+        time_item = QTableWidgetItem(ts)
+        time_item.setForeground(QBrush(QColor("#8fa0b8")))
+        self._uart_console.setItem(row, 0, time_item)
+        dir_item = QTableWidgetItem(direction)
+        dir_color = QColor("#66ff99") if kind == "RX" else QColor("#66ccff")
+        dir_item.setForeground(QBrush(dir_color))
+        dir_item.setData(Qt.ItemDataRole.ForegroundRole, QBrush(dir_color))
+        dir_font = dir_item.font()
+        dir_font.setBold(True)
+        dir_item.setFont(dir_font)
+        self._uart_console.setItem(row, 1, dir_item)
+        data_item = QTableWidgetItem(text)
+        data_item.setForeground(QBrush(dir_color))
+        data_item.setData(Qt.ItemDataRole.ForegroundRole, QBrush(dir_color))
+        self._uart_console.setItem(row, 2, data_item)
+
+        # Enforce max rows (stack behavior)
+        max_rows = 3000
+        if self._uart_console.rowCount() > max_rows:
+            self._uart_console.removeRow(0)
+
         if hasattr(self, "_uart_autoscroll") and self._uart_autoscroll.isChecked():
-            cursor = self._uart_console.textCursor()
-            cursor.movePosition(cursor.MoveOperation.End)
-            self._uart_console.setTextCursor(cursor)
+            self._uart_console.scrollToBottom()
 
     def _close_uart(self, restore: bool = True) -> None:
         if self._uart_read_timer is not None and self._uart_read_timer.isActive():
@@ -1470,6 +1560,7 @@ class FtdiVerifierModule(BaseModule):
             try:
                 # Avoid protocol tab switching during restore.
                 self._suppress_protocol_sync = True
+                self._suppress_protocol_until_ts = time.time() + 1.2
                 if self._ftdi.open_device(self._uart_prev_serial, self._uart_prev_channel):
                     mode = self._last_non_uart_mode or "I2C"
                     self._ftdi.set_protocol_mode(mode)
@@ -1486,14 +1577,24 @@ class FtdiVerifierModule(BaseModule):
             if restored and self._ftdi.is_connected:
                 info = f"Connected: SN={self._ftdi.serial_number}, CH={self._ftdi.channel}"
                 self._ftdi.device_connected.emit(info)
-                self._ftdi.device_info_changed.emit({
-                    "serial": self._ftdi.serial_number,
-                    "channel": self._ftdi.channel,
-                    "desc": "",
-                    "channels": self._ftdi._available_channels,
-                    "device_type": "",
-                    "connected": True,
-                })
+                info_dict = self._ftdi.get_device_info()
+                if info_dict:
+                    self._ftdi.device_info_changed.emit(info_dict)
+                self._uart_poll_skip_count = 2
+                # Restore GPIO polling state if it was active.
+                if self._gpio_poll_was_active and hasattr(self, "_gpio_poll_btn"):
+                    try:
+                        self._gpio_poll_interval.blockSignals(True)
+                        self._gpio_poll_interval.setValue(self._gpio_poll_restore_interval)
+                        self._gpio_poll_interval.blockSignals(False)
+                        self._gpio_poll_btn.blockSignals(True)
+                        self._gpio_poll_btn.setChecked(True)
+                        self._gpio_poll_btn.blockSignals(False)
+                        self._on_gpio_poll_toggled(True)
+                    except Exception:
+                        pass
+                self._gpio_poll_was_active = False
+                self._uart_poll_skip_count = 2
 
     def _apply_uart_open_style(self, opened: bool) -> None:
         if not hasattr(self, "_uart_open_btn"):
@@ -1656,11 +1757,3 @@ class FtdiVerifierModule(BaseModule):
             html = f'<span style="color:#8899aa;">{message}</span>'
 
         self._log_text.append(html)
-
-        doc = self._log_text.document()
-        while doc.blockCount() > self._MAX_LOG_BLOCKS:
-            cursor = self._log_text.textCursor()
-            cursor.movePosition(cursor.MoveOperation.Start)
-            cursor.select(cursor.SelectionType.BlockUnderCursor)
-            cursor.removeSelectedText()
-            cursor.deleteChar()
