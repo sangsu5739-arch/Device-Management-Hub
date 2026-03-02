@@ -1398,7 +1398,7 @@ class FtdiVerifierModule(BaseModule):
                     if self._uart_rx_format.currentText() == "HEX":
                         text = " ".join(f"{b:02X}" for b in data)
                     else:
-                        text = data.decode("utf-8", errors="ignore")
+                        text = data.decode("utf-8", errors="ignore").rstrip("\r\n")
                     if text:
                         self._append_uart_console(text, kind="RX")
         except Exception as e:
