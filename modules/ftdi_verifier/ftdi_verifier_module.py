@@ -353,8 +353,6 @@ class FtdiVerifierModule(BaseModule):
         self._i2c_history_table.setMaximumHeight(130)
         i2c_layout.addWidget(self._i2c_history_table)
 
-        self._proto_tabs.addTab(self._i2c_group, "I2C")
-
         # SPI Control (GUI only)
         self._spi_group = QGroupBox("SPI Control")
         spi_layout = QVBoxLayout(self._spi_group)
@@ -378,12 +376,17 @@ class FtdiVerifierModule(BaseModule):
         self._spi_mode_combo.setCurrentIndex(0)
         cfg_layout.addWidget(self._spi_mode_combo, 0, 1, 1, 2)
 
-        self._spi_waveform = QLabel()
+        from PySide6.QtWidgets import QTextEdit
+        self._spi_waveform = QTextEdit()
+        self._spi_waveform.setReadOnly(True)
+        self._spi_waveform.setLineWrapMode(QTextEdit.LineWrapMode.NoWrap)
         self._spi_waveform.setStyleSheet(
-            "background: #0e1018; color: #7fd9ff; border: 1px solid #223344; "
-            "border-radius: 6px; padding: 10px 12px; font-family: Consolas; font-size: 11px;"
+            "QTextEdit { background: #0e1018; color: #7fd9ff; border: 1px solid #223344; "
+            "border-radius: 6px; padding: 8px 12px; font-family: Consolas; font-size: 11px; }"
+            "QScrollBar:horizontal { height: 6px; }"
+            "QScrollBar:vertical { width: 0px; }"
         )
-        self._spi_waveform.setMinimumHeight(160)
+        self._spi_waveform.setFixedHeight(148)
         cfg_layout.addWidget(self._spi_waveform, 1, 0, 1, 3)
         self._spi_mode_combo.currentIndexChanged.connect(self._update_spi_waveform)
         self._update_spi_waveform(0)
@@ -487,6 +490,7 @@ class FtdiVerifierModule(BaseModule):
         spi_layout.addWidget(id_group)
 
         spi_layout.addStretch()
+        self._proto_tabs.addTab(self._i2c_group, "I2C")
         self._proto_tabs.addTab(self._spi_group, "SPI")
 
         # JTAG Test (GUI only)
@@ -1650,7 +1654,7 @@ class FtdiVerifierModule(BaseModule):
             ),
         ]
         idx = index if 0 <= index < len(waves) else 0
-        self._spi_waveform.setText(waves[idx])
+        self._spi_waveform.setPlainText(waves[idx])
     def _on_uart_timestamp_toggled(self, checked: bool) -> None:
         if not hasattr(self, "_uart_console"):
             return
