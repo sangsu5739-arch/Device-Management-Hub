@@ -44,28 +44,23 @@ class MpsseController:
             raise RuntimeError("FTDI handle is not open.")
 
         self._o._ft.resetDevice()
-        time.sleep(0.05)
-        self._o._ft.purge(self._PURGE_RXTX)
-        time.sleep(0.05)
+        time.sleep(0.02)
         self._o._ft.purge(self._PURGE_RXTX)
         self._o._ft.setUSBParameters(65536, 65536)
         self._o._ft.setLatencyTimer(2)
         self._o._ft.setTimeouts(3000, 3000)
 
         self._o._ft.setBitMode(0x00, 0x00)
-        time.sleep(0.08)
+        time.sleep(0.02)
         self._o._ft.setBitMode(0x00, 0x02)  # MPSSE
-        time.sleep(0.08)
+        time.sleep(0.02)
         self._o._ft.purge(self._PURGE_RXTX)
-        time.sleep(0.05)
-        self._o._ft.purge(self._PURGE_RXTX)
-        time.sleep(0.05)
 
         # MPSSE sync
         synced = False
         for _ in range(3):
             self.write(b"\xAA")
-            time.sleep(0.03)
+            time.sleep(0.02)
             rxn = self._o._ft.getQueueStatus()
             if rxn > 0:
                 resp = self.read(rxn)
@@ -133,7 +128,10 @@ class MpsseController:
         self.write(bytes([self._MPSSE_SET_BITS_LOW, value & 0xFF, direction & 0xFF]))
 
     def set_bits_high(self, value: int, direction: int) -> None:
-        self.write(bytes([self._MPSSE_SET_BITS_HIGH, value & 0xFF, direction & 0xFF]))
+        self.write(bytes([
+            self._MPSSE_SET_BITS_HIGH, value & 0xFF, direction & 0xFF,
+            self._MPSSE_SEND_IMMEDIATE,
+        ]))
 
     def read_gpio_low(self) -> Optional[int]:
         if self._o._ft is None:

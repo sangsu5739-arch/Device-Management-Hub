@@ -1,4 +1,4 @@
-"""
+﻿"""
 Universal Device Studio (UDS)
 
 FT232H (MPSSE mode) plugin-based device control platform.
@@ -106,7 +106,7 @@ class MainWindow(QMainWindow):
         tab_names = [self._tab_widget.tabText(i) for i in range(tab_count)]
         print(f"[UDS] Loaded tabs: {tab_count} - {tab_names}")
 
-        if self._device_combo.count() > 0:
+        if self._device_combo.count() > 0 and self._device_combo.currentIndex() < 0:
             self._device_combo.setCurrentIndex(0)
 
         self._set_status("Ready - scanning FTDI devices...")
@@ -354,7 +354,8 @@ class MainWindow(QMainWindow):
             self._device_combo.addItem(
                 f"{serial}  ({desc})", {"serial": serial, "channels": channels, "device_type": device_type}
             )
-        self._device_combo.setCurrentIndex(0)
+        if self._device_combo.currentIndex() < 0:
+            self._device_combo.setCurrentIndex(0)
         self._device_combo.blockSignals(False)
 
         # Manually trigger device selection after combo is fully populated
@@ -514,6 +515,39 @@ class MainWindow(QMainWindow):
             self._set_status(f"VCP Mode: {port}", "ok")
         else:
             self._connect_btn.setEnabled(True)
+            if self._ftdi.is_connected:
+                info = f"Connected: SN={self._ftdi.serial_number}, CH={self._ftdi.channel}"
+                self._status_led.setStyleSheet("color: #33cc33; font-size: 13px; background: transparent;")
+                self._status_text.setText("Connected")
+                self._status_text.setStyleSheet("color: #33cc33; font-weight: 700; font-size: 11px;"
+                                                " background: transparent;")
+                self._conn_info_label.setText(info)
+                self._conn_info_label.setStyleSheet("color: #607870; font-size: 10px; background: transparent;")
+                self._connect_btn.blockSignals(True)
+                self._connect_btn.setChecked(True)
+                self._connect_btn.setText("Disconnect")
+                self._connect_btn.blockSignals(False)
+                self._apply_connect_btn_style(connected=True)
+                self._device_combo.setEnabled(False)
+                self._scan_btn.setEnabled(False)
+                self._set_status("Connected", "ok")
+            else:
+                self._status_led.setStyleSheet("color: #cc3333; font-size: 13px; background: transparent;")
+                self._status_text.setText("Disconnected")
+                self._status_text.setStyleSheet("color: #cc3333; font-weight: 700; font-size: 11px;"
+                                                " background: transparent;")
+                self._conn_info_label.setText("")
+                self._conn_info_label.setStyleSheet("color: #505870; font-size: 10px; background: transparent;")
+                self._connect_btn.blockSignals(True)
+                self._connect_btn.setChecked(False)
+                self._connect_btn.setText("Connect")
+                self._connect_btn.blockSignals(False)
+                self._apply_connect_btn_style(connected=False)
+                self._device_combo.setEnabled(True)
+                self._scan_btn.setEnabled(True)
+                if self._device_combo.count() > 0 and self._device_combo.currentIndex() < 0:
+                    self._device_combo.setCurrentIndex(0)
+                self._set_status("Disconnected", "warn")
 
     @Slot(str)
     def _on_hw_connected(self, info: str) -> None:
@@ -577,7 +611,7 @@ class MainWindow(QMainWindow):
         self._apply_connect_btn_style(connected=False)
         self._device_combo.setEnabled(True)
         self._scan_btn.setEnabled(True)
-        if self._device_combo.count() > 0:
+        if self._device_combo.count() > 0 and self._device_combo.currentIndex() < 0:
             self._device_combo.setCurrentIndex(0)
 
         self._set_status("Disconnected", "warn")
@@ -596,7 +630,7 @@ class MainWindow(QMainWindow):
         self._status_text.setText("Error")
         self._status_text.setStyleSheet("color: #cccc33; font-weight: 700; font-size: 11px;"
                                         " background: transparent;")
-        if self._device_combo.count() > 0:
+        if self._device_combo.count() > 0 and self._device_combo.currentIndex() < 0:
             self._device_combo.setCurrentIndex(0)
 
         self._set_status(f"Error: {error_msg}", "error")
@@ -656,7 +690,7 @@ class MainWindow(QMainWindow):
 
     def _log_channel_switch(self, prev: str, new: str) -> None:
         logger.info(f"Active channel switch: {prev} -> {new}")
-        if self._device_combo.count() > 0:
+        if self._device_combo.count() > 0 and self._device_combo.currentIndex() < 0:
             self._device_combo.setCurrentIndex(0)
 
         self._set_status(f"Channel switched: {prev} -> {new}", "ok")

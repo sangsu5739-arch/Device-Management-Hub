@@ -78,6 +78,8 @@ class FtdiManager(QObject):
         self._i2c_hold_mask: int = 0x00
         self._i2c_hold_value: int = 0x00
         self._gpio_out_value: int = 0x00
+        self._gpio_high_out_value: int = 0x00
+        self._gpio_high_direction: int = 0x00
         self._mpsse = MpsseController(self)
         self._bitbang = BitbangController(self)
         FtdiManager._initialized = True
@@ -174,6 +176,15 @@ class FtdiManager(QObject):
                         self._mpsse.apply_gpio_out(self._gpio_out_value)
                     except Exception:
                         pass
+                    # Restore high byte GPIO state after MPSSE re-init
+                    if self._gpio_high_direction:
+                        try:
+                            self._mpsse.set_bits_high(
+                                self._gpio_high_out_value & 0xFF,
+                                self._gpio_high_direction & 0xFF,
+                            )
+                        except Exception:
+                            pass
                 else:
                     self._channel_modes[ch] = "uart"
                     self._bitbang_i2c_warned = False
@@ -205,6 +216,10 @@ class FtdiManager(QObject):
             if backend == "mpsse":
                 if not self.supports_mpsse(ch):
                     return False
+                cur_mode = self._channel_modes.get(ch, "?")
+                self._log(f"[GPIO-BACKEND] mpsse requested, current mode={cur_mode}")
+                if cur_mode == "mpsse":
+                    return True  # Already in MPSSE — skip re-init
                 if self._channel_modes.get(ch) == "bitbang":
                     self._bitbang.disable()
                 self._configure_mpsse()
@@ -214,6 +229,15 @@ class FtdiManager(QObject):
                     self._mpsse.apply_gpio_out(self._gpio_out_value)
                 except Exception:
                     pass
+                # Restore high byte GPIO state after MPSSE re-init
+                if self._gpio_high_direction:
+                    try:
+                        self._mpsse.set_bits_high(
+                            self._gpio_high_out_value & 0xFF,
+                            self._gpio_high_direction & 0xFF,
+                        )
+                    except Exception:
+                        pass
                 return True
         except Exception as e:
             self._log(f"[ERROR] GPIO backend switch failed: {e}")
@@ -268,16 +292,26 @@ class FtdiManager(QObject):
             self._log(f"[ERROR] GPIO write failed: {e}")
 
     def set_gpio_high_masked(self, mask: int, value: int) -> None:
-        """Set GPIO outputs on the high byte (ACBUS/BCBUS) in MPSSE."""
+        """Set GPIO outputs on the high byte (ACBUS/BCBUS) in MPSSE.
+
+        Accumulates direction and value state across calls so that
+        previously configured pins are not reset to input.
+        """
         if not self._is_connected or self._ft is None:
             return
         mode = self._channel_modes.get(self._active_channel, "mpsse")
         if mode != "mpsse":
             return
         try:
-            val = value & mask
-            direction = mask & 0xFF
-            self._mpsse.set_bits_high(val & 0xFF, direction)
+            self._gpio_high_direction |= (mask & 0xFF)
+            self._gpio_high_out_value = (self._gpio_high_out_value & ~mask) | (value & mask)
+            val_byte = self._gpio_high_out_value & 0xFF
+            dir_byte = self._gpio_high_direction & 0xFF
+            self._log(
+                f"[GPIO-HIGH] mode={mode}, mask=0x{mask:02X}, "
+                f"val=0x{val_byte:02X}, dir=0x{dir_byte:02X}"
+            )
+            self._mpsse.set_bits_high(val_byte, dir_byte)
         except Exception as e:
             self._log(f"[ERROR] GPIO high write failed: {e}")
 
@@ -572,6 +606,8 @@ class FtdiManager(QObject):
             self._is_connected = False
             self._serial_number = ""
             self._channel_modes = {}
+            self._gpio_high_out_value = 0x00
+            self._gpio_high_direction = 0x00
             self._log("Disconnected.")
             self.device_disconnected.emit()
             self.device_info_changed.emit(

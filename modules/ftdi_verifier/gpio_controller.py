@@ -30,15 +30,12 @@ class GpioController:
         if pin is None or pin.mpsse_bit is None:
             self._m._append_log("GPIO write failed: invalid pin mapping.")
             return
-        # GPIO tab: auto switch backend per pin (low byte -> bitbang, high byte -> mpsse)
-        if pin.name.startswith(("AC", "BC")):
-            if not self._m._ftdi.set_gpio_backend("mpsse"):
-                self._m._append_log("GPIO write failed: MPSSE not available on this channel.")
-                return
-            self._m._set_gpio_backend_label("MPSSE")
-        else:
-            self._m._ftdi.set_gpio_backend("bitbang")
-            self._m._set_gpio_backend_label("BITBANG")
+        # GPIO tab: use MPSSE for all GPIO (both low and high byte).
+        # Bitbang mode cannot control ACBUS — only MPSSE 0x80/0x82 can.
+        if not self._m._ftdi.set_gpio_backend("mpsse"):
+            self._m._append_log("GPIO write failed: MPSSE not available on this channel.")
+            return
+        self._m._set_gpio_backend_label("MPSSE")
         if self._m._gpio_poll_btn.isChecked():
             self._m._gpio_poll_btn.setChecked(False)
         state_str = "HIGH" if high else "LOW"
@@ -53,7 +50,13 @@ class GpioController:
                 self._m._ftdi.set_gpio_low(pin.mpsse_bit, high)
         except Exception:
             pass
-        readback = self._m._ftdi.read_gpio_high() if pin.name.startswith(("AC", "BC")) else self._m._ftdi.read_gpio_low()
+        is_high_byte = pin.name.startswith(("AC", "BC"))
+        readback = self._m._ftdi.read_gpio_high() if is_high_byte else self._m._ftdi.read_gpio_low()
+        rb_hex = f"0x{readback:02X}" if readback is not None else "None"
+        self._m._append_log(
+            f"[GPIO] {pin.name} bit={pin.mpsse_bit} {'HIGH' if is_high_byte else 'LOW'}-byte "
+            f"readback={rb_hex}"
+        )
         if readback is not None:
             actual = bool(readback & (1 << pin.mpsse_bit))
             if actual != high:
