@@ -135,6 +135,7 @@ class FtdiVerifierModule(BaseModule):
         self._i2c_scan_btn.setEnabled(True)
         self._i2c_test_btn.setEnabled(True)
         self._spi_loopback_btn.setEnabled(True)
+        self._spi_id_btn.setEnabled(True)
         self._set_bitbang_controls_enabled(True)
         self._apply_bitbang_mask(self._bitbang_mask, push=True)
         self._gpio_poll_btn.setEnabled(True)
@@ -156,6 +157,7 @@ class FtdiVerifierModule(BaseModule):
         self._i2c_scan_btn.setEnabled(False)
         self._i2c_test_btn.setEnabled(False)
         self._spi_loopback_btn.setEnabled(False)
+        self._spi_id_btn.setEnabled(False)
         self._set_bitbang_controls_enabled(False)
         self._gpio_poll_btn.setEnabled(False)
         if hasattr(self, "_chip_label"):
@@ -359,13 +361,7 @@ class FtdiVerifierModule(BaseModule):
         spi_layout.setSpacing(6)
         spi_layout.setContentsMargins(8, 8, 8, 8)
 
-        spi_split = QSplitter(Qt.Orientation.Vertical)
-        spi_split.setHandleWidth(3)
-
-        top_split = QSplitter(Qt.Orientation.Horizontal)
-        top_split.setHandleWidth(3)
-
-        # Left: SPI configuration
+        # -- SPI Configuration --
         cfg_panel = QGroupBox("Configuration")
         cfg_layout = QGridLayout(cfg_panel)
         cfg_layout.setSpacing(6)
@@ -373,127 +369,133 @@ class FtdiVerifierModule(BaseModule):
 
         cfg_layout.addWidget(QLabel("SPI Mode:"), 0, 0)
         self._spi_mode_combo = QComboBox()
-        self._spi_mode_combo.addItems(["Mode 0 (CPOL=0, CPHA=0)",
-                                       "Mode 1 (CPOL=0, CPHA=1)",
-                                       "Mode 2 (CPOL=1, CPHA=0)",
-                                       "Mode 3 (CPOL=1, CPHA=1)"])
+        self._spi_mode_combo.addItems([
+            "Mode 0 (CPOL=0, CPHA=0)",
+            "Mode 1 (CPOL=0, CPHA=1)",
+            "Mode 2 (CPOL=1, CPHA=0)",
+            "Mode 3 (CPOL=1, CPHA=1)",
+        ])
         self._spi_mode_combo.setCurrentIndex(0)
         cfg_layout.addWidget(self._spi_mode_combo, 0, 1, 1, 2)
 
-        cfg_layout.addWidget(QLabel("Clock:"), 1, 0)
-        self._spi_clock_spin = QSpinBox()
-        self._spi_clock_spin.setRange(100, 20000)
-        self._spi_clock_spin.setValue(1000)
-        self._spi_clock_spin.setSuffix(" kHz")
-        self._spi_clock_spin.setSingleStep(100)
-        cfg_layout.addWidget(self._spi_clock_spin, 1, 1)
-        self._spi_clock_label = QLabel("Default: 1 MHz")
-        self._spi_clock_label.setStyleSheet("color: #8fa0b8; font-size: 11px;")
-        cfg_layout.addWidget(self._spi_clock_label, 1, 2)
-
-        cfg_layout.addWidget(QLabel("CS Pin:"), 2, 0)
-        self._spi_cs_combo = QComboBox()
-        self._spi_cs_combo.addItems(["D3", "D4", "D5", "D6", "D7"])
-        cfg_layout.addWidget(self._spi_cs_combo, 2, 1)
-        self._spi_cs_active = QComboBox()
-        self._spi_cs_active.addItems(["Active Low", "Active High"])
-        cfg_layout.addWidget(self._spi_cs_active, 2, 2)
-
-        cfg_layout.addWidget(QLabel("Status LED:"), 3, 0)
-        self._spi_ack_led = QLabel(" ● ")
-        self._spi_ack_led.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._spi_ack_led.setStyleSheet(
-            "background: #1a1a1a; color: #3a3a3a; border-radius: 10px; "
-            "border: 1px solid #2f2f2f; padding: 2px 8px; font-weight: 700;"
+        self._spi_waveform = QLabel()
+        self._spi_waveform.setStyleSheet(
+            "background: #0e1018; color: #7fd9ff; border: 1px solid #223344; "
+            "border-radius: 6px; padding: 10px 12px; font-family: Consolas; font-size: 11px;"
         )
-        cfg_layout.addWidget(self._spi_ack_led, 3, 1)
-        self._spi_status_label = QLabel("Idle")
-        self._spi_status_label.setStyleSheet("color: #8fa0b8; font-size: 11px;")
-        cfg_layout.addWidget(self._spi_status_label, 3, 2)
+        self._spi_waveform.setMinimumHeight(160)
+        cfg_layout.addWidget(self._spi_waveform, 1, 0, 1, 3)
+        self._spi_mode_combo.currentIndexChanged.connect(self._update_spi_waveform)
+        self._update_spi_waveform(0)
 
-        tools_panel = QGroupBox("Validation Tools")
-        tools_layout = QVBoxLayout(tools_panel)
-        tools_layout.setSpacing(6)
-        self._spi_loopback_btn = QPushButton("MISO-MOSI Loopback Test")
-        self._spi_loopback_btn.setEnabled(False)
-        self._spi_loopback_btn.setMinimumHeight(30)
-        self._spi_loopback_btn.setStyleSheet(
+        cfg_layout.addWidget(QLabel("Clock:"), 2, 0)
+        self._spi_clock_combo = QComboBox()
+        self._spi_clock_combo.addItems([
+            "100 kHz", "250 kHz", "500 kHz", "1 MHz",
+            "2 MHz", "4 MHz", "8 MHz", "12 MHz",
+        ])
+        self._spi_clock_combo.setCurrentText("1 MHz")
+        cfg_layout.addWidget(self._spi_clock_combo, 2, 1, 1, 2)
+
+        spi_layout.addWidget(cfg_panel)
+
+        # -- Loopback Test --
+        _SPI_BTN_STYLE = (
             "QPushButton { background: #18242b; color: #b5d7ff; border-radius: 6px; "
             "border: 1px solid #2a4a5a; font-weight: 700; }"
             "QPushButton:hover { background: #1f313a; }"
             "QPushButton:disabled { background: #1e2028; color: #4a5068; border: 1px solid #2a2e3a; }"
         )
-        tools_layout.addWidget(self._spi_loopback_btn)
-        self._spi_id_btn = QPushButton("Device ID Verification")
+        _SPI_RESULT_IDLE = (
+            "background: #6f7a8e; color: #ffffff; border-radius: 8px; padding: 4px 10px;"
+            "font-weight: 800; letter-spacing: 0.6px; font-size: 12px;"
+        )
+
+        lb_group = QGroupBox("Loopback Test")
+        lb_layout = QVBoxLayout(lb_group)
+        lb_layout.setSpacing(6)
+        lb_layout.setContentsMargins(8, 8, 8, 8)
+        lb_row = QHBoxLayout()
+        lb_row.setSpacing(8)
+        self._spi_loopback_btn = QPushButton("\u25b6  Loopback Test")
+        self._spi_loopback_btn.setEnabled(False)
+        self._spi_loopback_btn.setMinimumHeight(30)
+        self._spi_loopback_btn.setStyleSheet(_SPI_BTN_STYLE)
+        self._spi_loopback_btn.clicked.connect(self._on_spi_loopback)
+        lb_row.addWidget(self._spi_loopback_btn)
+        self._spi_loopback_result = QLabel("  Idle")
+        self._spi_loopback_result.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._spi_loopback_result.setFixedHeight(30)
+        self._spi_loopback_result.setStyleSheet(_SPI_RESULT_IDLE)
+        lb_row.addWidget(self._spi_loopback_result, 1)
+        lb_layout.addLayout(lb_row)
+        spi_layout.addWidget(lb_group)
+
+        # -- Device ID Verification --
+        id_group = QGroupBox("Device ID Verification")
+        id_layout = QVBoxLayout(id_group)
+        id_layout.setSpacing(6)
+        id_layout.setContentsMargins(8, 8, 8, 8)
+
+        id_cfg_row = QHBoxLayout()
+        id_cfg_row.setSpacing(6)
+        id_cfg_row.addWidget(QLabel("Register:"))
+        self._spi_id_addr = QLineEdit()
+        self._spi_id_addr.setText("0x9F")
+        self._spi_id_addr.setPlaceholderText("e.g. 0x9F")
+        self._spi_id_addr.setMinimumWidth(80)
+        self._spi_id_addr.setStyleSheet(
+            "background: #1a2030; color: #e7eef9; border: 1px solid #3a4560; "
+            "border-radius: 4px; padding: 2px 6px;"
+        )
+        id_cfg_row.addWidget(self._spi_id_addr)
+        id_cfg_row.addWidget(QLabel("Bytes:"))
+        self._spi_id_bytes = QComboBox()
+        self._spi_id_bytes.addItems(["1", "2", "3", "4"])
+        self._spi_id_bytes.setCurrentText("2")
+        self._spi_id_bytes.setFixedWidth(50)
+        id_cfg_row.addWidget(self._spi_id_bytes)
+        id_layout.addLayout(id_cfg_row)
+
+        id_expect_row = QHBoxLayout()
+        id_expect_row.setSpacing(6)
+        id_expect_row.addWidget(QLabel("Expected:"))
+        self._spi_id_expect = QLineEdit()
+        self._spi_id_expect.setPlaceholderText("e.g. 0xEF4018 (optional)")
+        self._spi_id_expect.setMinimumHeight(28)
+        self._spi_id_expect.setStyleSheet(
+            "background: #1a2030; color: #e7eef9; border: 1px solid #3a4560; "
+            "border-radius: 4px; padding: 2px 8px;"
+        )
+        id_expect_row.addWidget(self._spi_id_expect)
+        id_layout.addLayout(id_expect_row)
+
+        id_btn_row = QHBoxLayout()
+        id_btn_row.setSpacing(8)
+        self._spi_id_btn = QPushButton("\u25b6  Read ID")
         self._spi_id_btn.setEnabled(False)
         self._spi_id_btn.setMinimumHeight(30)
-        self._spi_id_btn.setStyleSheet(
-            "QPushButton { background: #1b1f12; color: #cbe6a6; border-radius: 6px; "
-            "border: 1px solid #3b5a24; font-weight: 700; }"
-            "QPushButton:hover { background: #222b15; }"
-            "QPushButton:disabled { background: #1e2028; color: #4a5068; border: 1px solid #2a2e3a; }"
-        )
-        tools_layout.addWidget(self._spi_id_btn)
+        self._spi_id_btn.setStyleSheet(_SPI_BTN_STYLE)
+        self._spi_id_btn.clicked.connect(self._on_spi_read_id)
+        id_btn_row.addWidget(self._spi_id_btn)
+        self._spi_id_result = QLabel("  Idle")
+        self._spi_id_result.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._spi_id_result.setFixedHeight(30)
+        self._spi_id_result.setStyleSheet(_SPI_RESULT_IDLE)
+        id_btn_row.addWidget(self._spi_id_result, 1)
+        id_layout.addLayout(id_btn_row)
+        spi_layout.addWidget(id_group)
 
-        cfg_layout.addWidget(tools_panel, 4, 0, 1, 3)
-
-        # Right: Visualizer + Log
-        vis_panel = QGroupBox("Visualizer & Log")
-        vis_layout = QVBoxLayout(vis_panel)
-        vis_layout.setSpacing(6)
-
-        self._spi_plot_placeholder = QLabel("Oscilloscope View (MISO)\n[pyqtgraph placeholder]")
-        self._spi_plot_placeholder.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._spi_plot_placeholder.setStyleSheet(
-            "background: #121212; color: #00ffff; border: 1px solid #223344; "
-            "border-radius: 6px; padding: 10px;"
-        )
-        self._spi_plot_placeholder.setMinimumHeight(160)
-        vis_layout.addWidget(self._spi_plot_placeholder)
-
-        self._spi_log_table = QTableWidget(0, 5)
-        self._spi_log_table.setHorizontalHeaderLabels(
-            ["Time", "Dir", "Addr", "Data (Hex)", "Status"]
-        )
-        self._spi_log_table.verticalHeader().setVisible(False)
-        self._spi_log_table.horizontalHeader().setStretchLastSection(True)
-        self._spi_log_table.setMinimumHeight(150)
-        vis_layout.addWidget(self._spi_log_table)
-
-        top_split.addWidget(cfg_panel)
-        top_split.addWidget(vis_panel)
-        top_split.setStretchFactor(0, 2)
-        top_split.setStretchFactor(1, 3)
-
-        # Bottom: Register Map Editor
-        reg_panel = QGroupBox("Register Map")
-        reg_layout = QVBoxLayout(reg_panel)
-        reg_layout.setSpacing(6)
-        self._spi_reg_table = QTableWidget(0, 16)
-        self._spi_reg_table.setHorizontalHeaderLabels([f"{i:02X}" for i in range(16)])
-        self._spi_reg_table.verticalHeader().setVisible(True)
-        self._spi_reg_table.setMinimumHeight(160)
-        reg_layout.addWidget(self._spi_reg_table)
-        self._spi_reg_hint = QLabel("Click a register to edit bits (GUI only).")
-        self._spi_reg_hint.setStyleSheet("color: #8fa0b8; font-size: 11px;")
-        reg_layout.addWidget(self._spi_reg_hint)
-
-        top_split.setSizes([260, 520])
-        spi_split.addWidget(top_split)
-        spi_split.addWidget(reg_panel)
-        spi_split.setStretchFactor(0, 3)
-        spi_split.setStretchFactor(1, 2)
-
-        spi_layout.addWidget(spi_split)
+        spi_layout.addStretch()
         self._proto_tabs.addTab(self._spi_group, "SPI")
 
         # JTAG Test (GUI only)
-        self._jtag_group = QGroupBox("JTAG Test")
+        self._jtag_group = QGroupBox("JTAG Pattern Test")
         jtag_layout = QVBoxLayout(self._jtag_group)
         jtag_layout.setSpacing(4)
         jtag_layout.setContentsMargins(6, 4, 6, 4)
-        jtag_layout.addWidget(QLabel("JTAG Boundary Scan / IDCODE Test"))
-        self._jtag_test_btn = QPushButton("Run JTAG Test")
+        jtag_layout.addWidget(QLabel("TDI/TDO Pattern Transmit & Verify"))
+        self._jtag_test_btn = QPushButton("Run Pattern Test")
         self._jtag_test_btn.setEnabled(False)
         self._jtag_test_btn.setMinimumHeight(30)
         self._jtag_test_btn.setStyleSheet(
@@ -974,6 +976,7 @@ class FtdiVerifierModule(BaseModule):
         self._i2c_scan_btn.setEnabled(has_mpsse and connected)
         self._i2c_test_btn.setEnabled(has_mpsse and connected)
         self._spi_loopback_btn.setEnabled(has_mpsse and connected)
+        self._spi_id_btn.setEnabled(has_mpsse and connected)
         if not (has_mpsse and connected and ch_match):
             self._pin_name_label.setText("Unavailable")
             self._pin_func_label.setText("MPSSE not supported on this channel")
@@ -1261,13 +1264,19 @@ class FtdiVerifierModule(BaseModule):
     # -- SPI --
 
     @Slot()
-    def _on_spi_test(self) -> None:
+    @Slot()
+    def _on_spi_loopback(self) -> None:
+        """SPI loopback test (placeholder — SPI API not yet implemented)."""
         if not self._ftdi.is_connected:
             return
+        self._spi_loopback_result.setText("  Testing...")
+        self._spi_loopback_result.setStyleSheet(
+            "background: #3a3520; color: #e8c06a; border-radius: 8px; padding: 4px 10px;"
+            "font-weight: 800; letter-spacing: 0.5px; border: 1px solid #5a4820;"
+        )
         worker = VerifierWorker(self._ftdi)
         worker.protocol_test_done.connect(self._on_protocol_result)
         worker.log_message.connect(self._append_log)
-        worker.run_i2c_scan = lambda: None  # unused
 
         self._spi_test_thread = QThread()
         worker.moveToThread(self._spi_test_thread)
@@ -1276,6 +1285,18 @@ class FtdiVerifierModule(BaseModule):
         worker.protocol_test_done.connect(worker.deleteLater)
         self._spi_test_thread.finished.connect(self._spi_test_thread.deleteLater)
         self._spi_test_thread.start()
+
+    @Slot()
+    def _on_spi_read_id(self) -> None:
+        """SPI device ID read (placeholder — SPI API not yet implemented)."""
+        if not self._ftdi.is_connected:
+            return
+        self._spi_id_result.setText("  Reading...")
+        self._spi_id_result.setStyleSheet(
+            "background: #3a3520; color: #e8c06a; border-radius: 8px; padding: 4px 10px;"
+            "font-weight: 800; letter-spacing: 0.5px; border: 1px solid #5a4820;"
+        )
+        self._append_log("[SPI] Device ID read: SPI API not yet implemented")
 
     @Slot(object)
     def _on_protocol_result(self, result: ProtocolTestResult) -> None:
@@ -1297,8 +1318,23 @@ class FtdiVerifierModule(BaseModule):
                     "font-weight: 800; letter-spacing: 0.5px;"
                 )
         if result.protocol == "SPI":
-            self._spi_result_label.setText(result.message)
-            self._spi_result_label.setStyleSheet(f"color: {color};")
+            # Determine which result badge to update based on message content
+            if "loopback" in result.message.lower():
+                target = self._spi_loopback_result
+            else:
+                target = self._spi_id_result
+            if result.success:
+                target.setText(f"  {result.message}")
+                target.setStyleSheet(
+                    "background: #1e4a2a; color: #80c890; border-radius: 8px; padding: 4px 10px;"
+                    "font-weight: 800; letter-spacing: 0.5px; border: 1px solid #2a7040;"
+                )
+            else:
+                target.setText(f"  {result.message}")
+                target.setStyleSheet(
+                    "background: #5a1a1a; color: #ff8888; border-radius: 8px; padding: 4px 10px;"
+                    "font-weight: 800; letter-spacing: 0.5px; border: 1px solid #8a3030;"
+                )
 
     # -- GPIO --
 
@@ -1560,6 +1596,62 @@ class FtdiVerifierModule(BaseModule):
         except Exception as e:
             self._append_log(f"[UART] Save failed: {e}")
 
+    def _update_spi_waveform(self, index: int) -> None:
+        if not hasattr(self, "_spi_waveform"):
+            return
+        waves = [
+            # Mode 0: CPOL=0 CPHA=0 -- idle LOW, sample on every RISING edge
+            # Mode 0: CPOL=0 CPHA=0 -- idle LOW, sample on every RISING edge
+            (
+                "Mode 0   CPOL=0  CPHA=0   [sample: RISING edge]\n"
+                "\n"
+                "       _________           _________           _________\n"
+                "      |         |         |         |         |         |\n"
+                "SCLK: +         +_________+         +_________+         +__\n"
+                "\n"
+                "DATA: X==  D7  ===========X==  D6  ===========X==  D5  ==X\n"
+                "\n"
+                "Smpl: ^                   ^                   ^"
+            ),
+            # Mode 1: CPOL=0 CPHA=1 -- idle LOW, sample on every FALLING edge
+            (
+                "Mode 1   CPOL=0  CPHA=1   [sample: FALLING edge]\n"
+                "\n"
+                "       _________           _________           _________\n"
+                "      |         |         |         |         |         |\n"
+                "SCLK: +         +_________+         +_________+         +__\n"
+                "\n"
+                "DATA: =====X==  D7  ===========X==  D6  ===========X======\n"
+                "\n"
+                "Smpl:           v                   v                   v"
+            ),
+            # Mode 2: CPOL=1 CPHA=0 -- idle HIGH, sample on every FALLING edge
+            (
+                "Mode 2   CPOL=1  CPHA=0   [sample: FALLING edge]\n"
+                "\n"
+                "______           _________           _________\n"
+                "      |         |         |         |         |         |\n"
+                "SCLK: +_________+         +_________+         +_________+__\n"
+                "\n"
+                "DATA: X==  D7  ===========X==  D6  ===========X==  D5  ==X\n"
+                "\n"
+                "Smpl: v                   v                   v"
+            ),
+            # Mode 3: CPOL=1 CPHA=1 -- idle HIGH, sample on every RISING edge
+            (
+                "Mode 3   CPOL=1  CPHA=1   [sample: RISING edge]\n"
+                "\n"
+                "______           _________           _________\n"
+                "      |         |         |         |         |         |\n"
+                "SCLK: +_________+         +_________+         +_________+__\n"
+                "\n"
+                "DATA: =====X==  D7  ===========X==  D6  ===========X======\n"
+                "\n"
+                "Smpl:           ^                   ^                   ^"
+            ),
+        ]
+        idx = index if 0 <= index < len(waves) else 0
+        self._spi_waveform.setText(waves[idx])
     def _on_uart_timestamp_toggled(self, checked: bool) -> None:
         if not hasattr(self, "_uart_console"):
             return
