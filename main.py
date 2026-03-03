@@ -34,6 +34,11 @@ from modules.base_module import BaseModule
 
 logger = logging.getLogger(__name__)
 
+# ── Application Version ──────────────────────────────────────────────────────
+APP_VERSION = "1.0.0"
+APP_NAME    = "Universal Device Studio"
+# ─────────────────────────────────────────────────────────────────────────────
+
 
 def discover_module_classes() -> List[Type[BaseModule]]:
     """Discover BaseModule subclasses dynamically under /modules."""
@@ -83,13 +88,21 @@ class CustomTitleBar(QWidget):
         layout.addWidget(icon_lbl)
         layout.addSpacing(8)
 
-        # App title
-        title_lbl = QLabel("Universal Device Studio")
+        # App title + version
+        title_lbl = QLabel(f"{APP_NAME}")
         title_lbl.setStyleSheet(
             "color: #b0bcd0; font-size: 12px; font-weight: 600;"
             " background: transparent; border: none;"
         )
         layout.addWidget(title_lbl)
+        layout.addSpacing(8)
+
+        ver_lbl = QLabel(f"v{APP_VERSION}")
+        ver_lbl.setStyleSheet(
+            "color: #8fa0b8; font-size: 10px; font-weight: 600;"
+            " background: transparent; border: none; padding: 0;"
+        )
+        layout.addWidget(ver_lbl)
 
         # Pipe separator
         pipe_lbl = QLabel("│")
@@ -212,7 +225,7 @@ class MainWindow(QMainWindow):
 
     def __init__(self) -> None:
         super().__init__()
-        self.setWindowTitle("Universal Device Studio")
+        self.setWindowTitle(f"{APP_NAME}  v{APP_VERSION}")
         self.setWindowFlags(
             Qt.WindowType.FramelessWindowHint | Qt.WindowType.Window
         )
