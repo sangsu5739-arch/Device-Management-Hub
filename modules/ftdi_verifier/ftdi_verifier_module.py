@@ -1601,53 +1601,52 @@ class FtdiVerifierModule(BaseModule):
             return
         waves = [
             # Mode 0: CPOL=0 CPHA=0 -- idle LOW, sample on every RISING edge
-            # Mode 0: CPOL=0 CPHA=0 -- idle LOW, sample on every RISING edge
             (
                 "Mode 0   CPOL=0  CPHA=0   [sample: RISING edge]\n"
                 "\n"
-                "       _________           _________           _________\n"
-                "      |         |         |         |         |         |\n"
-                "SCLK: +         +_________+         +_________+         +__\n"
+                "        _________          _________          _________\n"
+                "       |         |        |         |        |         |\n"
+                "SCLK: _+         +________+         +________+         +____\n"
                 "\n"
-                "DATA: X==  D7  ===========X==  D6  ===========X==  D5  ==X\n"
+                "DATA: =X==  D7  ==========X==  D6  ==========X==  D5  ==X\n"
                 "\n"
-                "Smpl: ^                   ^                   ^"
+                "Smpl:  ^                  ^                  ^"
             ),
             # Mode 1: CPOL=0 CPHA=1 -- idle LOW, sample on every FALLING edge
             (
                 "Mode 1   CPOL=0  CPHA=1   [sample: FALLING edge]\n"
                 "\n"
-                "       _________           _________           _________\n"
-                "      |         |         |         |         |         |\n"
-                "SCLK: +         +_________+         +_________+         +__\n"
+                "        _________          _________          _________\n"
+                "       |         |        |         |        |         |\n"
+                "SCLK: _+         +________+         +________+         +____\n"
                 "\n"
-                "DATA: =====X==  D7  ===========X==  D6  ===========X======\n"
+                "DATA: =====X==  D7  ==========X==  D6  ==========X========\n"
                 "\n"
-                "Smpl:           v                   v                   v"
+                "Smpl:           v                  v                  v"
             ),
             # Mode 2: CPOL=1 CPHA=0 -- idle HIGH, sample on every FALLING edge
             (
                 "Mode 2   CPOL=1  CPHA=0   [sample: FALLING edge]\n"
                 "\n"
-                "______           _________           _________\n"
-                "      |         |         |         |         |         |\n"
-                "SCLK: +_________+         +_________+         +_________+__\n"
+                "SCLK: __          ________          ________          ______\n"
+                "         |       |        |        |        |        |\n"
+                "         +_______+        +________+        +________+\n"
                 "\n"
-                "DATA: X==  D7  ===========X==  D6  ===========X==  D5  ==X\n"
+                "DATA: ==X==  D7  ==========X==  D6  ==========X==  D5  ==X\n"
                 "\n"
-                "Smpl: v                   v                   v"
+                "Smpl:   v                 v                v"
             ),
             # Mode 3: CPOL=1 CPHA=1 -- idle HIGH, sample on every RISING edge
             (
                 "Mode 3   CPOL=1  CPHA=1   [sample: RISING edge]\n"
                 "\n"
-                "______           _________           _________\n"
-                "      |         |         |         |         |         |\n"
-                "SCLK: +_________+         +_________+         +_________+__\n"
+                "SCLK: __          ________          ________          ______\n"
+                "         |       |        |        |        |        |\n"
+                "         +_______+        +________+        +________+\n"
                 "\n"
-                "DATA: =====X==  D7  ===========X==  D6  ===========X======\n"
+                "DATA: ======X==  D7  ==========X==  D6  ==========X========\n"
                 "\n"
-                "Smpl:           ^                   ^                   ^"
+                "Smpl:            ^                 ^                ^"
             ),
         ]
         idx = index if 0 <= index < len(waves) else 0
