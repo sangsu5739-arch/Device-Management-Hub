@@ -909,6 +909,8 @@ class FtdiVerifierModule(BaseModule):
             self._last_non_uart_mode = mode
         if self._ftdi.is_connected:
             self._ftdi.set_protocol_mode(mode)
+            if mode == "GPIO":
+                self._gpio.set_all_low()
 
         if mode == "UART":
             self._refresh_uart_ports()

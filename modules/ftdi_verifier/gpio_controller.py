@@ -160,3 +160,55 @@ class GpioController:
         self._m._gpio_toggle_btn.setEnabled(allow)
         self._m._gpio_poll_btn.setEnabled(base_ok)
         self._m._set_bitbang_controls_enabled(mode == "GPIO")
+
+    def set_all_low(self) -> None:
+        if self._m._current_chip is None:
+            return
+        if not self._m._ftdi.is_connected:
+            return
+        if self._m._ftdi.channel != self._m._current_channel:
+            return
+
+        if self._m._gpio_poll_btn.isChecked():
+            self._m._gpio_poll_btn.setChecked(False)
+
+        low_mask = 0
+        high_mask = 0
+        for pin in self._m._current_chip.pins.values():
+            if pin.channel != self._m._current_channel:
+                continue
+            if pin.mpsse_bit is None:
+                continue
+            if pin.name.startswith(("AC", "BC")):
+                high_mask |= (1 << pin.mpsse_bit)
+            else:
+                low_mask |= (1 << pin.mpsse_bit)
+
+        # Try MPSSE first (low+high), fallback to Bitbang for low byte only.
+        if not self._m._ftdi.set_gpio_backend("mpsse"):
+            if low_mask:
+                self._m._ftdi.set_gpio_backend("bitbang")
+                self._m._set_gpio_backend_label("BITBANG")
+                try:
+                    self._m._ftdi.set_gpio_masked(low_mask, 0x00)
+                except Exception:
+                    pass
+        else:
+            self._m._set_gpio_backend_label("MPSSE")
+            try:
+                if low_mask:
+                    self._m._ftdi.set_gpio_masked(low_mask, 0x00)
+                if high_mask:
+                    self._m._ftdi.set_gpio_high_masked(high_mask, 0x00)
+            except Exception:
+                pass
+
+        # Update UI state
+        for pin in self._m._current_chip.pins.values():
+            if pin.channel != self._m._current_channel:
+                continue
+            if pin.mpsse_bit is None:
+                continue
+            self._m._gpio_states[pin.number] = False
+            self._m._pinout.set_pin_state(pin.number, False)
+        self._m._refresh_gpio_table()
