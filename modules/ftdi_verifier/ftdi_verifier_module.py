@@ -69,7 +69,6 @@ class FtdiVerifierModule(BaseModule):
         self._gpio_poll_pin: int = -1
         self._gpio_poll_blink = None
         self._uart_poll_skip_count: int = 0
-        self._uart_poll_burst_guard: bool = False
         self._gpio_poll_was_active: bool = False
         self._gpio_poll_restore_interval: int = 500
         self._bitbang_mask: int = 0xFF
@@ -135,7 +134,7 @@ class FtdiVerifierModule(BaseModule):
             return
         self._i2c_scan_btn.setEnabled(True)
         self._i2c_test_btn.setEnabled(True)
-        self._spi_test_btn.setEnabled(True)
+        self._spi_loopback_btn.setEnabled(True)
         self._set_bitbang_controls_enabled(True)
         self._apply_bitbang_mask(self._bitbang_mask, push=True)
         self._gpio_poll_btn.setEnabled(True)
@@ -156,7 +155,7 @@ class FtdiVerifierModule(BaseModule):
         self.stop_communication()
         self._i2c_scan_btn.setEnabled(False)
         self._i2c_test_btn.setEnabled(False)
-        self._spi_test_btn.setEnabled(False)
+        self._spi_loopback_btn.setEnabled(False)
         self._set_bitbang_controls_enabled(False)
         self._gpio_poll_btn.setEnabled(False)
         if hasattr(self, "_chip_label"):
@@ -185,15 +184,17 @@ class FtdiVerifierModule(BaseModule):
         super().on_tab_deactivated()
         if hasattr(self, "_proto_mode_combo"):
             self._last_proto_mode = self._proto_mode_combo.currentText()
-        # Clear VCP mode indicator when leaving this tab.
-        main_win = self.window()
-        if hasattr(main_win, "set_vcp_mode"):
-            main_win.set_vcp_mode(False)
         # If UART is open, close and restore FTDI connection on tab leave.
+        # _close_uart already calls set_vcp_mode(False), so no separate call needed.
         if self._uart_serial is not None:
             self._append_log("[UART] Auto-closed (left Verifier tab)")
             self.status_message.emit("UART auto-closed (left Verifier tab)")
             self._close_uart()
+        else:
+            # Only clear VCP indicator if UART was not open (no _close_uart to do it).
+            main_win = self.window()
+            if hasattr(main_win, "set_vcp_mode"):
+                main_win.set_vcp_mode(False)
 
     def _show_mpsse_warning(self, channel: str) -> None:
         # FTDI Verifier mixes MPSSE and Bitbang intentionally - suppress popup.
@@ -352,26 +353,138 @@ class FtdiVerifierModule(BaseModule):
 
         self._proto_tabs.addTab(self._i2c_group, "I2C")
 
-        # SPI Test
-        self._spi_group = QGroupBox("SPI Test")
+        # SPI Control (GUI only)
+        self._spi_group = QGroupBox("SPI Control")
         spi_layout = QVBoxLayout(self._spi_group)
-        spi_layout.setSpacing(4)
-        spi_layout.setContentsMargins(6, 4, 6, 4)
-        self._spi_test_btn = QPushButton("SPI Loopback Test")
-        self._spi_test_btn.setEnabled(False)
-        self._spi_test_btn.setMinimumHeight(30)
-        self._spi_test_btn.setStyleSheet(
-            "QPushButton { background: #2a2510; color: #d4a84b; font-weight: 700; border-radius: 6px; "
-            "border: 1px solid #5a4820; }"
-            "QPushButton:hover { background: #342e18; color: #e8c06a; border-color: #7a6030; }"
-            "QPushButton:pressed { background: #1e1b0c; border-color: #8a7040; }"
+        spi_layout.setSpacing(6)
+        spi_layout.setContentsMargins(8, 8, 8, 8)
+
+        spi_split = QSplitter(Qt.Orientation.Vertical)
+        spi_split.setHandleWidth(3)
+
+        top_split = QSplitter(Qt.Orientation.Horizontal)
+        top_split.setHandleWidth(3)
+
+        # Left: SPI configuration
+        cfg_panel = QGroupBox("Configuration")
+        cfg_layout = QGridLayout(cfg_panel)
+        cfg_layout.setSpacing(6)
+        cfg_layout.setContentsMargins(8, 8, 8, 8)
+
+        cfg_layout.addWidget(QLabel("SPI Mode:"), 0, 0)
+        self._spi_mode_combo = QComboBox()
+        self._spi_mode_combo.addItems(["Mode 0 (CPOL=0, CPHA=0)",
+                                       "Mode 1 (CPOL=0, CPHA=1)",
+                                       "Mode 2 (CPOL=1, CPHA=0)",
+                                       "Mode 3 (CPOL=1, CPHA=1)"])
+        self._spi_mode_combo.setCurrentIndex(0)
+        cfg_layout.addWidget(self._spi_mode_combo, 0, 1, 1, 2)
+
+        cfg_layout.addWidget(QLabel("Clock:"), 1, 0)
+        self._spi_clock_spin = QSpinBox()
+        self._spi_clock_spin.setRange(100, 20000)
+        self._spi_clock_spin.setValue(1000)
+        self._spi_clock_spin.setSuffix(" kHz")
+        self._spi_clock_spin.setSingleStep(100)
+        cfg_layout.addWidget(self._spi_clock_spin, 1, 1)
+        self._spi_clock_label = QLabel("Default: 1 MHz")
+        self._spi_clock_label.setStyleSheet("color: #8fa0b8; font-size: 11px;")
+        cfg_layout.addWidget(self._spi_clock_label, 1, 2)
+
+        cfg_layout.addWidget(QLabel("CS Pin:"), 2, 0)
+        self._spi_cs_combo = QComboBox()
+        self._spi_cs_combo.addItems(["D3", "D4", "D5", "D6", "D7"])
+        cfg_layout.addWidget(self._spi_cs_combo, 2, 1)
+        self._spi_cs_active = QComboBox()
+        self._spi_cs_active.addItems(["Active Low", "Active High"])
+        cfg_layout.addWidget(self._spi_cs_active, 2, 2)
+
+        cfg_layout.addWidget(QLabel("Status LED:"), 3, 0)
+        self._spi_ack_led = QLabel(" ● ")
+        self._spi_ack_led.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._spi_ack_led.setStyleSheet(
+            "background: #1a1a1a; color: #3a3a3a; border-radius: 10px; "
+            "border: 1px solid #2f2f2f; padding: 2px 8px; font-weight: 700;"
+        )
+        cfg_layout.addWidget(self._spi_ack_led, 3, 1)
+        self._spi_status_label = QLabel("Idle")
+        self._spi_status_label.setStyleSheet("color: #8fa0b8; font-size: 11px;")
+        cfg_layout.addWidget(self._spi_status_label, 3, 2)
+
+        tools_panel = QGroupBox("Validation Tools")
+        tools_layout = QVBoxLayout(tools_panel)
+        tools_layout.setSpacing(6)
+        self._spi_loopback_btn = QPushButton("MISO-MOSI Loopback Test")
+        self._spi_loopback_btn.setEnabled(False)
+        self._spi_loopback_btn.setMinimumHeight(30)
+        self._spi_loopback_btn.setStyleSheet(
+            "QPushButton { background: #18242b; color: #b5d7ff; border-radius: 6px; "
+            "border: 1px solid #2a4a5a; font-weight: 700; }"
+            "QPushButton:hover { background: #1f313a; }"
             "QPushButton:disabled { background: #1e2028; color: #4a5068; border: 1px solid #2a2e3a; }"
         )
-        self._spi_test_btn.clicked.connect(self._on_spi_test)
-        spi_layout.addWidget(self._spi_test_btn)
-        self._spi_result_label = QLabel("-")
-        self._spi_result_label.setStyleSheet("color: #d4a84b; font-size: 11px;")
-        spi_layout.addWidget(self._spi_result_label)
+        tools_layout.addWidget(self._spi_loopback_btn)
+        self._spi_id_btn = QPushButton("Device ID Verification")
+        self._spi_id_btn.setEnabled(False)
+        self._spi_id_btn.setMinimumHeight(30)
+        self._spi_id_btn.setStyleSheet(
+            "QPushButton { background: #1b1f12; color: #cbe6a6; border-radius: 6px; "
+            "border: 1px solid #3b5a24; font-weight: 700; }"
+            "QPushButton:hover { background: #222b15; }"
+            "QPushButton:disabled { background: #1e2028; color: #4a5068; border: 1px solid #2a2e3a; }"
+        )
+        tools_layout.addWidget(self._spi_id_btn)
+
+        cfg_layout.addWidget(tools_panel, 4, 0, 1, 3)
+
+        # Right: Visualizer + Log
+        vis_panel = QGroupBox("Visualizer & Log")
+        vis_layout = QVBoxLayout(vis_panel)
+        vis_layout.setSpacing(6)
+
+        self._spi_plot_placeholder = QLabel("Oscilloscope View (MISO)\n[pyqtgraph placeholder]")
+        self._spi_plot_placeholder.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._spi_plot_placeholder.setStyleSheet(
+            "background: #121212; color: #00ffff; border: 1px solid #223344; "
+            "border-radius: 6px; padding: 10px;"
+        )
+        self._spi_plot_placeholder.setMinimumHeight(160)
+        vis_layout.addWidget(self._spi_plot_placeholder)
+
+        self._spi_log_table = QTableWidget(0, 5)
+        self._spi_log_table.setHorizontalHeaderLabels(
+            ["Time", "Dir", "Addr", "Data (Hex)", "Status"]
+        )
+        self._spi_log_table.verticalHeader().setVisible(False)
+        self._spi_log_table.horizontalHeader().setStretchLastSection(True)
+        self._spi_log_table.setMinimumHeight(150)
+        vis_layout.addWidget(self._spi_log_table)
+
+        top_split.addWidget(cfg_panel)
+        top_split.addWidget(vis_panel)
+        top_split.setStretchFactor(0, 2)
+        top_split.setStretchFactor(1, 3)
+
+        # Bottom: Register Map Editor
+        reg_panel = QGroupBox("Register Map")
+        reg_layout = QVBoxLayout(reg_panel)
+        reg_layout.setSpacing(6)
+        self._spi_reg_table = QTableWidget(0, 16)
+        self._spi_reg_table.setHorizontalHeaderLabels([f"{i:02X}" for i in range(16)])
+        self._spi_reg_table.verticalHeader().setVisible(True)
+        self._spi_reg_table.setMinimumHeight(160)
+        reg_layout.addWidget(self._spi_reg_table)
+        self._spi_reg_hint = QLabel("Click a register to edit bits (GUI only).")
+        self._spi_reg_hint.setStyleSheet("color: #8fa0b8; font-size: 11px;")
+        reg_layout.addWidget(self._spi_reg_hint)
+
+        top_split.setSizes([260, 520])
+        spi_split.addWidget(top_split)
+        spi_split.addWidget(reg_panel)
+        spi_split.setStretchFactor(0, 3)
+        spi_split.setStretchFactor(1, 2)
+
+        spi_layout.addWidget(spi_split)
         self._proto_tabs.addTab(self._spi_group, "SPI")
 
         # JTAG Test (GUI only)
@@ -825,6 +938,9 @@ class FtdiVerifierModule(BaseModule):
         # Capture and clear suppress flag once used throughout this function.
         suppressed = self._suppress_protocol_sync
         self._suppress_protocol_sync = False
+        # Also suppress if within the time-based suppression window.
+        if time.time() < self._suppress_protocol_until_ts:
+            suppressed = True
 
         current = self._proto_mode_combo.currentText()
         self._proto_mode_combo.blockSignals(True)
@@ -857,7 +973,7 @@ class FtdiVerifierModule(BaseModule):
         ch_match = (not connected) or (self._ftdi.channel == self._current_channel)
         self._i2c_scan_btn.setEnabled(has_mpsse and connected)
         self._i2c_test_btn.setEnabled(has_mpsse and connected)
-        self._spi_test_btn.setEnabled(has_mpsse and connected)
+        self._spi_loopback_btn.setEnabled(has_mpsse and connected)
         if not (has_mpsse and connected and ch_match):
             self._pin_name_label.setText("Unavailable")
             self._pin_func_label.setText("MPSSE not supported on this channel")
@@ -880,9 +996,13 @@ class FtdiVerifierModule(BaseModule):
         required = ("_i2c_group", "_spi_group", "_jtag_group", "_uart_group", "_gpio_group")
         if not all(hasattr(self, name) for name in required):
             return
+
+        # If UART VCP is open and user switches away, auto-close first.
         if self._uart_serial is not None and mode != "UART":
-            # Keep UART tab active while VCP is open.
-            return
+            self._append_log(f"[UART] Auto-closed (switched to {mode})")
+            self.status_message.emit(f"UART auto-closed (switched to {mode})")
+            self._close_uart()
+
         groups = {
             "I2C": self._i2c_group,
             "SPI": self._spi_group,
@@ -915,10 +1035,6 @@ class FtdiVerifierModule(BaseModule):
         if mode == "UART":
             self._refresh_uart_ports()
         else:
-            if self._uart_serial is not None:
-                self._append_log(f"[UART] Auto-closed (switched to {mode})")
-                self.status_message.emit(f"UART auto-closed (switched to {mode})")
-            self._close_uart()
             if hasattr(self, "_uart_open_btn"):
                 self._uart_open_btn.setEnabled(False)
 
@@ -1303,6 +1419,13 @@ class FtdiVerifierModule(BaseModule):
         if self._uart_serial is not None:
             self._close_uart()
             return
+
+        # Save GPIO polling state so we can restore after UART close.
+        if hasattr(self, "_gpio_poll_btn") and self._gpio_poll_btn.isChecked():
+            self._gpio_poll_was_active = True
+            self._gpio_poll_restore_interval = self._gpio_poll_interval_value
+        else:
+            self._gpio_poll_was_active = False
         try:
             import serial
 
@@ -1391,6 +1514,10 @@ class FtdiVerifierModule(BaseModule):
 
     def _poll_uart(self) -> None:
         if self._uart_serial is None:
+            return
+        # Skip first N polls after UART restore to discard stale buffer data.
+        if self._uart_poll_skip_count > 0:
+            self._uart_poll_skip_count -= 1
             return
         try:
             n = self._uart_serial.in_waiting
@@ -1586,17 +1713,24 @@ class FtdiVerifierModule(BaseModule):
             finally:
                 self._uart_prev_connected = False
                 self._uart_restore_in_progress = False
-                self.is_uart_switching = False
-            # Re-emit signals now that is_uart_switching is cleared,
-            # so MainWindow and other modules update their state.
+                # Keep is_uart_switching True during signal re-emission to prevent
+                # on_device_connected from triggering _update_protocol_availability
+                # which would cause a tab jump.
+            # Re-emit signals with is_uart_switching still True,
+            # so MainWindow and other modules update their state
+            # without this module's handlers re-triggering.
             if restored and self._ftdi.is_connected:
                 info = f"Connected: SN={self._ftdi.serial_number}, CH={self._ftdi.channel}"
                 self._ftdi.device_connected.emit(info)
                 info_dict = self._ftdi.get_device_info()
                 if info_dict:
                     self._ftdi.device_info_changed.emit(info_dict)
+            # Now clear the flag after signals are processed.
+            self.is_uart_switching = False
+
+            if restored and self._ftdi.is_connected:
                 self._uart_poll_skip_count = 2
-                # Restore GPIO polling state if it was active.
+                # Restore GPIO polling state if it was active before UART opened.
                 if self._gpio_poll_was_active and hasattr(self, "_gpio_poll_btn"):
                     try:
                         self._gpio_poll_interval.blockSignals(True)
@@ -1609,7 +1743,6 @@ class FtdiVerifierModule(BaseModule):
                     except Exception:
                         pass
                 self._gpio_poll_was_active = False
-                self._uart_poll_skip_count = 2
 
     def _apply_uart_open_style(self, opened: bool) -> None:
         if not hasattr(self, "_uart_open_btn"):
@@ -1687,7 +1820,7 @@ class FtdiVerifierModule(BaseModule):
 
     # -- Logs --
 
-    _MAX_LOG_BLOCKS = 3000
+    # Log block limit is handled by setMaximumBlockCount(3000) on the QTextEdit.
 
     def _update_mode_desc(self, mode: str) -> None:
         if self._current_chip is None:
