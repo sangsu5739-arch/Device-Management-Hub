@@ -7,6 +7,8 @@ Loads devices dynamically from /modules and manages them as QTabWidget tabs.
 
 from __future__ import annotations
 
+import ctypes
+import ctypes.wintypes
 import importlib
 import logging
 import os
@@ -19,7 +21,7 @@ from typing import List, Optional, Type
 
 from functools import partial
 
-from PySide6.QtCore import Qt, Slot, QSettings, QTimer
+from PySide6.QtCore import Qt, Slot, QSettings, QTimer, QPoint
 from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
@@ -55,6 +57,129 @@ def discover_module_classes() -> List[Type[BaseModule]]:
     return classes
 
 
+class CustomTitleBar(QWidget):
+    """VS Code-style custom title bar with integrated branding."""
+
+    def __init__(self, parent_window: QMainWindow) -> None:
+        super().__init__(parent_window)
+        self._window = parent_window
+        self.setFixedHeight(34)
+        self.setStyleSheet(
+            "CustomTitleBar { background: #2a3040; border: none;"
+            " border-bottom: 1px solid #3a4560; }"
+        )
+        self._build()
+
+    def _build(self) -> None:
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(14, 0, 0, 0)
+        layout.setSpacing(0)
+
+        # App icon
+        icon_lbl = QLabel("◆")
+        icon_lbl.setStyleSheet(
+            "color: #5ab8d0; font-size: 11px; background: transparent; border: none;"
+        )
+        layout.addWidget(icon_lbl)
+        layout.addSpacing(8)
+
+        # App title
+        title_lbl = QLabel("Universal Device Studio")
+        title_lbl.setStyleSheet(
+            "color: #b0bcd0; font-size: 12px; font-weight: 600;"
+            " background: transparent; border: none;"
+        )
+        layout.addWidget(title_lbl)
+
+        # Pipe separator
+        pipe_lbl = QLabel("│")
+        pipe_lbl.setStyleSheet(
+            "color: #3a4058; font-size: 14px; background: transparent;"
+            " border: none; padding: 0 10px;"
+        )
+        layout.addWidget(pipe_lbl)
+
+        # Company branding
+        brand_lbl = QLabel("STATSChipPAC")
+        brand_lbl.setStyleSheet(
+            "color: #4a8898; font-size: 10px; font-weight: 600;"
+            " letter-spacing: 1.5px; background: transparent; border: none;"
+        )
+        layout.addWidget(brand_lbl)
+
+        layout.addStretch()
+
+        # ── Window control buttons ──
+        min_btn = QPushButton("─")
+        min_btn.setFixedSize(46, 34)
+        min_btn.setStyleSheet(
+            "QPushButton { background: transparent; color: #6878a0; border: none;"
+            " font-size: 10px; }"
+            "QPushButton:hover { background: #2a2e42; color: #a0b0d0; }"
+        )
+        min_btn.clicked.connect(self._window.showMinimized)
+        layout.addWidget(min_btn)
+
+        self._max_btn = QPushButton("□")
+        self._max_btn.setFixedSize(46, 34)
+        self._max_btn.setStyleSheet(
+            "QPushButton { background: transparent; color: #6878a0; border: none;"
+            " font-size: 11px; }"
+            "QPushButton:hover { background: #2a2e42; color: #a0b0d0; }"
+        )
+        self._max_btn.clicked.connect(self._toggle_maximize)
+        layout.addWidget(self._max_btn)
+
+        close_btn = QPushButton("✕")
+        close_btn.setFixedSize(46, 34)
+        close_btn.setStyleSheet(
+            "QPushButton { background: transparent; color: #6878a0; border: none;"
+            " font-size: 11px; }"
+            "QPushButton:hover { background: #c42b1c; color: white; }"
+        )
+        close_btn.clicked.connect(self._window.close)
+        layout.addWidget(close_btn)
+
+    def _toggle_maximize(self) -> None:
+        if self._window.isMaximized():
+            self._window.showNormal()
+        else:
+            self._window.showMaximized()
+        self.update_max_icon()
+
+    def update_max_icon(self) -> None:
+        self._max_btn.setText("❐" if self._window.isMaximized() else "□")
+
+    def _is_on_button(self, pos) -> bool:
+        child = self.childAt(pos)
+        return isinstance(child, QPushButton)
+
+    def mousePressEvent(self, event) -> None:
+        if event.button() == Qt.MouseButton.LeftButton and not self._is_on_button(event.position().toPoint()):
+            self._drag_pos = event.globalPosition().toPoint()
+        else:
+            self._drag_pos = None
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event) -> None:
+        if event.buttons() == Qt.MouseButton.LeftButton and self._drag_pos is not None:
+            if self._window.isMaximized():
+                self._window.showNormal()
+                self.update_max_icon()
+            self._window.move(self._window.pos() + event.globalPosition().toPoint() - self._drag_pos)
+            self._drag_pos = event.globalPosition().toPoint()
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event) -> None:
+        self._drag_pos = None
+        super().mouseReleaseEvent(event)
+
+    def mouseDoubleClickEvent(self, event) -> None:
+        if event.button() == Qt.MouseButton.LeftButton and not self._is_on_button(event.position().toPoint()):
+            self._toggle_maximize()
+        super().mouseDoubleClickEvent(event)
+
+
 class MainWindow(QMainWindow):
     """UDS main window.
 
@@ -88,6 +213,9 @@ class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
         self.setWindowTitle("Universal Device Studio")
+        self.setWindowFlags(
+            Qt.WindowType.FramelessWindowHint | Qt.WindowType.Window
+        )
         self.setMinimumSize(1360, 900)
         self.resize(1520, 1080)
 
@@ -98,6 +226,7 @@ class MainWindow(QMainWindow):
         self._settings = QSettings("UniversalDeviceStudio", "MainWindow")
 
         self._init_ui()
+        self.statusBar().setSizeGripEnabled(False)
         self._connect_signals()
         self._load_modules()
 
@@ -118,18 +247,30 @@ class MainWindow(QMainWindow):
         """Build the main UI layout."""
         central = QWidget()
         self.setCentralWidget(central)
-        main_layout = QVBoxLayout(central)
-        main_layout.setContentsMargins(8, 8, 8, 8)
-        main_layout.setSpacing(6)
+        root_layout = QVBoxLayout(central)
+        root_layout.setContentsMargins(0, 0, 0, 0)
+        root_layout.setSpacing(0)
+
+        # Custom title bar (frameless)
+        self._title_bar = CustomTitleBar(self)
+        root_layout.addWidget(self._title_bar)
+
+        # Content area with padding
+        content = QWidget()
+        content_layout = QVBoxLayout(content)
+        content_layout.setContentsMargins(8, 6, 8, 8)
+        content_layout.setSpacing(6)
 
         # Top: FTDI connection panel
         top_panel = self._create_connection_panel()
-        main_layout.addWidget(top_panel)
+        content_layout.addWidget(top_panel)
 
         # Module tabs
         self._tab_widget = QTabWidget()
         self._tab_widget.currentChanged.connect(self._on_tab_changed)
-        main_layout.addWidget(self._tab_widget, 1)
+        content_layout.addWidget(self._tab_widget, 1)
+
+        root_layout.addWidget(content, 1)
 
     def _make_separator(self) -> QFrame:
         """Vertical toolbar separator."""
@@ -706,6 +847,128 @@ class MainWindow(QMainWindow):
         self._active_tab_index = index
         if 0 <= index < len(self._modules):
             self._modules[index].on_tab_activated()
+
+    # -- Native event handling (Windows) --
+
+    def nativeEvent(self, eventType, message):
+        """Handle WM_NCHITTEST for edge resize / Aero Snap,
+        and WM_GETMINMAXINFO so maximized window respects the taskbar."""
+        if sys.platform == "win32" and eventType == b"windows_generic_MSG":
+            try:
+                msg = ctypes.wintypes.MSG.from_address(int(message))
+
+                # ── WM_NCHITTEST ──
+                if msg.message == 0x0084:
+                    x = msg.lParam & 0xFFFF
+                    y = (msg.lParam >> 16) & 0xFFFF
+                    if x > 32767:
+                        x -= 65536
+                    if y > 32767:
+                        y -= 65536
+
+                    # lParam is in physical screen pixels; use Win32
+                    # RECT to get physical window geometry and compute
+                    # local coordinates in the same coordinate space.
+                    class _RECT(ctypes.Structure):
+                        _fields_ = [
+                            ("left", ctypes.c_long), ("top", ctypes.c_long),
+                            ("right", ctypes.c_long), ("bottom", ctypes.c_long),
+                        ]
+                    rc = _RECT()
+                    ctypes.windll.user32.GetWindowRect(
+                        int(self.winId()), ctypes.byref(rc)
+                    )
+                    px = x - rc.left
+                    py = y - rc.top
+                    w = rc.right - rc.left
+                    h = rc.bottom - rc.top
+                    border = 5
+
+                    # Edge resize (skip while maximized)
+                    if not self.isMaximized():
+                        if py < border:
+                            if px < border:
+                                return True, 13   # HTTOPLEFT
+                            if px > w - border:
+                                return True, 14   # HTTOPRIGHT
+                            return True, 12        # HTTOP
+                        if py > h - border:
+                            if px < border:
+                                return True, 16   # HTBOTTOMLEFT
+                            if px > w - border:
+                                return True, 17   # HTBOTTOMRIGHT
+                            return True, 15        # HTBOTTOM
+                        if px < border:
+                            return True, 10        # HTLEFT
+                        if px > w - border:
+                            return True, 11        # HTRIGHT
+
+                    # Title-bar drag area (HTCAPTION), but not on buttons
+                    # Convert physical px/py to logical for Qt widget queries
+                    dpr = self.devicePixelRatio() or 1.0
+                    lx = int(px / dpr)
+                    ly = int(py / dpr)
+                    if hasattr(self, "_title_bar") and ly < self._title_bar.height():
+                        local = self._title_bar.mapFromParent(QPoint(lx, ly))
+                        child = self._title_bar.childAt(local)
+                        if child is None or not isinstance(child, QPushButton):
+                            return True, 2         # HTCAPTION
+
+                    # Everything else: normal client area (no resize)
+                    return True, 1  # HTCLIENT
+
+                # ── WM_GETMINMAXINFO (maximized size = work-area, not full screen) ──
+                if msg.message == 0x0024:
+                    class POINT(ctypes.Structure):
+                        _fields_ = [("x", ctypes.c_long), ("y", ctypes.c_long)]
+
+                    class MINMAXINFO(ctypes.Structure):
+                        _fields_ = [
+                            ("ptReserved", POINT),
+                            ("ptMaxSize", POINT),
+                            ("ptMaxPosition", POINT),
+                            ("ptMinTrackSize", POINT),
+                            ("ptMaxTrackSize", POINT),
+                        ]
+
+                    class RECT(ctypes.Structure):
+                        _fields_ = [
+                            ("left", ctypes.c_long), ("top", ctypes.c_long),
+                            ("right", ctypes.c_long), ("bottom", ctypes.c_long),
+                        ]
+
+                    class MONITORINFO(ctypes.Structure):
+                        _fields_ = [
+                            ("cbSize", ctypes.c_uint),
+                            ("rcMonitor", RECT),
+                            ("rcWork", RECT),
+                            ("dwFlags", ctypes.c_uint),
+                        ]
+
+                    monitor = ctypes.windll.user32.MonitorFromWindow(
+                        int(self.winId()), 2  # MONITOR_DEFAULTTONEAREST
+                    )
+                    mi = MONITORINFO()
+                    mi.cbSize = ctypes.sizeof(MONITORINFO)
+                    ctypes.windll.user32.GetMonitorInfoW(monitor, ctypes.byref(mi))
+
+                    info = MINMAXINFO.from_address(msg.lParam)
+                    work = mi.rcWork
+                    info.ptMaxPosition.x = work.left
+                    info.ptMaxPosition.y = work.top
+                    info.ptMaxSize.x = work.right - work.left
+                    info.ptMaxSize.y = work.bottom - work.top
+                    return True, 0
+
+            except Exception:
+                pass
+        return super().nativeEvent(eventType, message)
+
+    def changeEvent(self, event) -> None:
+        """Sync maximize/restore button icon on state change."""
+        super().changeEvent(event)
+        if hasattr(self, "_title_bar"):
+            self._title_bar.update_max_icon()
 
     def closeEvent(self, event) -> None:
         """Confirm exit, stop all communications, and disconnect FTDI."""
