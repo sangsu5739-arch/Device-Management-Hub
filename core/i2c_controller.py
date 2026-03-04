@@ -1,5 +1,5 @@
 """
-MPSSE controller for FTDI devices.
+MPSSE I2C controller for FTDI devices.
 """
 
 from __future__ import annotations
@@ -8,119 +8,49 @@ import time
 from datetime import datetime
 from typing import TYPE_CHECKING, Optional, List
 
+from core.mpsse_base import MpsseBaseController
+
 if TYPE_CHECKING:
     from core.ftdi_manager import FtdiManager
 
 
-class MpsseController:
-    """MPSSE control for FTDI devices."""
+class I2cController(MpsseBaseController):
+    """MPSSE I2C controller for FTDI devices."""
 
-    _PURGE_RXTX = 3
+    _I2C_DIR_SDA_OUT = MpsseBaseController.PIN_ADBUS0 | MpsseBaseController.PIN_ADBUS1
+    _I2C_DIR_SDA_IN = MpsseBaseController.PIN_ADBUS0
 
-    # FTDI ADBUS GPIO pins (MPSSE)
-    _PIN_SCL = 1 << 0  # AD0
-    _PIN_SDA = 1 << 1  # AD1
-    _PIN_SDA_IN = 1 << 2  # AD2
-
-    _I2C_DIR_SDA_OUT = _PIN_SCL | _PIN_SDA
-    _I2C_DIR_SDA_IN = _PIN_SCL
-
-    # MPSSE opcodes
-    _MPSSE_SET_BITS_LOW = 0x80
-    _MPSSE_SET_BITS_HIGH = 0x82
-    _MPSSE_READ_BITS_LOW = 0x81
-    _MPSSE_READ_BITS_HIGH = 0x83
-    _MPSSE_SEND_IMMEDIATE = 0x87
+    # I2C specific MPSSE opcodes
     _MPSSE_DATA_OUT_BYTES_NEG = 0x11
     _MPSSE_DATA_OUT_BITS_POS = 0x12
     _MPSSE_DATA_IN_BYTES_POS = 0x20
     _MPSSE_DATA_IN_BITS_POS = 0x22
 
     def __init__(self, owner: "FtdiManager") -> None:
-        self._o = owner
+        super().__init__(owner)
 
     def configure(self) -> None:
-        if self._o._ft is None:
-            raise RuntimeError("FTDI handle is not open.")
-
-        self._o._ft.resetDevice()
-        time.sleep(0.02)
-        self._o._ft.purge(self._PURGE_RXTX)
-        self._o._ft.setUSBParameters(65536, 65536)
-        self._o._ft.setLatencyTimer(2)
-        self._o._ft.setTimeouts(3000, 3000)
-
-        self._o._ft.setBitMode(0x00, 0x00)
-        time.sleep(0.02)
-        self._o._ft.setBitMode(0x00, 0x02)  # MPSSE
-        time.sleep(0.02)
-        self._o._ft.purge(self._PURGE_RXTX)
-
-        # MPSSE sync
-        synced = False
-        for _ in range(3):
-            self.write(b"\xAA")
-            time.sleep(0.02)
-            rxn = self._o._ft.getQueueStatus()
-            if rxn > 0:
-                resp = self.read(rxn)
-                if b"\xFA\xAA" in resp:
-                    synced = True
-                    break
-                # Trim log to avoid huge spam
-                hex_str = resp.hex(" ")
-                if len(hex_str) > 200:
-                    hex_str = hex_str[:200] + " ..."
-                self._o._log(f"[WARN] MPSSE sync mismatch: {hex_str}")
-            else:
-                self._o._log("[WARN] MPSSE sync timeout (no response)")
-        if not synced:
-            # extra purge to avoid stale data in further ops
-            try:
-                self._o._ft.purge(self._PURGE_RXTX)
-            except Exception:
-                pass
+        self.init_mpsse()
 
         # 60MHz, adaptive off, 3-phase on, loopback off
-        self.write(bytes([0x8A, 0x97, 0x8C, 0x85]))
+        self.write(bytes([
+            self._MPSSE_DIV_BY_5_DISABLE,
+            self._MPSSE_DISABLE_ADAPTIVE,
+            self._MPSSE_ENABLE_3_PHASE,
+            self._MPSSE_DISABLE_LOOPBACK
+        ]))
 
         # I2C clock
         self.set_i2c_clock(self._o._i2c_clock_khz)
 
         self.set_lines(scl_high=True, sda_high=True)
 
-    def write(self, data: bytes) -> None:
-        if self._o._ft is None:
-            raise RuntimeError("FTDI handle is not open.")
-        self._o._ft.write(data)
-
-    def read(self, length: int) -> bytes:
-        if self._o._ft is None:
-            raise RuntimeError("FTDI handle is not open.")
-        return self._o._ft.read(length)
-
-    def read_with_wait(self, length: int) -> bytes:
-        if length <= 0:
-            return b""
-        for _ in range(5):
-            try:
-                queued = self._o._ft.getQueueStatus() if self._o._ft is not None else 0
-            except Exception:
-                queued = 0
-            if queued >= length:
-                break
-            time.sleep(0.005)
-        try:
-            return self.read(length)
-        except Exception:
-            return b""
-
     def set_lines(self, scl_high: bool, sda_high: bool) -> None:
         value = 0x00
         if scl_high:
-            value |= self._PIN_SCL
+            value |= self.PIN_ADBUS0
         if sda_high:
-            value |= self._PIN_SDA
+            value |= self.PIN_ADBUS1
         cmd = bytes([self._MPSSE_SET_BITS_LOW, value & 0xFF, self._I2C_DIR_SDA_OUT])
         self.write(cmd)
 
@@ -169,36 +99,41 @@ class MpsseController:
         self.set_bits_low(val, direction)
 
     def apply_i2c_hold(self) -> None:
-        val, direction = self._merge_i2c_hold(self._PIN_SCL | self._PIN_SDA, self._I2C_DIR_SDA_OUT)
+        val, direction = self._merge_i2c_hold(self.PIN_ADBUS0 | self.PIN_ADBUS1, self._I2C_DIR_SDA_OUT)
         self.set_bits_low(val, direction)
 
     def _i2c_start(self) -> None:
         buf = bytearray()
-        val, dir_mask = self._merge_i2c_hold(self._PIN_SCL | self._PIN_SDA, self._I2C_DIR_SDA_OUT)
+        # SDA high, SCL high
+        val, dir_mask = self._merge_i2c_hold(self.PIN_ADBUS0 | self.PIN_ADBUS1, self._I2C_DIR_SDA_OUT)
         buf.extend([self._MPSSE_SET_BITS_LOW, val, dir_mask])
-        val, dir_mask = self._merge_i2c_hold(self._PIN_SCL, self._I2C_DIR_SDA_OUT)
+        # SDA low, SCL high
+        val, dir_mask = self._merge_i2c_hold(self.PIN_ADBUS0, self._I2C_DIR_SDA_OUT)
         buf.extend([self._MPSSE_SET_BITS_LOW, val, dir_mask])
+        # SDA low, SCL low
         val, dir_mask = self._merge_i2c_hold(0x00, self._I2C_DIR_SDA_OUT)
         buf.extend([self._MPSSE_SET_BITS_LOW, val, dir_mask])
         self.write(bytes(buf))
 
     def _i2c_stop(self) -> None:
         buf = bytearray()
-        for _ in range(4):
-            val, dir_mask = self._merge_i2c_hold(0x00, self._I2C_DIR_SDA_OUT)
-            buf.extend([self._MPSSE_SET_BITS_LOW, val, dir_mask])
-        for _ in range(4):
-            val, dir_mask = self._merge_i2c_hold(self._PIN_SCL, self._I2C_DIR_SDA_OUT)
-            buf.extend([self._MPSSE_SET_BITS_LOW, val, dir_mask])
-        for _ in range(4):
-            val, dir_mask = self._merge_i2c_hold(self._PIN_SCL | self._PIN_SDA, self._I2C_DIR_SDA_OUT)
-            buf.extend([self._MPSSE_SET_BITS_LOW, val, dir_mask])
+        # SCL low, SDA low
+        val, dir_mask = self._merge_i2c_hold(0x00, self._I2C_DIR_SDA_OUT)
+        buf.extend([self._MPSSE_SET_BITS_LOW, val, dir_mask])
+        # SCL high, SDA low
+        val, dir_mask = self._merge_i2c_hold(self.PIN_ADBUS0, self._I2C_DIR_SDA_OUT)
+        buf.extend([self._MPSSE_SET_BITS_LOW, val, dir_mask])
+        # SCL high, SDA high
+        val, dir_mask = self._merge_i2c_hold(self.PIN_ADBUS0 | self.PIN_ADBUS1, self._I2C_DIR_SDA_OUT)
+        buf.extend([self._MPSSE_SET_BITS_LOW, val, dir_mask])
         self.write(bytes(buf))
 
     def _i2c_write_byte(self, value: int) -> bool:
         buf = bytearray()
+        # 1. Set SDA low, SCL low (prepare for data)
         val, dir_mask = self._merge_i2c_hold(0x00, self._I2C_DIR_SDA_OUT)
         buf.extend([self._MPSSE_SET_BITS_LOW, val, dir_mask])
+        # 2. Write 8 bits, negative edge (SCL high, then low)
         buf.extend([self._MPSSE_DATA_OUT_BYTES_NEG, 0x00, 0x00, value & 0xFF])
         val, dir_mask = self._merge_i2c_hold(0x00, self._I2C_DIR_SDA_IN)
         buf.extend([self._MPSSE_SET_BITS_LOW, val, dir_mask])
@@ -311,3 +246,7 @@ class MpsseController:
                 except Exception:
                     pass
         return found
+
+
+# Backwards compatibility alias
+MpsseController = I2cController

@@ -44,9 +44,10 @@ class PI6CGModule(BaseModule):
     - Bottom: register map + I2C log
     """
 
-    MODULE_NAME = "PI6CG18201"
-    MODULE_ICON = ""
+    MODULE_NAME = "PI6CG18201 Clock"
+    MODULE_ICON = "🎛️"
     MODULE_VERSION = "1.0.0"
+    MODULE_ORDER = 40
     REQUIRED_MODE = "I2C"
     REQUIRE_MPSSE = True
 

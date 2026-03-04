@@ -1,8 +1,8 @@
 """
-Universal Device Studio - FTDI MPSSE I2C manager (Singleton)
+Universal Device Studio - FTDI MPSSE manager (Singleton)
 
-FT4232H via ftd2xx + MPSSE for I2C access.
-Thread-safe FTDI access.a
+FT4232H via ftd2xx + MPSSE for I2C / SPI access.
+Thread-safe FTDI access.
 """
 
 from __future__ import annotations
@@ -14,17 +14,18 @@ from typing import List, Optional, Tuple
 
 from PySide6.QtCore import QObject, Signal, QMutex, QMutexLocker
 
-from core.ftdi_mpsse import MpsseController
+from core.i2c_controller import I2cController
+from core.spi_controller import SpiController
 from core.ftdi_bitbang import BitbangController
 
 logger = logging.getLogger(__name__)
 
 
 class FtdiManager(QObject):
-    """Singleton FTDI MPSSE I2C manager.
+    """Singleton FTDI MPSSE I2C/SPI manager.
 
        FTDI access is protected by a mutex.
-    QMutex ensures thread-safe I2C access.
+    QMutex ensures thread-safe I2C/SPI access.
 
     Attributes:
         device_connected: emitted on connect
@@ -80,8 +81,10 @@ class FtdiManager(QObject):
         self._gpio_out_value: int = 0x00
         self._gpio_high_out_value: int = 0x00
         self._gpio_high_direction: int = 0x00
-        self._mpsse = MpsseController(self)
+        self._i2c = I2cController(self)
+        self._spi = SpiController(self)
         self._bitbang = BitbangController(self)
+        self._active_protocol: str = "I2C"  # current protocol mode
         FtdiManager._initialized = True
 
     @classmethod
@@ -118,7 +121,7 @@ class FtdiManager(QObject):
         if self._ft is None or not self.supports_mpsse(self._active_channel):
             return
         try:
-            self._mpsse.set_i2c_clock(self._i2c_clock_khz)
+            self._i2c.set_i2c_clock(self._i2c_clock_khz)
         except Exception as e:
             self._log(f"[WARN] Failed to set I2C clock: {e}")
 
@@ -166,25 +169,40 @@ class FtdiManager(QObject):
             if self._channel_modes.get(ch) == "bitbang":
                 self._bitbang.disable()
 
-            if mode in ("I2C", "SPI", "JTAG"):
+            if mode == "SPI":
                 if self.supports_mpsse(ch):
-                    self._configure_mpsse()
-                    self._channel_modes[ch] = "mpsse"
+                    self._spi.configure(clock_hz=1_000_000)
+                    self._channel_modes[ch] = "spi"
+                    self._active_protocol = "SPI"
                     self._bitbang_i2c_warned = False
-                    self._mode_switch_ts = 0  # MPSSE configured - release guard immediately
+                    self._mode_switch_ts = 0
+                    self._log(f"[INFO] Protocol mode: SPI (CH={ch})")
+                else:
+                    self._channel_modes[ch] = "uart"
+                    self._bitbang_i2c_warned = False
+                return
+
+            if mode in ("I2C", "JTAG"):
+                if self.supports_mpsse(ch):
+                    self._i2c.configure()
+                    self._channel_modes[ch] = "mpsse"
+                    self._active_protocol = "I2C"
+                    self._bitbang_i2c_warned = False
+                    self._mode_switch_ts = 0
                     try:
-                        self._mpsse.apply_gpio_out(self._gpio_out_value)
+                        self._i2c.apply_gpio_out(self._gpio_out_value)
                     except Exception:
                         pass
                     # Restore high byte GPIO state after MPSSE re-init
                     if self._gpio_high_direction:
                         try:
-                            self._mpsse.set_bits_high(
+                            self._i2c.set_bits_high(
                                 self._gpio_high_out_value & 0xFF,
                                 self._gpio_high_direction & 0xFF,
                             )
                         except Exception:
                             pass
+                    self._log(f"[INFO] Protocol mode: I2C (CH={ch})")
                 else:
                     self._channel_modes[ch] = "uart"
                     self._bitbang_i2c_warned = False
@@ -222,11 +240,11 @@ class FtdiManager(QObject):
                     return True  # Already in MPSSE — skip re-init
                 if self._channel_modes.get(ch) == "bitbang":
                     self._bitbang.disable()
-                self._configure_mpsse()
+                self._i2c.configure()
                 self._channel_modes[ch] = "mpsse"
                 self._bitbang_i2c_warned = False
                 try:
-                    self._mpsse.apply_gpio_out(self._gpio_out_value)
+                    self._i2c.apply_gpio_out(self._gpio_out_value)
                 except Exception:
                     pass
                 # Restore high byte GPIO state after MPSSE re-init
@@ -645,7 +663,7 @@ class FtdiManager(QObject):
             return False
 
         locker = QMutexLocker(self._mutex)
-        return self._mpsse.i2c_write(slave_addr, data)
+        return self._i2c.i2c_write(slave_addr, data)
 
     def i2c_read(self, slave_addr: int, write_prefix: bytes, read_len: int) -> Optional[bytes]:
         # I2C read transaction (thread-safe)
@@ -666,7 +684,7 @@ class FtdiManager(QObject):
             self.comm_error.emit("MPSSE is required for I2C.")
             return None
         locker = QMutexLocker(self._mutex)
-        return self._mpsse.i2c_read(slave_addr, write_prefix, read_len)
+        return self._i2c.i2c_read(slave_addr, write_prefix, read_len)
 
     def i2c_scan(self, addr_start: int = 0x08, addr_end: int = 0x77) -> List[int]:
         """Scan I2C addresses.
@@ -695,7 +713,73 @@ class FtdiManager(QObject):
             return []
 
         locker = QMutexLocker(self._mutex)
-        return self._mpsse.i2c_scan(addr_start, addr_end)
+        return self._i2c.i2c_scan(addr_start, addr_end)
+
+    # SPI access (with mutex)
+
+    def spi_configure(self, clock_hz: int = 1_000_000,
+                      cpol: int = 0, cpha: int = 0) -> None:
+        """Configure SPI clock and mode."""
+        if not self._is_connected or self._ft is None:
+            return
+        locker = QMutexLocker(self._mutex)
+        self._spi.configure(clock_hz=clock_hz, cpol=cpol, cpha=cpha)
+
+    def spi_transfer(self, tx_data: bytes,
+                     cs_pin: int = SpiController.PIN_CS0) -> Optional[bytes]:
+        """Full-duplex SPI transfer (thread-safe).
+
+        Args:
+            tx_data: bytes to transmit
+            cs_pin: chip-select pin mask (default ADBUS3=0x08)
+
+        Returns:
+            Received bytes, or None on error.
+        """
+        if not self._is_connected or self._ft is None:
+            self.comm_error.emit("Device not connected.")
+            return None
+        if not self.supports_mpsse(self._active_channel):
+            self.comm_error.emit("MPSSE is required for SPI.")
+            return None
+        locker = QMutexLocker(self._mutex)
+        try:
+            return self._spi.transfer(tx_data, cs_pin)
+        except Exception as e:
+            err = f"SPI transfer error: {e}"
+            self._log(f"[Error] {err}")
+            self.comm_error.emit(err)
+            return None
+
+    def spi_write(self, tx_data: bytes,
+                  cs_pin: int = SpiController.PIN_CS0) -> bool:
+        """Write-only SPI transfer (thread-safe)."""
+        if not self._is_connected or self._ft is None:
+            self.comm_error.emit("Device not connected.")
+            return False
+        if not self.supports_mpsse(self._active_channel):
+            self.comm_error.emit("MPSSE is required for SPI.")
+            return False
+        locker = QMutexLocker(self._mutex)
+        try:
+            self._spi.write_only(tx_data, cs_pin)
+            return True
+        except Exception as e:
+            err = f"SPI write error: {e}"
+            self._log(f"[Error] {err}")
+            self.comm_error.emit(err)
+            return False
+
+    def spi_set_gpio(self, mask: int, value: int,
+                     direction: int = 0xFF) -> None:
+        """Set GPIO on SPI low-byte non-SPI pins."""
+        if not self._is_connected or self._ft is None:
+            return
+        locker = QMutexLocker(self._mutex)
+        try:
+            self._spi.set_gpio(mask, value, direction)
+        except Exception as e:
+            self._log(f"[Error] SPI GPIO error: {e}")
 
     def read_gpio_low(self) -> Optional[int]:
         """Read low GPIO bits (ADBUS) in MPSSE mode."""
@@ -707,7 +791,7 @@ class FtdiManager(QObject):
             if mode == "bitbang":
                 value = self._bitbang.read_pins()
                 return value if value is not None else None
-            return self._mpsse.read_gpio_low()
+            return self._i2c.read_gpio_low()
         except Exception as e:
             self._log(f"[ERROR] GPIO read failed: {e}")
             return None
@@ -721,7 +805,7 @@ class FtdiManager(QObject):
             mode = self._channel_modes.get(self._active_channel, "mpsse")
             if mode != "mpsse":
                 return None
-            return self._mpsse.read_gpio_high()
+            return self._i2c.read_gpio_high()
         except Exception as e:
             self._log(f"[ERROR] GPIO high read failed: {e}")
             return None

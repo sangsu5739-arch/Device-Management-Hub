@@ -46,8 +46,9 @@ class FtdiVerifierModule(BaseModule):
     """
 
     MODULE_NAME = "FTDI Verifier"
-    MODULE_ICON = ""
+    MODULE_ICON = "🛠️"
     MODULE_VERSION = "1.0.0"
+    MODULE_ORDER = 10
 
     def __init__(self, ftdi_manager: FtdiManager, parent: Optional[QWidget] = None) -> None:
         self._worker: Optional[VerifierWorker] = None

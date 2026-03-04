@@ -29,6 +29,7 @@ class BaseModule(QWidget):
     MODULE_NAME: str = "Unknown Module"
     MODULE_ICON: str = ""
     MODULE_VERSION: str = "1.0.0"
+    MODULE_ORDER: int = 100  # Tab ordering (lower = earlier)
     REQUIRED_MODE: Optional[str] = None
     REQUIRE_MPSSE: bool = False
 

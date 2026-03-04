@@ -59,6 +59,8 @@ def discover_module_classes() -> List[Type[BaseModule]]:
             logger.warning(f"Failed to load module '{name}': {e}")
             traceback.print_exc()
 
+    # Sort by MODULE_ORDER (lower = earlier tab)
+    classes.sort(key=lambda c: getattr(c, "MODULE_ORDER", 100))
     return classes
 
 

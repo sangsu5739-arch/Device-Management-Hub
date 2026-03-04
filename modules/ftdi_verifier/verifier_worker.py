@@ -20,7 +20,7 @@ from core.ftdi_manager import FtdiManager
 class GpioState:
     """GPIO pin state snapshot."""
     timestamp: float = 0.0
-    pin_states: Dict[int, bool] = field(default_factory=dict)  # pin_number -> high/low
+    pin_states: Dict[int, bool] = field(default_factory=dict)
 
 
 @dataclass
@@ -185,13 +185,47 @@ class VerifierWorker(QObject):
     def test_spi_loopback(self) -> None:
         """SPI loopback test (requires MOSI -> MISO wiring).
 
-        SPI API not available in FtdiManager; placeholder.
+        Sends a known pattern via SPI and checks if the same data
+        is received back (loopback wiring required).
         """
-        result = ProtocolTestResult(
-            timestamp=time.time(), protocol="SPI", success=False,
-            message="SPI loopback test - FtdiManager SPI API not implemented",
-        )
-        self._log("SPI loopback test: not implemented (FtdiManager SPI API required)")
+        if not self._ftdi.is_connected:
+            self.error_occurred.emit("FTDI not connected")
+            return
+
+        tx_pattern = bytes([0xA5, 0x5A, 0xDE, 0xAD])
+        self._log(f"SPI loopback TX: {' '.join(f'{b:02X}' for b in tx_pattern)}")
+
+        try:
+            rx_data = self._ftdi.spi_transfer(tx_pattern)
+            if rx_data is None:
+                result = ProtocolTestResult(
+                    timestamp=time.time(), protocol="SPI", success=False,
+                    message="SPI loopback: transfer returned None",
+                )
+                self._log("SPI loopback: transfer failed (None)")
+            elif rx_data == tx_pattern:
+                hex_str = " ".join(f"{b:02X}" for b in rx_data)
+                result = ProtocolTestResult(
+                    timestamp=time.time(), protocol="SPI", success=True,
+                    message=f"SPI loopback OK: [{hex_str}]",
+                    raw_data=rx_data,
+                )
+                self._log(f"SPI loopback PASS: RX = {hex_str}")
+            else:
+                hex_rx = " ".join(f"{b:02X}" for b in rx_data)
+                result = ProtocolTestResult(
+                    timestamp=time.time(), protocol="SPI", success=False,
+                    message=f"SPI loopback MISMATCH: RX=[{hex_rx}]",
+                    raw_data=rx_data,
+                )
+                self._log(f"SPI loopback FAIL: RX = {hex_rx}")
+        except Exception as e:
+            result = ProtocolTestResult(
+                timestamp=time.time(), protocol="SPI", success=False,
+                message=f"SPI loopback error: {e}",
+            )
+            self._log(f"SPI loopback error: {e}")
+
         self.protocol_test_done.emit(result)
 
     # -- Utils --

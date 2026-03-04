@@ -43,9 +43,10 @@ class INA228Module(BaseModule):
     - Bottom: INA228 register map table
     """
 
-    MODULE_NAME = "INA228"
-    MODULE_ICON = ""
+    MODULE_NAME = "INA228 Monitor"
+    MODULE_ICON = "📈"
     MODULE_VERSION = "1.0.0"
+    MODULE_ORDER = 20
     REQUIRED_MODE = "I2C"
     REQUIRE_MPSSE = True
 
