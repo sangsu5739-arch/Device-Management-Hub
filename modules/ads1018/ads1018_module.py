@@ -22,6 +22,7 @@ from PySide6.QtWidgets import (
 from PySide6.QtGui import QColor, QFont
 
 from core.ftdi_manager import FtdiManager
+from core.theme_manager import ThemeManager
 from modules.base_module import BaseModule
 from modules.ads1018.ads1018_driver import (
     PGA, DataRate, ChannelMode, ChannelConfig, ADS1018Config,
@@ -90,6 +91,71 @@ class ADS1018Module(BaseModule):
 
         layout.addWidget(v_splitter, 1)
 
+        # Theme support
+        self._apply_theme()
+        ThemeManager.instance().theme_changed.connect(self._apply_theme)
+
+    def _apply_theme(self) -> None:
+        tm = ThemeManager.instance()
+        # Hold LEDs
+        for w in self.findChildren(QLabel, "holdLed"):
+            w.setStyleSheet(f"background: {tm.color('ads_led_off_bg')}; border-radius: 7px;"
+                            f" border: 1px solid {tm.color('ads_led_off_border')};")
+        # Hold buttons
+        for w in self.findChildren(QPushButton, "holdBtn"):
+            w.setStyleSheet(
+                f"QPushButton {{ background: {tm.color('btn_hold_bg')}; color: {tm.color('btn_hold_text')};"
+                f" font-weight: bold; border-radius: 4px; border: 1px solid {tm.color('btn_hold_border')};"
+                f" font-size: 11px; }}"
+                f"QPushButton:hover {{ background: {tm.color('btn_hold_hover')}; }}"
+                f"QPushButton:checked {{ background: {tm.color('btn_hold_checked_bg')};"
+                f" color: {tm.color('btn_hold_checked_text')};"
+                f" border: 1px solid {tm.color('btn_hold_checked_border')}; }}"
+            )
+        # Auto range
+        for w in self.findChildren(QPushButton, "autoRangeBtn"):
+            w.setStyleSheet(
+                f"QPushButton {{ font-weight: bold; font-size: 11px; padding: 4px;"
+                f" border-radius: 6px; background: {tm.color('btn_auto_bg')};"
+                f" color: {tm.color('text_accent')}; }}"
+                f"QPushButton:checked {{ background: #1f5eff; color: #ffffff; }}"
+            )
+        # Separators
+        for w in self.findChildren(QFrame, "themeSep"):
+            w.setStyleSheet(f"color: {tm.color('separator')};")
+        # Section title
+        for w in self.findChildren(QLabel, "sectionTitle"):
+            w.setStyleSheet(f"color: {tm.color('text_accent')}; font-weight: bold; font-size: 11px;")
+        # Channel frames
+        for w in self.findChildren(QFrame, "chFrame"):
+            w.setStyleSheet(
+                f"QFrame {{ background: {tm.color('ads_ch_frame_bg')};"
+                f" border: 1px solid {tm.color('ads_ch_frame_border')}; border-radius: 4px; }}"
+            )
+        # Current frames
+        for w in self.findChildren(QFrame, "currentFrame"):
+            w.setStyleSheet("border: none; background: transparent;")
+        # Param labels
+        for w in self.findChildren(QLabel, "paramLbl"):
+            w.setStyleSheet(f"color: {tm.color('text_tag')}; font-size: 10px;")
+        # Param edits
+        for w in self.findChildren(QLineEdit, "paramEdit"):
+            w.setStyleSheet(
+                f"QLineEdit {{ background: {tm.color('ads_vi_btn_bg')}; color: {tm.color('text_primary')};"
+                f" border: 1px solid {tm.color('ads_vi_btn_border')}; border-radius: 3px;"
+                f" padding: 1px 4px; font-size: 10px; max-width: 50px; }}"
+            )
+        # Metric containers
+        for w in self.findChildren(QWidget, "metricContainer"):
+            w.setStyleSheet(f"background-color: {tm.color('metric_bg')}; border-radius: 6px;")
+        # Console views
+        for w in self.findChildren(QTextEdit, "themedConsole"):
+            w.setStyleSheet(
+                f"QTextEdit {{ background: {tm.color('ads_config_bg')}; color: {tm.color('ads_config_text')};"
+                f" border: 1px solid {tm.color('ads_config_border')}; border-radius: 4px;"
+                f" font-family: 'Consolas', monospace; font-size: 11px; }}"
+            )
+
     # ── UI Builders ──────────────────────────────────────────────────
 
     def _create_gpio_panel(self) -> QGroupBox:
@@ -109,7 +175,7 @@ class ADS1018Module(BaseModule):
             
             led = QLabel()
             led.setFixedSize(14, 14)
-            led.setStyleSheet("background: #2a303b; border-radius: 7px; border: 1px solid #1a1c28;")
+            led.setObjectName("holdLed")
             self._hold_leds[bit] = led
             pair_layout.addWidget(led)
             
@@ -117,11 +183,7 @@ class ADS1018Module(BaseModule):
             btn.setCheckable(True)
             btn.setMinimumWidth(60)
             btn.setMinimumHeight(24)
-            btn.setStyleSheet(
-                "QPushButton { background: #2a303b; color: #cbd5e1; font-weight: bold; border-radius: 4px; border: 1px solid #3b4458; font-size: 11px; }"
-                "QPushButton:hover { background: #343d4a; }"
-                "QPushButton:checked { background: #1a2d20; color: #80c890; border: 1px solid #2a5a38; }"
-            )
+            btn.setObjectName("holdBtn")
             btn.toggled.connect(lambda checked, b=bit: self._on_io_hold_toggled(b, checked))
             self._hold_btns[bit] = btn
             pair_layout.addWidget(btn)
@@ -203,10 +265,7 @@ class ADS1018Module(BaseModule):
         self._auto_range_btn.setCheckable(True)
         self._auto_range_btn.setChecked(True)
         self._auto_range_btn.setMinimumHeight(32)
-        self._auto_range_btn.setStyleSheet(
-            "QPushButton { font-weight: bold; font-size: 11px; padding: 4px; border-radius: 6px; background: #1d2433; color: #c8d2f0; }"
-            "QPushButton:checked { background: #1f5eff; color: #ffffff; }"
-        )
+        self._auto_range_btn.setObjectName("autoRangeBtn")
         self._auto_range_btn.toggled.connect(lambda checked: self._visualizer.set_auto_range(checked))
         grid.addWidget(self._auto_range_btn, 7, 1)
 
@@ -223,29 +282,30 @@ class ADS1018Module(BaseModule):
         # Separator for Channels
         sep1 = QFrame()
         sep1.setFrameShape(QFrame.Shape.HLine)
-        sep1.setStyleSheet("color: #3a3f50;")
+        sep1.setObjectName("themeSep")
         layout.addWidget(sep1)
         
         ch_title = QLabel("Channel Config:")
-        ch_title.setStyleSheet("color: #c8d2f0; font-weight: bold; font-size: 11px;")
+        ch_title.setObjectName("sectionTitle")
         layout.addWidget(ch_title)
 
         # Channels
-        edit_style = "QLineEdit { background: #282a3a; color: #c8d0e0; border: 1px solid #3a4060; border-radius: 3px; padding: 1px 4px; font-size: 10px; max-width: 50px; }"
-        lbl_style = "color: #9aa4b8; font-size: 10px;"
+        # Styles set dynamically in _apply_theme()
+        edit_style = ""
+        lbl_style = ""
 
         ch_vbox = QVBoxLayout()
         ch_vbox.setSpacing(4)
         for i in range(4):
             ch_frame = QFrame()
-            ch_frame.setStyleSheet("QFrame { background: #1a1c28; border: 1px solid #2a2e40; border-radius: 4px; }")
+            ch_frame.setObjectName("chFrame")
             ch_layout = QVBoxLayout(ch_frame)
             ch_layout.setContentsMargins(4, 4, 4, 4)
             ch_layout.setSpacing(4)
             
             top_h = QHBoxLayout()
             ch_lbl = QLabel(f"CH{i}")
-            ch_lbl.setStyleSheet(f"color: {CH_COLORS[i]}; font-weight: bold; font-size: 11px; border: none;")
+            ch_lbl.setStyleSheet(f"color: {CH_COLORS[i]}; font-weight: bold; font-size: 11px; border: none;")  # data color
             top_h.addWidget(ch_lbl)
             
             btn_group = QButtonGroup(self)
@@ -269,21 +329,21 @@ class ADS1018Module(BaseModule):
             ch_layout.addLayout(top_h)
 
             current_frame = QFrame()
-            current_frame.setStyleSheet("border: none; background: transparent;")
+            current_frame.setObjectName("currentFrame")
             cf_layout = QHBoxLayout(current_frame)
             cf_layout.setContentsMargins(0, 0, 0, 0)
             cf_layout.setSpacing(2)
             s_lbl = QLabel("R:")
-            s_lbl.setStyleSheet(lbl_style)
+            s_lbl.setObjectName("paramLbl")
             cf_layout.addWidget(s_lbl)
             shunt_edit = QLineEdit("0.02")
-            shunt_edit.setStyleSheet(edit_style)
+            shunt_edit.setObjectName("paramEdit")
             cf_layout.addWidget(shunt_edit)
             g_lbl = QLabel(" G:")
-            g_lbl.setStyleSheet(lbl_style)
+            g_lbl.setObjectName("paramLbl")
             cf_layout.addWidget(g_lbl)
             gain_edit = QLineEdit("100")
-            gain_edit.setStyleSheet(edit_style)
+            gain_edit.setObjectName("paramEdit")
             cf_layout.addWidget(gain_edit)
             current_frame.setVisible(False)
             ch_layout.addWidget(current_frame)
@@ -299,7 +359,7 @@ class ADS1018Module(BaseModule):
 
         sep2 = QFrame()
         sep2.setFrameShape(QFrame.Shape.HLine)
-        sep2.setStyleSheet("color: #3a3f50;")
+        sep2.setObjectName("themeSep")
         layout.addWidget(sep2)
 
         # Start / Stop buttons
@@ -346,7 +406,7 @@ class ADS1018Module(BaseModule):
             val.setStyleSheet(f"color: {color}; font-size: 14px; font-weight: bold; font-family: 'Consolas', monospace;")
             val.setAlignment(Qt.AlignmentFlag.AlignCenter)
             vl.addWidget(val)
-            container.setStyleSheet("background-color: #22242e; border-radius: 6px;")
+            container.setObjectName("metricContainer")
             metrics_layout.addWidget(container)
             return val
 
@@ -409,7 +469,7 @@ class ADS1018Module(BaseModule):
         summary_layout.setContentsMargins(6, 6, 6, 6)
         self._config_summary = QTextEdit()
         self._config_summary.setReadOnly(True)
-        self._config_summary.setStyleSheet("QTextEdit { background: #0e1018; color: #c8d0e0; border: 1px solid #1e2030; border-radius: 4px; font-family: 'Consolas', monospace; font-size: 11px; }")
+        self._config_summary.setObjectName("themedConsole")
         summary_layout.addWidget(self._config_summary)
         tabs.addTab(summary_tab, "Config Summary")
 
@@ -425,7 +485,7 @@ class ADS1018Module(BaseModule):
         
         self._log_view = QTextEdit()
         self._log_view.setReadOnly(True)
-        self._log_view.setStyleSheet("QTextEdit { background: #0e1018; color: #8890a0; border: 1px solid #1e2030; border-radius: 4px; font-family: 'Consolas', monospace; font-size: 11px; }")
+        self._log_view.setObjectName("themedConsole")
         log_layout.addWidget(self._log_view)
         tabs.addTab(log_tab, "SPI Log")
 
@@ -697,10 +757,10 @@ class ADS1018Module(BaseModule):
             if led:
                 if high:
                     # glowing green LED
-                    led.setStyleSheet("background: qradialgradient(cx:0.5, cy:0.5, radius:0.5, fx:0.5, fy:0.5, stop:0 #a0e0a8, stop:1 #408858); border-radius: 7px; border: 1px solid #2a5a38;")
+                    led.setStyleSheet("background: qradialgradient(cx:0.5, cy:0.5, radius:0.5, fx:0.5, fy:0.5, stop:0 #a0e0a8, stop:1 #408858); border-radius: 7px; border: 1px solid #2a5a38;")  # semantic on
                 else:
-                    # dim gray LED
-                    led.setStyleSheet("background: #2a303b; border-radius: 7px; border: 1px solid #1a1c28;")
+                    tm = ThemeManager.instance()
+                    led.setStyleSheet(f"background: {tm.color('ads_led_off_bg')}; border-radius: 7px; border: 1px solid {tm.color('ads_led_off_border')};")
                     
             if sync_buttons:
                 btn = self._hold_btns.get(bit)

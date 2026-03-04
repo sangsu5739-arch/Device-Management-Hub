@@ -14,9 +14,9 @@ from PySide6.QtCore import Qt
 
 import pyqtgraph as pg
 
+from core.theme_manager import ThemeManager
 
-# pyqtgraph global settings (dark theme)
-pg.setConfigOptions(antialias=True, background="#1a1c24", foreground="#c8cdd8")
+pg.setConfigOptions(antialias=True)
 
 
 class PowerVisualizer(QWidget):
@@ -46,6 +46,8 @@ class PowerVisualizer(QWidget):
         self._init_plots()
         if show_toolbar:
             self._init_toolbar()
+        self._apply_theme()
+        ThemeManager.instance().theme_changed.connect(self._apply_theme)
 
     def _init_plots(self) -> None:
         """Create and configure pyqtgraph PlotWidget."""
@@ -105,7 +107,8 @@ class PowerVisualizer(QWidget):
         toolbar_layout.addStretch()
 
         hint = QLabel("Mouse wheel: zoom  |  Right click: menu")
-        hint.setStyleSheet("color: #6a7088; font-size: 10px;")
+        self._hint_label = hint
+        hint.setStyleSheet(f"color: {ThemeManager.instance().color('text_muted')}; font-size: 10px;")
         toolbar_layout.addWidget(hint)
 
         # Add to layout (above top chart)
@@ -155,3 +158,16 @@ class PowerVisualizer(QWidget):
         self._auto_range = enabled
         self._voltage_plot.enableAutoRange(enable=enabled)
         self._current_plot.enableAutoRange(enable=enabled)
+
+    def _apply_theme(self) -> None:
+        tm = ThemeManager.instance()
+        bg = tm.color("graph_bg")
+        fg = tm.color("graph_fg")
+        axis_color = tm.color("graph_axis_text")
+        for plot in (self._voltage_plot, self._current_plot):
+            plot.setBackground(bg)
+            for axis_name in ("left", "bottom"):
+                plot.getAxis(axis_name).setPen(pg.mkPen(axis_color))
+                plot.getAxis(axis_name).setTextPen(pg.mkPen(fg))
+        if hasattr(self, "_hint_label"):
+            self._hint_label.setStyleSheet(f"color: {tm.color('text_muted')}; font-size: 10px;")

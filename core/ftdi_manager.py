@@ -250,7 +250,7 @@ class FtdiManager(QObject):
                 # Restore high byte GPIO state after MPSSE re-init
                 if self._gpio_high_direction:
                     try:
-                        self._mpsse.set_bits_high(
+                        self._i2c.set_bits_high(
                             self._gpio_high_out_value & 0xFF,
                             self._gpio_high_direction & 0xFF,
                         )
@@ -305,7 +305,7 @@ class FtdiManager(QObject):
                 self._ft.write(bytes([self._gpio_out_value & 0xFF]))
                 return
             if mode == "mpsse":
-                self._mpsse.apply_gpio_out(self._gpio_out_value)
+                self._i2c.apply_gpio_out(self._gpio_out_value)
         except Exception as e:
             self._log(f"[ERROR] GPIO write failed: {e}")
 
@@ -329,7 +329,7 @@ class FtdiManager(QObject):
                 f"[GPIO-HIGH] mode={mode}, mask=0x{mask:02X}, "
                 f"val=0x{val_byte:02X}, dir=0x{dir_byte:02X}"
             )
-            self._mpsse.set_bits_high(val_byte, dir_byte)
+            self._i2c.set_bits_high(val_byte, dir_byte)
         except Exception as e:
             self._log(f"[ERROR] GPIO high write failed: {e}")
 
@@ -478,7 +478,7 @@ class FtdiManager(QObject):
 
     def _set_lines(self, scl_high: bool, sda_high: bool) -> None:
         """Configure SCL/SDA GPIO lines."""
-        self._mpsse.set_lines(scl_high=scl_high, sda_high=sda_high)
+        self._i2c.set_lines(scl_high=scl_high, sda_high=sda_high)
 
     def set_i2c_hold(self, mask: int, value: int) -> None:
         """Hold GPIO states on ADBUS while in MPSSE I2C (bits 4-7 recommended)."""
@@ -489,7 +489,7 @@ class FtdiManager(QObject):
         if not self.supports_mpsse(self._active_channel):
             return
         try:
-            self._mpsse.apply_i2c_hold()
+            self._i2c.apply_i2c_hold()
         except Exception as e:
             self._log(f"[WARN] I2C hold apply failed: {e}")
 
@@ -501,7 +501,7 @@ class FtdiManager(QObject):
 
     def _configure_mpsse(self) -> None:
         """Initialize MPSSE for I2C."""
-        self._mpsse.configure()
+        self._i2c.configure()
 
     def open_device(self, serial_number: str, channel: str = "A") -> bool:
         """Open FTDI device.

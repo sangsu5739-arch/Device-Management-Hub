@@ -30,6 +30,7 @@ from PySide6.QtWidgets import (
 )
 
 from core.ftdi_manager import FtdiManager
+from core.theme_manager import ThemeManager
 from modules.base_module import BaseModule
 
 logger = logging.getLogger(__name__)
@@ -71,11 +72,10 @@ class CustomTitleBar(QWidget):
         super().__init__(parent_window)
         self._window = parent_window
         self.setFixedHeight(34)
-        self.setStyleSheet(
-            "CustomTitleBar { background: #2a3040; border: none;"
-            " border-bottom: 1px solid #3a4560; }"
-        )
         self._build()
+        self._tm = ThemeManager.instance()
+        self._tm.theme_changed.connect(self._apply_theme)
+        self._apply_theme()
 
     def _build(self) -> None:
         layout = QHBoxLayout(self)
@@ -83,77 +83,101 @@ class CustomTitleBar(QWidget):
         layout.setSpacing(0)
 
         # App icon
-        icon_lbl = QLabel("◆")
-        icon_lbl.setStyleSheet(
-            "color: #5ab8d0; font-size: 11px; background: transparent; border: none;"
-        )
-        layout.addWidget(icon_lbl)
+        self._icon_lbl = QLabel("\u25c6")
+        layout.addWidget(self._icon_lbl)
         layout.addSpacing(8)
 
         # App title + version
-        title_lbl = QLabel(f"{APP_NAME}")
-        title_lbl.setStyleSheet(
-            "color: #b0bcd0; font-size: 12px; font-weight: 600;"
-            " background: transparent; border: none;"
-        )
-        layout.addWidget(title_lbl)
+        self._title_lbl = QLabel(f"{APP_NAME}")
+        layout.addWidget(self._title_lbl)
         layout.addSpacing(8)
 
-        ver_lbl = QLabel(f"v{APP_VERSION}")
-        ver_lbl.setStyleSheet(
-            "color: #8fa0b8; font-size: 10px; font-weight: 600;"
-            " background: transparent; border: none; padding: 0;"
-        )
-        layout.addWidget(ver_lbl)
+        self._ver_lbl = QLabel(f"v{APP_VERSION}")
+        layout.addWidget(self._ver_lbl)
 
         # Pipe separator
-        pipe_lbl = QLabel("│")
-        pipe_lbl.setStyleSheet(
-            "color: #3a4058; font-size: 14px; background: transparent;"
-            " border: none; padding: 0 10px;"
-        )
-        layout.addWidget(pipe_lbl)
+        self._pipe_lbl = QLabel("\u2502")
+        layout.addWidget(self._pipe_lbl)
 
         # Company branding
-        brand_lbl = QLabel("STATSChipPAC")
-        brand_lbl.setStyleSheet(
-            "color: #4a8898; font-size: 10px; font-weight: 600;"
-            " letter-spacing: 1.5px; background: transparent; border: none;"
-        )
-        layout.addWidget(brand_lbl)
+        self._brand_lbl = QLabel("STATSChipPAC")
+        layout.addWidget(self._brand_lbl)
 
         layout.addStretch()
 
-        # ── Window control buttons ──
-        min_btn = QPushButton("─")
-        min_btn.setFixedSize(46, 34)
-        min_btn.setStyleSheet(
-            "QPushButton { background: transparent; color: #6878a0; border: none;"
-            " font-size: 10px; }"
-            "QPushButton:hover { background: #2a2e42; color: #a0b0d0; }"
-        )
-        min_btn.clicked.connect(self._window.showMinimized)
-        layout.addWidget(min_btn)
+        # ── Theme toggle button ──
+        self._theme_btn = QPushButton("\u263e")
+        self._theme_btn.setFixedSize(34, 34)
+        self._theme_btn.setToolTip("Toggle dark/light theme")
+        self._theme_btn.clicked.connect(self._on_toggle_theme)
+        layout.addWidget(self._theme_btn)
 
-        self._max_btn = QPushButton("□")
+        # ── Window control buttons ──
+        self._min_btn = QPushButton("\u2500")
+        self._min_btn.setFixedSize(46, 34)
+        self._min_btn.clicked.connect(self._window.showMinimized)
+        layout.addWidget(self._min_btn)
+
+        self._max_btn = QPushButton("\u25a1")
         self._max_btn.setFixedSize(46, 34)
-        self._max_btn.setStyleSheet(
-            "QPushButton { background: transparent; color: #6878a0; border: none;"
-            " font-size: 11px; }"
-            "QPushButton:hover { background: #2a2e42; color: #a0b0d0; }"
-        )
         self._max_btn.clicked.connect(self._toggle_maximize)
         layout.addWidget(self._max_btn)
 
-        close_btn = QPushButton("✕")
-        close_btn.setFixedSize(46, 34)
-        close_btn.setStyleSheet(
-            "QPushButton { background: transparent; color: #6878a0; border: none;"
-            " font-size: 11px; }"
-            "QPushButton:hover { background: #c42b1c; color: white; }"
+        self._close_btn = QPushButton("\u2715")
+        self._close_btn.setFixedSize(46, 34)
+        self._close_btn.clicked.connect(self._window.close)
+        layout.addWidget(self._close_btn)
+
+    def _on_toggle_theme(self) -> None:
+        ThemeManager.instance().toggle()
+
+    def _apply_theme(self) -> None:
+        tm = ThemeManager.instance()
+        is_dark = tm.is_dark()
+        self._theme_btn.setText("\u263e" if is_dark else "\u2600")
+
+        self.setStyleSheet(
+            f"CustomTitleBar {{ background: {tm.color('bg_titlebar')}; border: none;"
+            f" border-bottom: 1px solid {tm.color('border_titlebar')}; }}"
         )
-        close_btn.clicked.connect(self._window.close)
-        layout.addWidget(close_btn)
+        self._icon_lbl.setStyleSheet(
+            f"color: {tm.color('accent_cyan')}; font-size: 11px; background: transparent; border: none;"
+        )
+        self._title_lbl.setStyleSheet(
+            f"color: {tm.color('title_text')}; font-size: 12px; font-weight: 600;"
+            f" background: transparent; border: none;"
+        )
+        self._ver_lbl.setStyleSheet(
+            f"color: {tm.color('title_version')}; font-size: 10px; font-weight: 600;"
+            f" background: transparent; border: none; padding: 0;"
+        )
+        self._pipe_lbl.setStyleSheet(
+            f"color: {tm.color('pipe')}; font-size: 14px; background: transparent;"
+            f" border: none; padding: 0 10px;"
+        )
+        self._brand_lbl.setStyleSheet(
+            f"color: {tm.color('accent_brand')}; font-size: 10px; font-weight: 600;"
+            f" letter-spacing: 1.5px; background: transparent; border: none;"
+        )
+        self._theme_btn.setStyleSheet(
+            f"QPushButton {{ background: transparent; color: {tm.color('title_winbtn')}; border: none;"
+            f" font-size: 14px; }}"
+            f"QPushButton:hover {{ background: {tm.color('title_winbtn_bg_hover')};"
+            f" color: {tm.color('title_winbtn_hover')}; }}"
+        )
+        winbtn_style = (
+            f"QPushButton {{ background: transparent; color: {tm.color('title_winbtn')}; border: none;"
+            f" font-size: 11px; }}"
+            f"QPushButton:hover {{ background: {tm.color('title_winbtn_bg_hover')};"
+            f" color: {tm.color('title_winbtn_hover')}; }}"
+        )
+        self._min_btn.setStyleSheet(winbtn_style.replace("font-size: 11px", "font-size: 10px"))
+        self._max_btn.setStyleSheet(winbtn_style)
+        self._close_btn.setStyleSheet(
+            f"QPushButton {{ background: transparent; color: {tm.color('title_winbtn')}; border: none;"
+            f" font-size: 11px; }}"
+            f"QPushButton:hover {{ background: #c42b1c; color: white; }}"
+        )
 
     def _toggle_maximize(self) -> None:
         if self._window.isMaximized():
@@ -202,28 +226,18 @@ class MainWindow(QMainWindow):
     Center: Device module tabs (QTabWidget)
     """
 
-    _MSGBOX_STYLESHEET = """
-        QMessageBox {
-            background-color: #22242e;
-        }
-        QMessageBox QLabel {
-            color: #c8cdd8;
-            font-size: 13px;
-        }
-        QMessageBox QPushButton {
-            min-width: 92px;
-            min-height: 30px;
-            border-radius: 6px;
-            border: 1px solid #4a6880;
-            background-color: #1d2d3a;
-            color: #90d0e8;
-            font-weight: 600;
-            padding: 4px 10px;
-        }
-        QMessageBox QPushButton:hover {
-            background-color: #243548;
-        }
-    """
+    @staticmethod
+    def _msgbox_stylesheet() -> str:
+        tm = ThemeManager.instance()
+        return (
+            f"QMessageBox {{ background-color: {tm.color('msgbox_bg')}; }}"
+            f"QMessageBox QLabel {{ color: {tm.color('msgbox_text')}; font-size: 13px; }}"
+            f"QMessageBox QPushButton {{ min-width: 92px; min-height: 30px;"
+            f" border-radius: 6px; border: 1px solid {tm.color('msgbox_btn_border')};"
+            f" background-color: {tm.color('msgbox_btn_bg')};"
+            f" color: {tm.color('msgbox_btn_text')}; font-weight: 600; padding: 4px 10px; }}"
+            f"QMessageBox QPushButton:hover {{ background-color: {tm.color('msgbox_btn_hover')}; }}"
+        )
 
     def __init__(self) -> None:
         super().__init__()
@@ -292,32 +306,22 @@ class MainWindow(QMainWindow):
         sep = QFrame()
         sep.setFrameShape(QFrame.Shape.VLine)
         sep.setFixedWidth(1)
-        sep.setStyleSheet("background: #3a3f50; border: none;")
+        tm = ThemeManager.instance()
+        sep.setStyleSheet(f"background: {tm.color('separator')}; border: none;")
         return sep
 
     def _create_connection_panel(self) -> QWidget:
         """Toolbar-style FTDI connection panel (single row, grouped by separators)."""
-        bar = QWidget()
-        bar.setFixedHeight(46)
-        bar.setStyleSheet(
-            "QWidget { background: #1e2130; border-bottom: 1px solid #2e3348; }"
-            "QLabel { background: transparent; border: none; }"
-        )
-        layout = QHBoxLayout(bar)
+        self._conn_bar = QWidget()
+        self._conn_bar.setFixedHeight(46)
+        layout = QHBoxLayout(self._conn_bar)
         layout.setContentsMargins(12, 0, 12, 0)
         layout.setSpacing(0)
 
         # ── Group 1: Device ──────────────────────────────────────
-        scan_btn = QPushButton("\u27f3")   # ⟳
+        scan_btn = QPushButton("\u27f3")   # \u27f3
         scan_btn.setToolTip("Scan FTDI devices")
         scan_btn.setFixedSize(28, 28)
-        scan_btn.setStyleSheet(
-            "QPushButton { background: #252838; color: #8898b8; border: 1px solid #3a3f50;"
-            " border-radius: 5px; font-size: 14px; }"
-            "QPushButton:hover { background: #2e334a; color: #b0c0e0; }"
-            "QPushButton:pressed { background: #1e2130; }"
-            "QPushButton:disabled { color: #404560; border-color: #2a2e3a; }"
-        )
         scan_btn.clicked.connect(self._on_scan_devices)
         self._scan_btn = scan_btn
         layout.addWidget(scan_btn)
@@ -326,34 +330,24 @@ class MainWindow(QMainWindow):
         self._device_combo = QComboBox()
         self._device_combo.setFixedHeight(28)
         self._device_combo.setMinimumWidth(230)
-        self._device_combo.setPlaceholderText("No devices — press \u27f3 to scan")
-        self._device_combo.setStyleSheet(
-            "QComboBox { background: #252838; color: #c0cce0; border: 1px solid #3a3f50;"
-            " border-radius: 5px; padding: 0 8px; }"
-            "QComboBox:hover { border-color: #5a6080; }"
-            "QComboBox::drop-down { border: none; width: 20px; }"
-            "QComboBox QAbstractItemView { background: #1e2130; color: #c0cce0;"
-            " selection-background-color: #2e3a54; border: 1px solid #3a3f50; }"
-        )
+        self._device_combo.setPlaceholderText("No devices \u2014 press \u27f3 to scan")
         self._device_combo.currentIndexChanged.connect(self._on_device_selected)
         layout.addWidget(self._device_combo)
 
         layout.addSpacing(10)
-        layout.addWidget(self._make_separator())
+        self._sep1 = self._make_separator()
+        layout.addWidget(self._sep1)
         layout.addSpacing(10)
 
         # ── Group 2: Channel buttons ──────────────────────────────
-        ch_lbl = QLabel("CH")
-        ch_lbl.setStyleSheet("color: #606880; font-size: 10px; font-weight: 600;"
-                             " letter-spacing: 1px;")
-        layout.addWidget(ch_lbl)
+        self._ch_lbl = QLabel("CH")
+        layout.addWidget(self._ch_lbl)
         layout.addSpacing(6)
 
         self._channel_btn_group = QButtonGroup(self)
         self._channel_btn_group.setExclusive(True)
         self._channel_buttons: dict[str, QPushButton] = {}
         self._channel_btn_container = QWidget()
-        self._channel_btn_container.setStyleSheet("background: transparent; border: none;")
         ch_row = QHBoxLayout(self._channel_btn_container)
         ch_row.setContentsMargins(0, 0, 0, 0)
         ch_row.setSpacing(3)
@@ -362,7 +356,6 @@ class MainWindow(QMainWindow):
             btn = QPushButton(ch)
             btn.setCheckable(True)
             btn.setFixedSize(28, 28)
-            btn.setStyleSheet(self._ch_btn_style(active=False))
             btn.clicked.connect(partial(self._on_channel_btn_clicked, ch))
             self._channel_buttons[ch] = btn
             self._channel_btn_group.addButton(btn)
@@ -371,26 +364,22 @@ class MainWindow(QMainWindow):
         layout.addWidget(self._channel_btn_container)
 
         layout.addSpacing(10)
-        layout.addWidget(self._make_separator())
+        self._sep2 = self._make_separator()
+        layout.addWidget(self._sep2)
         layout.addSpacing(10)
 
         # ── Group 3: Status + info ────────────────────────────────
-        self._status_led = QLabel("●")
-        self._status_led.setStyleSheet("color: #cc3333; font-size: 13px; background: transparent;")
+        self._status_led = QLabel("\u25cf")
         self._status_led.setFixedWidth(18)
         layout.addWidget(self._status_led)
         layout.addSpacing(4)
 
         self._status_text = QLabel("Disconnected")
-        self._status_text.setStyleSheet("color: #cc3333; font-weight: 700; font-size: 11px;"
-                                        " background: transparent;")
         layout.addWidget(self._status_text)
 
         layout.addSpacing(8)
 
         self._conn_info_label = QLabel("")
-        self._conn_info_label.setStyleSheet("color: #505870; font-size: 10px;"
-                                            " background: transparent;")
         layout.addWidget(self._conn_info_label)
 
         layout.addStretch()
@@ -401,7 +390,6 @@ class MainWindow(QMainWindow):
         self._connect_btn.setCheckable(True)
         self._connect_btn.setFixedSize(110, 32)
         self._connect_btn.toggled.connect(self._on_connect_toggle)
-        self._apply_connect_btn_style(connected=False)
         layout.addWidget(self._connect_btn)
 
         # Compatibility: keep _active_channel_badge as hidden attribute
@@ -411,27 +399,86 @@ class MainWindow(QMainWindow):
         # Populate channel buttons for initial state (show only A visible)
         self._sync_channel_buttons(["A"], "A")
 
-        return bar
+        # Apply theme styles
+        self._apply_conn_theme()
+        ThemeManager.instance().theme_changed.connect(self._apply_conn_theme)
+
+        return self._conn_bar
 
     @staticmethod
     def _ch_btn_style(active: bool, enabled: bool = True) -> str:
+        tm = ThemeManager.instance()
         if not enabled:
             return (
-                "QPushButton { background: #1e2130; color: #383d50; border: 1px solid #2a2e3a;"
-                " border-radius: 5px; font-size: 11px; font-weight: 600; }"
+                f"QPushButton {{ background: {tm.color('btn_ch_disabled_bg')};"
+                f" color: {tm.color('btn_ch_disabled_text')};"
+                f" border: 1px solid {tm.color('btn_ch_disabled_border')};"
+                f" border-radius: 5px; font-size: 11px; font-weight: 600; }}"
             )
         if active:
             return (
-                "QPushButton { background: #1d3a4a; color: #70c8e8; border: 1px solid #2a6880;"
-                " border-radius: 5px; font-size: 11px; font-weight: 700; }"
-                "QPushButton:hover { background: #1e4055; }"
+                f"QPushButton {{ background: {tm.color('btn_ch_active_bg')};"
+                f" color: {tm.color('btn_ch_active_text')};"
+                f" border: 1px solid {tm.color('btn_ch_active_border')};"
+                f" border-radius: 5px; font-size: 11px; font-weight: 700; }}"
+                f"QPushButton:hover {{ background: {tm.color('btn_ch_active_bg')}; }}"
             )
         return (
-            "QPushButton { background: #252838; color: #7888a8; border: 1px solid #3a3f50;"
-            " border-radius: 5px; font-size: 11px; font-weight: 600; }"
-            "QPushButton:hover { background: #2e334a; color: #a0b0c8; border-color: #505870; }"
-            "QPushButton:checked { background: #1d3a4a; color: #70c8e8; border-color: #2a6880; }"
+            f"QPushButton {{ background: {tm.color('btn_ch_bg')};"
+            f" color: {tm.color('btn_ch_text')};"
+            f" border: 1px solid {tm.color('btn_ch_border')};"
+            f" border-radius: 5px; font-size: 11px; font-weight: 600; }}"
+            f"QPushButton:hover {{ background: {tm.color('bg_hover')};"
+            f" color: {tm.color('text_primary')}; border-color: {tm.color('border_hover')}; }}"
+            f"QPushButton:checked {{ background: {tm.color('btn_ch_active_bg')};"
+            f" color: {tm.color('btn_ch_active_text')};"
+            f" border-color: {tm.color('btn_ch_active_border')}; }}"
         )
+
+    def _apply_conn_theme(self) -> None:
+        """Re-apply all connection bar inline styles from the current theme."""
+        tm = ThemeManager.instance()
+        self._conn_bar.setStyleSheet(
+            f"QWidget {{ background: {tm.color('bg_bar')};"
+            f" border-bottom: 1px solid {tm.color('border_subtle')}; }}"
+            f"QLabel {{ background: transparent; border: none; }}"
+        )
+        self._scan_btn.setStyleSheet(
+            f"QPushButton {{ background: {tm.color('btn_scan_bg')}; color: {tm.color('btn_scan_text')};"
+            f" border: 1px solid {tm.color('btn_scan_border')};"
+            f" border-radius: 5px; font-size: 14px; }}"
+            f"QPushButton:hover {{ background: {tm.color('btn_scan_hover')}; }}"
+            f"QPushButton:pressed {{ background: {tm.color('bg_bar')}; }}"
+            f"QPushButton:disabled {{ color: {tm.color('text_disabled')};"
+            f" border-color: {tm.color('border_subtle')}; }}"
+        )
+        self._device_combo.setStyleSheet(
+            f"QComboBox {{ background: {tm.color('conn_device_bg')}; color: {tm.color('conn_device_text')};"
+            f" border: 1px solid {tm.color('conn_device_border')};"
+            f" border-radius: 5px; padding: 0 8px; }}"
+            f"QComboBox:hover {{ border-color: {tm.color('border_hover')}; }}"
+            f"QComboBox::drop-down {{ border: none; width: 20px; }}"
+            f"QComboBox QAbstractItemView {{ background: {tm.color('bg_bar')};"
+            f" color: {tm.color('conn_device_text')};"
+            f" selection-background-color: {tm.color('bg_hover')};"
+            f" border: 1px solid {tm.color('conn_device_border')}; }}"
+        )
+        self._ch_lbl.setStyleSheet(
+            f"color: {tm.color('title_channel')}; font-size: 10px; font-weight: 600;"
+            f" letter-spacing: 1px;"
+        )
+        self._channel_btn_container.setStyleSheet("background: transparent; border: none;")
+        # Refresh channel button styles
+        for ch, btn in self._channel_buttons.items():
+            if btn.isVisible():
+                btn.setStyleSheet(self._ch_btn_style(active=btn.isChecked(), enabled=btn.isEnabled()))
+        self._apply_connect_btn_style(connected=self._connect_btn.isChecked())
+        # Re-style status (keep current status color)
+        self._conn_info_label.setStyleSheet(
+            f"color: {tm.color('conn_info')}; font-size: 10px; background: transparent;"
+        )
+        self._sep1.setStyleSheet(f"background: {tm.color('separator')}; border: none;")
+        self._sep2.setStyleSheet(f"background: {tm.color('separator')}; border: none;")
 
     def _sync_channel_buttons(self, channels: list[str], selected: str) -> None:
         """Show/enable only relevant channel buttons; highlight selected."""
@@ -462,7 +509,7 @@ class MainWindow(QMainWindow):
         if not module_classes:
             placeholder = QLabel("No modules loaded.\nAdd device modules under /modules.")
             placeholder.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            placeholder.setStyleSheet("color: #6a7088; font-size: 14px;")
+            placeholder.setStyleSheet(f"color: {ThemeManager.instance().color('text_muted')}; font-size: 14px;")
             self._tab_widget.addTab(placeholder, "No Modules")
             return
 
@@ -487,7 +534,7 @@ class MainWindow(QMainWindow):
         box.setIcon(QMessageBox.Icon.Warning)
         box.setText(message)
         box.setStandardButtons(QMessageBox.StandardButton.Ok)
-        box.setStyleSheet(self._MSGBOX_STYLESHEET)
+        box.setStyleSheet(self._msgbox_stylesheet())
         box.exec()
 
     # -- FTDI connection handlers --
@@ -611,7 +658,7 @@ class MainWindow(QMainWindow):
         msg.setInformativeText("The active channel will be changed.")
         msg.setStandardButtons(QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
         msg.setDefaultButton(QMessageBox.StandardButton.No)
-        msg.setStyleSheet(self._MSGBOX_STYLESHEET)
+        msg.setStyleSheet(self._msgbox_stylesheet())
         if msg.exec() != QMessageBox.StandardButton.Yes:
             # Restore button highlight to current channel
             visible = [ch for ch, btn in self._channel_buttons.items() if btn.isVisible()]
@@ -794,20 +841,27 @@ class MainWindow(QMainWindow):
     def _apply_connect_btn_style(self, connected: bool) -> None:
         if not hasattr(self, "_connect_btn"):
             return
+        tm = ThemeManager.instance()
         if connected:
             self._connect_btn.setStyleSheet(
-                "QPushButton { background: #5a1e20; color: #f0a0a0; font-weight: 700; "
-                "font-size: 12px; border: 1px solid #a03030; border-radius: 6px; padding: 4px 10px; }"
-                "QPushButton:hover { background: #6e2225; color: #ffc0c0; border-color: #c04040; }"
-                "QPushButton:pressed { background: #3a1215; }"
+                f"QPushButton {{ background: {tm.color('btn_disconnect_bg')};"
+                f" color: {tm.color('btn_disconnect_text')}; font-weight: 700;"
+                f" font-size: 12px; border: 1px solid {tm.color('btn_disconnect_border')};"
+                f" border-radius: 6px; padding: 4px 10px; }}"
+                f"QPushButton:hover {{ background: {tm.color('btn_disconnect_hover')}; }}"
+                f"QPushButton:pressed {{ background: {tm.color('btn_disconnect_bg')}; }}"
             )
         else:
             self._connect_btn.setStyleSheet(
-                "QPushButton { background: #0e4a5a; color: #a0e8f8; font-weight: 700; "
-                "font-size: 12px; border: 1px solid #1a7090; border-radius: 6px; padding: 4px 10px; }"
-                "QPushButton:hover { background: #145870; color: #c0f0ff; border-color: #2090b0; }"
-                "QPushButton:pressed { background: #0a3040; }"
-                "QPushButton:disabled { background: #1a2030; color: #404860; border: 1px solid #252a38; }"
+                f"QPushButton {{ background: {tm.color('btn_connect_bg')};"
+                f" color: {tm.color('btn_connect_text')}; font-weight: 700;"
+                f" font-size: 12px; border: 1px solid {tm.color('btn_connect_border')};"
+                f" border-radius: 6px; padding: 4px 10px; }}"
+                f"QPushButton:hover {{ background: {tm.color('btn_connect_hover')}; }}"
+                f"QPushButton:pressed {{ background: {tm.color('btn_connect_bg')}; }}"
+                f"QPushButton:disabled {{ background: {tm.color('bg_disabled')};"
+                f" color: {tm.color('text_disabled')};"
+                f" border: 1px solid {tm.color('border_subtle')}; }}"
             )
 
     @Slot(object)
@@ -832,15 +886,17 @@ class MainWindow(QMainWindow):
         level: "info" | "ok" | "warn" | "error"
         """
         colors = {
-            "info":  "#7888a0",   # default gray
-            "ok":    "#80c890",   # muted green
-            "warn":  "#d4a84b",   # amber
-            "error": "#e07070",   # muted red
+            "info":  "#7888a0",
+            "ok":    "#80c890",
+            "warn":  "#d4a84b",
+            "error": "#e07070",
         }
+        tm = ThemeManager.instance()
         color = colors.get(level, colors["info"])
+        fw = "700" if level in ("warn", "error") else "400"
         self.statusBar().setStyleSheet(
-            f"QStatusBar {{ color: {color}; background-color: #1a1c24; "
-            f"border-top: 1px solid #3a3f50; font-size: 11px; font-weight: {'700' if level in ('warn', 'error') else '400'}; }}"
+            f"QStatusBar {{ color: {color}; background-color: {tm.color('bg_statusbar')};"
+            f" border-top: 1px solid {tm.color('border_primary')}; font-size: 11px; font-weight: {fw}; }}"
         )
         self.statusBar().showMessage(message)
 
@@ -1004,7 +1060,7 @@ class MainWindow(QMainWindow):
         box.setDefaultButton(QMessageBox.StandardButton.No)
         box.button(QMessageBox.StandardButton.Yes).setText("Exit")
         box.button(QMessageBox.StandardButton.No).setText("Cancel")
-        box.setStyleSheet(self._MSGBOX_STYLESHEET)
+        box.setStyleSheet(self._msgbox_stylesheet())
 
         if box.exec() != QMessageBox.StandardButton.Yes:
             event.ignore()
@@ -1039,10 +1095,8 @@ def main() -> None:
     # Clean exit on Ctrl+C
     signal.signal(signal.SIGINT, lambda *_: app.quit())
 
-    # Load dark theme
-    qss_path = Path(__file__).parent / "assets" / "dark_theme.qss"
-    if qss_path.exists():
-        app.setStyleSheet(qss_path.read_text(encoding="utf-8"))
+    # Load theme (persisted dark/light preference)
+    ThemeManager.instance().initial_apply()
 
     # Default font
     default_font = QFont("Segoe UI", 10)

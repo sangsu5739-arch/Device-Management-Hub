@@ -16,6 +16,8 @@ from PySide6.QtCore import Qt
 
 import pyqtgraph as pg
 
+from core.theme_manager import ThemeManager
+
 
 # Channel colors
 CH_COLORS = [
@@ -47,6 +49,8 @@ class ADCVisualizer(QWidget):
         self._start_time: Optional[float] = None
 
         self._build_ui()
+        self._apply_theme()
+        ThemeManager.instance().theme_changed.connect(self._apply_theme)
 
     def _build_ui(self) -> None:
         layout = QVBoxLayout(self)
@@ -55,7 +59,6 @@ class ADCVisualizer(QWidget):
 
         # pyqtgraph layout widget
         self._gw = pg.GraphicsLayoutWidget()
-        self._gw.setBackground("#1a1c28")
         layout.addWidget(self._gw, 1)
 
         self._plots: List[pg.PlotItem] = []
@@ -74,10 +77,7 @@ class ADCVisualizer(QWidget):
             left_axis.setWidth(45)
             plot.setLabel("left", CH_LABELS[i], units=self._ch_units[i])
 
-            plot.getAxis("bottom").setPen(pg.mkPen("#4a5068"))
-            plot.getAxis("left").setPen(pg.mkPen("#4a5068"))
-            plot.getAxis("bottom").setTextPen(pg.mkPen("#8890a0"))
-            plot.getAxis("left").setTextPen(pg.mkPen("#8890a0"))
+            # Axis pens set in _apply_theme()
 
             # Link X axes so zooming/panning one zooms all
             if i > 0:
@@ -100,11 +100,8 @@ class ADCVisualizer(QWidget):
         for i in range(4):
             cb = QCheckBox(CH_LABELS[i])
             cb.setChecked(True)
-            cb.setStyleSheet(
-                f"QCheckBox {{ color: {CH_COLORS[i]}; font-weight: 700;"
-                f" font-size: 11px; background: transparent; }}"
-                f"QCheckBox::indicator {{ width: 14px; height: 14px; }}"
-            )
+            cb.setObjectName("chCheckbox")
+            cb.setProperty("chColor", CH_COLORS[i])
             cb.toggled.connect(lambda checked, idx=i: self._on_ch_toggle(idx, checked))
             self._ch_checks.append(cb)
             toolbar_layout.addWidget(cb)
@@ -114,16 +111,12 @@ class ADCVisualizer(QWidget):
         # Auto-range checkbox
         self._auto_range_cb = QCheckBox("Auto Range")
         self._auto_range_cb.setChecked(True)
-        self._auto_range_cb.setStyleSheet(
-            "QCheckBox { color: #8890a0; font-size: 11px; background: transparent; }"
-        )
         self._auto_range_cb.toggled.connect(self._on_auto_range)
         toolbar_layout.addWidget(self._auto_range_cb)
 
         # Time window selector
-        win_lbl = QLabel("Window:")
-        win_lbl.setStyleSheet("color: #6878a0; font-size: 11px; background: transparent;")
-        toolbar_layout.addWidget(win_lbl)
+        self._win_lbl = QLabel("Window:")
+        toolbar_layout.addWidget(self._win_lbl)
 
         self._window_combo = QComboBox()
         self._window_combo.addItems(["10s", "30s", "60s", "120s"])
@@ -248,3 +241,34 @@ class ADCVisualizer(QWidget):
         windows = [10, 30, 60, 120]
         if 0 <= index < len(windows):
             self._window_seconds = windows[index]
+
+    # ── Theme ─────────────────────────────────────────────────────────
+
+    def _apply_theme(self) -> None:
+        tm = ThemeManager.instance()
+        bg = tm.color("graph_bg")
+        axis_pen = tm.color("graph_axis_text")
+        text_pen = tm.color("graph_fg")
+        muted = tm.color("text_muted")
+
+        self._gw.setBackground(bg)
+        for plot in self._plots:
+            for ax_name in ("left", "bottom"):
+                plot.getAxis(ax_name).setPen(pg.mkPen(axis_pen))
+                plot.getAxis(ax_name).setTextPen(pg.mkPen(text_pen))
+
+        # Channel checkboxes — keep channel color
+        for cb in self._ch_checks:
+            ch_color = cb.property("chColor")
+            cb.setStyleSheet(
+                f"QCheckBox {{ color: {ch_color}; font-weight: 700;"
+                f" font-size: 11px; background: transparent; }}"
+                f"QCheckBox::indicator {{ width: 14px; height: 14px; }}"
+            )
+
+        self._auto_range_cb.setStyleSheet(
+            f"QCheckBox {{ color: {muted}; font-size: 11px; background: transparent; }}"
+        )
+        self._win_lbl.setStyleSheet(
+            f"color: {muted}; font-size: 11px; background: transparent;"
+        )

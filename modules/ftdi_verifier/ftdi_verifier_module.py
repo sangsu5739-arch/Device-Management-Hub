@@ -25,6 +25,7 @@ from PySide6.QtWidgets import (
 )
 
 from core.ftdi_manager import FtdiManager
+from core.theme_manager import ThemeManager
 from modules.base_module import BaseModule
 from modules.ftdi_verifier.ftdi_chip_specs import (
     CHIP_SPECS, ChipSpec, PinSpec, PinFunction,
@@ -129,6 +130,10 @@ class FtdiVerifierModule(BaseModule):
             self._gpio_poll_blink.setInterval(450)
             self._gpio_poll_blink.timeout.connect(self._on_gpio_poll_blink)
 
+        self._apply_theme()
+        from core.theme_manager import ThemeManager
+        ThemeManager.instance().theme_changed.connect(self._apply_theme)
+
     def on_device_connected(self) -> None:
         # Skip if UART mode switching triggered this signal.
         if self.is_uart_switching:
@@ -224,18 +229,15 @@ class FtdiVerifierModule(BaseModule):
 
         layout.addWidget(QLabel("Chip model:"))
         self._chip_label = QLabel("-")
-        self._chip_label.setStyleSheet("color: #c8d2f0; font-weight: 600;")
         layout.addWidget(self._chip_label)
 
         layout.addSpacing(20)
         layout.addWidget(QLabel("Channel:"))
         self._channel_label = QLabel("-")
-        self._channel_label.setStyleSheet("color: #c8d2f0; font-weight: 600;")
         layout.addWidget(self._channel_label)
 
         layout.addSpacing(20)
         self._chip_info_label = QLabel("")
-        self._chip_info_label.setStyleSheet("color: #88a0cc; font-style: italic;")
         layout.addWidget(self._chip_info_label)
 
         layout.addStretch()
@@ -280,13 +282,6 @@ class FtdiVerifierModule(BaseModule):
         self._i2c_scan_btn = QPushButton("I2C Bus Scan")
         self._i2c_scan_btn.setEnabled(False)
         self._i2c_scan_btn.setMinimumHeight(30)
-        self._i2c_scan_btn.setStyleSheet(
-            "QPushButton { background: #2a2510; color: #d4a84b; font-weight: 700; border-radius: 6px; "
-            "border: 1px solid #5a4820; letter-spacing: 0.4px; }"
-            "QPushButton:hover { background: #342e18; color: #e8c06a; border-color: #7a6030; }"
-            "QPushButton:pressed { background: #1e1b0c; border-color: #8a7040; }"
-            "QPushButton:disabled { background: #1e2028; color: #4a5068; border: 1px solid #2a2e3a; }"
-        )
         self._i2c_scan_btn.clicked.connect(self._on_i2c_scan)
         i2c_layout.addWidget(self._i2c_scan_btn)
 
@@ -307,23 +302,12 @@ class FtdiVerifierModule(BaseModule):
         self._i2c_test_btn.setEnabled(False)
         self._i2c_test_btn.setMinimumHeight(30)
         self._i2c_test_btn.setMinimumWidth(110)
-        self._i2c_test_btn.setStyleSheet(
-            "QPushButton { background: #2a2510; color: #d4a84b; font-weight: 700; border-radius: 6px; "
-            "border: 1px solid #5a4820; }"
-            "QPushButton:hover { background: #342e18; color: #e8c06a; border-color: #7a6030; }"
-            "QPushButton:pressed { background: #1e1b0c; border-color: #8a7040; }"
-            "QPushButton:disabled { background: #1e2028; color: #4a5068; border: 1px solid #2a2e3a; }"
-        )
         self._i2c_test_btn.clicked.connect(self._on_i2c_test)
         ack_row.addWidget(self._i2c_test_btn)
 
         self._i2c_ack_led = QLabel("  ACK: N/A")
         self._i2c_ack_led.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._i2c_ack_led.setToolTip("I2C ACK Status")
-        self._i2c_ack_led.setStyleSheet(
-            "background: #6f7a8e; color: #ffffff; border-radius: 8px; padding: 4px 10px;"
-            "font-weight: 800; letter-spacing: 0.6px; font-size: 12px;"
-        )
         self._i2c_ack_led.setFixedHeight(30)
         ack_row.addWidget(self._i2c_ack_led, 1)
         i2c_layout.addLayout(ack_row)
@@ -381,12 +365,6 @@ class FtdiVerifierModule(BaseModule):
         self._spi_waveform = QTextEdit()
         self._spi_waveform.setReadOnly(True)
         self._spi_waveform.setLineWrapMode(QTextEdit.LineWrapMode.NoWrap)
-        self._spi_waveform.setStyleSheet(
-            "QTextEdit { background: #0e1018; color: #7fd9ff; border: 1px solid #223344; "
-            "border-radius: 6px; padding: 8px 12px; font-family: Consolas; font-size: 11px; }"
-            "QScrollBar:horizontal { height: 6px; }"
-            "QScrollBar:vertical { width: 0px; }"
-        )
         self._spi_waveform.setFixedHeight(148)
         cfg_layout.addWidget(self._spi_waveform, 1, 0, 1, 3)
         self._spi_mode_combo.currentIndexChanged.connect(self._update_spi_waveform)
@@ -399,21 +377,13 @@ class FtdiVerifierModule(BaseModule):
             "2 MHz", "4 MHz", "8 MHz", "12 MHz",
         ])
         self._spi_clock_combo.setCurrentText("1 MHz")
+        self._spi_clock_combo.currentTextChanged.connect(lambda _: self._apply_spi_config())
         cfg_layout.addWidget(self._spi_clock_combo, 2, 1, 1, 2)
 
         spi_layout.addWidget(cfg_panel)
 
         # -- Loopback Test --
-        _SPI_BTN_STYLE = (
-            "QPushButton { background: #18242b; color: #b5d7ff; border-radius: 6px; "
-            "border: 1px solid #2a4a5a; font-weight: 700; }"
-            "QPushButton:hover { background: #1f313a; }"
-            "QPushButton:disabled { background: #1e2028; color: #4a5068; border: 1px solid #2a2e3a; }"
-        )
-        _SPI_RESULT_IDLE = (
-            "background: #6f7a8e; color: #ffffff; border-radius: 8px; padding: 4px 10px;"
-            "font-weight: 800; letter-spacing: 0.6px; font-size: 12px;"
-        )
+        # -- Loopback Test --
 
         lb_group = QGroupBox("Loopback Test")
         lb_layout = QVBoxLayout(lb_group)
@@ -424,13 +394,11 @@ class FtdiVerifierModule(BaseModule):
         self._spi_loopback_btn = QPushButton("\u25b6  Loopback Test")
         self._spi_loopback_btn.setEnabled(False)
         self._spi_loopback_btn.setMinimumHeight(30)
-        self._spi_loopback_btn.setStyleSheet(_SPI_BTN_STYLE)
         self._spi_loopback_btn.clicked.connect(self._on_spi_loopback)
         lb_row.addWidget(self._spi_loopback_btn)
         self._spi_loopback_result = QLabel("  Idle")
         self._spi_loopback_result.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._spi_loopback_result.setFixedHeight(30)
-        self._spi_loopback_result.setStyleSheet(_SPI_RESULT_IDLE)
         lb_row.addWidget(self._spi_loopback_result, 1)
         lb_layout.addLayout(lb_row)
         spi_layout.addWidget(lb_group)
@@ -448,10 +416,6 @@ class FtdiVerifierModule(BaseModule):
         self._spi_id_addr.setText("0x9F")
         self._spi_id_addr.setPlaceholderText("e.g. 0x9F")
         self._spi_id_addr.setMinimumWidth(80)
-        self._spi_id_addr.setStyleSheet(
-            "background: #1a2030; color: #e7eef9; border: 1px solid #3a4560; "
-            "border-radius: 4px; padding: 2px 6px;"
-        )
         id_cfg_row.addWidget(self._spi_id_addr)
         id_cfg_row.addWidget(QLabel("Bytes:"))
         self._spi_id_bytes = QComboBox()
@@ -467,10 +431,6 @@ class FtdiVerifierModule(BaseModule):
         self._spi_id_expect = QLineEdit()
         self._spi_id_expect.setPlaceholderText("e.g. 0xEF4018 (optional)")
         self._spi_id_expect.setMinimumHeight(28)
-        self._spi_id_expect.setStyleSheet(
-            "background: #1a2030; color: #e7eef9; border: 1px solid #3a4560; "
-            "border-radius: 4px; padding: 2px 8px;"
-        )
         id_expect_row.addWidget(self._spi_id_expect)
         id_layout.addLayout(id_expect_row)
 
@@ -479,13 +439,11 @@ class FtdiVerifierModule(BaseModule):
         self._spi_id_btn = QPushButton("\u25b6  Read ID")
         self._spi_id_btn.setEnabled(False)
         self._spi_id_btn.setMinimumHeight(30)
-        self._spi_id_btn.setStyleSheet(_SPI_BTN_STYLE)
         self._spi_id_btn.clicked.connect(self._on_spi_read_id)
         id_btn_row.addWidget(self._spi_id_btn)
         self._spi_id_result = QLabel("  Idle")
         self._spi_id_result.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._spi_id_result.setFixedHeight(30)
-        self._spi_id_result.setStyleSheet(_SPI_RESULT_IDLE)
         id_btn_row.addWidget(self._spi_id_result, 1)
         id_layout.addLayout(id_btn_row)
         spi_layout.addWidget(id_group)
@@ -503,13 +461,6 @@ class FtdiVerifierModule(BaseModule):
         self._jtag_test_btn = QPushButton("Run Pattern Test")
         self._jtag_test_btn.setEnabled(False)
         self._jtag_test_btn.setMinimumHeight(30)
-        self._jtag_test_btn.setStyleSheet(
-            "QPushButton { background: #2a2510; color: #d4a84b; font-weight: 700; border-radius: 6px; "
-            "border: 1px solid #5a4820; }"
-            "QPushButton:hover { background: #342e18; color: #e8c06a; border-color: #7a6030; }"
-            "QPushButton:pressed { background: #1e1b0c; border-color: #8a7040; }"
-            "QPushButton:disabled { background: #1e2028; color: #4a5068; border: 1px solid #2a2e3a; }"
-        )
         jtag_layout.addWidget(self._jtag_test_btn)
         self._proto_tabs.addTab(self._jtag_group, "JTAG")
 
@@ -699,29 +650,15 @@ class FtdiVerifierModule(BaseModule):
         self._gpio_poll_btn.setCheckable(True)
         self._gpio_poll_btn.setEnabled(False)
         self._gpio_poll_btn.setMinimumHeight(32)
-        self._gpio_poll_btn.setStyleSheet(
-            "QPushButton { background: #1d2d3a; color: #70b8d0; font-weight: 700; border-radius: 6px; "
-            "border: 1px solid #2a5068; }"
-            "QPushButton:hover { background: #243548; color: #90d0e8; border-color: #3a6880; }"
-            "QPushButton:checked { background: #1a2d20; color: #80c890; border: 1px solid #2a5a38; }"
-            "QPushButton:checked:hover { background: #203828; color: #a0e0a8; border-color: #3a7048; }"
-            "QPushButton:disabled { background: #1e2028; color: #4a5068; border: 1px solid #2a2e3a; }"
-        )
         self._gpio_poll_btn.toggled.connect(self._on_gpio_poll_toggled)
         poll_row.addWidget(self._gpio_poll_btn)
         gpio_layout.addLayout(poll_row)
 
         # GPIO backend status
         self._gpio_backend_label = QLabel("GPIO Backend: BITBANG")
-        self._gpio_backend_label.setStyleSheet(
-            "color: #d4a84b; font-weight: 700; font-size: 11px;"
-        )
         gpio_layout.addWidget(self._gpio_backend_label)
 
         self._gpio_poll_status = QLabel(" Global polling active")
-        self._gpio_poll_status.setStyleSheet(
-            "color: #80c890; font-weight: 800; font-size: 12px;"
-        )
         self._gpio_poll_status.setVisible(False)
         gpio_layout.addWidget(self._gpio_poll_status)
 
@@ -812,12 +749,14 @@ class FtdiVerifierModule(BaseModule):
             ("UART", "#66ff66"), ("GPIO", "#ffcc44"), ("PWR", "#ff4444"),
             ("GND", "#666666"),
         ]
+        self._legend_labels: list[QLabel] = []
         for name, color in protocols:
             dot = QLabel("o")
             dot.setStyleSheet(f"color: {color}; font-size: 10px;")
             dot.setFixedWidth(12)
             lbl = QLabel(name)
-            lbl.setStyleSheet("color: #8899bb; font-size: 10px;")
+            lbl.setStyleSheet(f"color: {ThemeManager.instance().color('text_secondary')}; font-size: 10px;")
+            self._legend_labels.append(lbl)
             legend.addWidget(dot)
             legend.addWidget(lbl)
         legend.addStretch()
@@ -1271,7 +1210,7 @@ class FtdiVerifierModule(BaseModule):
     @Slot()
     @Slot()
     def _on_spi_loopback(self) -> None:
-        """SPI loopback test (placeholder — SPI API not yet implemented)."""
+        """SPI loopback test via VerifierWorker."""
         if not self._ftdi.is_connected:
             return
         self._spi_loopback_result.setText("  Testing...")
@@ -1279,6 +1218,9 @@ class FtdiVerifierModule(BaseModule):
             "background: #3a3520; color: #e8c06a; border-radius: 8px; padding: 4px 10px;"
             "font-weight: 800; letter-spacing: 0.5px; border: 1px solid #5a4820;"
         )
+        # Ensure SPI mode is configured before test
+        self._apply_spi_config()
+
         worker = VerifierWorker(self._ftdi)
         worker.protocol_test_done.connect(self._on_protocol_result)
         worker.log_message.connect(self._append_log)
@@ -1293,7 +1235,7 @@ class FtdiVerifierModule(BaseModule):
 
     @Slot()
     def _on_spi_read_id(self) -> None:
-        """SPI device ID read (placeholder — SPI API not yet implemented)."""
+        """SPI device ID read via VerifierWorker."""
         if not self._ftdi.is_connected:
             return
         self._spi_id_result.setText("  Reading...")
@@ -1301,7 +1243,48 @@ class FtdiVerifierModule(BaseModule):
             "background: #3a3520; color: #e8c06a; border-radius: 8px; padding: 4px 10px;"
             "font-weight: 800; letter-spacing: 0.5px; border: 1px solid #5a4820;"
         )
-        self._append_log("[SPI] Device ID read: SPI API not yet implemented")
+        # Parse register address
+        reg_text = self._spi_id_addr.text().strip()
+        try:
+            register = int(reg_text, 16) if reg_text.startswith("0x") else int(reg_text)
+        except ValueError:
+            self._append_log(f"[SPI] Invalid register address: {reg_text}")
+            self._spi_id_result.setText("  Invalid register")
+            self._spi_id_result.setStyleSheet(
+                "background: #5a1a1a; color: #ff8888; border-radius: 8px; padding: 4px 10px;"
+                "font-weight: 800; letter-spacing: 0.5px; border: 1px solid #8a3030;"
+            )
+            return
+
+        length = int(self._spi_id_bytes.currentText())
+
+        # Parse optional expected value
+        expected = None
+        exp_text = self._spi_id_expect.text().strip()
+        if exp_text:
+            try:
+                exp_text_clean = exp_text.replace("0x", "").replace(" ", "")
+                expected = bytes.fromhex(exp_text_clean)
+            except ValueError:
+                self._append_log(f"[SPI] Invalid expected value: {exp_text}")
+
+        # Ensure SPI mode is configured before test
+        self._apply_spi_config()
+
+        worker = VerifierWorker(self._ftdi)
+        worker.protocol_test_done.connect(self._on_protocol_result)
+        worker.log_message.connect(self._append_log)
+
+        from functools import partial
+        self._spi_id_thread = QThread()
+        worker.moveToThread(self._spi_id_thread)
+        self._spi_id_thread.started.connect(
+            partial(worker.test_spi_read_id, register, length, expected)
+        )
+        worker.protocol_test_done.connect(self._spi_id_thread.quit)
+        worker.protocol_test_done.connect(worker.deleteLater)
+        self._spi_id_thread.finished.connect(self._spi_id_thread.deleteLater)
+        self._spi_id_thread.start()
 
     @Slot(object)
     def _on_protocol_result(self, result: ProtocolTestResult) -> None:
@@ -1613,7 +1596,7 @@ class FtdiVerifierModule(BaseModule):
                 "       |         |        |         |        |         |\n"
                 "SCLK: _+         +________+         +________+         +____\n"
                 "\n"
-                "DATA: =X==  D7  ==========X==  D6  ==========X==  D5  ==X\n"
+                "DATA: =X==  D7  ==========X==  D6  ==========X==  D5  ===\n"
                 "\n"
                 "Smpl:  ^                  ^                  ^"
             ),
@@ -1625,7 +1608,7 @@ class FtdiVerifierModule(BaseModule):
                 "       |         |        |         |        |         |\n"
                 "SCLK: _+         +________+         +________+         +____\n"
                 "\n"
-                "DATA: =====X==  D7  ==========X==  D6  ==========X========\n"
+                "DATA: =====X==  D7  ==========X==  D6  ==========X==  D5  ==\n"
                 "\n"
                 "Smpl:           v                  v                  v"
             ),
@@ -1637,9 +1620,9 @@ class FtdiVerifierModule(BaseModule):
                 "         |       |        |        |        |        |\n"
                 "         +_______+        +________+        +________+\n"
                 "\n"
-                "DATA: ==X==  D7  ==========X==  D6  ==========X==  D5  ==X\n"
+                "DATA: ==X==  D7  ==========X==  D6  ==========X==  D5  ===\n"
                 "\n"
-                "Smpl:   v                 v                v"
+                "Smpl:            v                 v                 v"
             ),
             # Mode 3: CPOL=1 CPHA=1 -- idle HIGH, sample on every RISING edge
             (
@@ -1649,13 +1632,43 @@ class FtdiVerifierModule(BaseModule):
                 "         |       |        |        |        |        |\n"
                 "         +_______+        +________+        +________+\n"
                 "\n"
-                "DATA: ======X==  D7  ==========X==  D6  ==========X========\n"
+                "DATA: ======X==  D7  ==========X==  D6  ==========X==  D5  ==\n"
                 "\n"
-                "Smpl:            ^                 ^                ^"
+                "Smpl:            ^                 ^                 ^"
             ),
         ]
         idx = index if 0 <= index < len(waves) else 0
         self._spi_waveform.setPlainText(waves[idx])
+        # Sync SPI mode to FtdiManager
+        self._apply_spi_config()
+
+    def _apply_spi_config(self) -> None:
+        """Sync current SPI Mode and Clock settings to FtdiManager."""
+        if not self._ftdi.is_connected:
+            return
+        if not hasattr(self, "_spi_mode_combo") or not hasattr(self, "_spi_clock_combo"):
+            return
+        mode_idx = self._spi_mode_combo.currentIndex()
+        cpol = (mode_idx >> 1) & 1  # Mode 0,1 -> CPOL=0; Mode 2,3 -> CPOL=1
+        cpha = mode_idx & 1          # Mode 0,2 -> CPHA=0; Mode 1,3 -> CPHA=1
+
+        clock_text = self._spi_clock_combo.currentText().strip()
+        # Parse clock string like "1 MHz", "100 kHz"
+        try:
+            parts = clock_text.split()
+            val = float(parts[0])
+            unit = parts[1].lower() if len(parts) > 1 else "hz"
+            if unit == "mhz":
+                clock_hz = int(val * 1_000_000)
+            elif unit == "khz":
+                clock_hz = int(val * 1_000)
+            else:
+                clock_hz = int(val)
+        except (ValueError, IndexError):
+            clock_hz = 1_000_000
+
+        self._ftdi.spi_configure(clock_hz=clock_hz, cpol=cpol, cpha=cpha)
+
     def _on_uart_timestamp_toggled(self, checked: bool) -> None:
         if not hasattr(self, "_uart_console"):
             return
@@ -1972,10 +1985,12 @@ class FtdiVerifierModule(BaseModule):
         self._gpio_backend = backend
         if not hasattr(self, "_gpio_backend_label"):
             return
+        from core.theme_manager import ThemeManager
+        tm = ThemeManager.instance()
         if backend == "MPSSE":
-            css = "color: #70b8d0; font-weight: 700; font-size: 11px;"
+            css = f"color: {tm.color('gpio_backend_mpsse_text')}; font-weight: 700; font-size: 11px;"
         else:
-            css = "color: #d4a84b; font-weight: 700; font-size: 11px;"
+            css = f"color: {tm.color('gpio_backend_bitbang_text')}; font-weight: 700; font-size: 11px;"
         self._gpio_backend_label.setText(f"GPIO Backend: {backend}")
         self._gpio_backend_label.setStyleSheet(css)
 
@@ -2001,3 +2016,150 @@ class FtdiVerifierModule(BaseModule):
             html = f'<span style="color:#8899aa;">{message}</span>'
 
         self._log_text.append(html)
+
+    def _apply_theme(self) -> None:
+        from core.theme_manager import ThemeManager
+        tm = ThemeManager.instance()
+
+        if hasattr(self, "_log_text"):
+            self._log_text.setStyleSheet(
+                f"QTextEdit {{ background: {tm.color('bg_console')}; color: {tm.color('text_console')};"
+                f" border: 1px solid {tm.color('border_subtle')}; border-radius: 6px; padding: 4px; }}"
+            )
+
+        table_style = (
+            f"QTableWidget {{ background: {tm.color('bg_table')}; color: {tm.color('text_primary')};"
+            f" border: 1px solid {tm.color('border_subtle')}; border-radius: 6px; gridline-color: {tm.color('border_subtle')}; }}"
+            f"QHeaderView::section {{ background: {tm.color('bg_header')}; color: {tm.color('text_secondary')}; padding: 4px; border: 0px; font-size: 11px; font-weight: 600; }}"
+            f"QTableWidget::item {{ padding: 2px 4px; border-bottom: 1px solid {tm.color('border_subtle')}; }}"
+            f"QTableWidget::item:selected {{ background: {tm.color('bg_pressed')}; }}"
+        )
+        for tbl in ["_i2c_result_table", "_i2c_history_table", "_gpio_table"]:
+            if hasattr(self, tbl):
+                getattr(self, tbl).setStyleSheet(table_style)
+
+        if hasattr(self, "_chip_label"):
+            self._chip_label.setStyleSheet(f"color: {tm.color('text_primary')}; font-weight: 600;")
+        if hasattr(self, "_channel_label"):
+            self._channel_label.setStyleSheet(f"color: {tm.color('text_primary')}; font-weight: 600;")
+        if hasattr(self, "_chip_info_label"):
+            self._chip_info_label.setStyleSheet(f"color: {tm.color('text_hint')}; font-style: italic;")
+
+        # I2C
+        if hasattr(self, "_i2c_test_btn"):
+            self._i2c_test_btn.setStyleSheet(
+                f"QPushButton {{ background: {tm.color('i2c_test_bg')}; color: {tm.color('i2c_test_text')};"
+                f" font-weight: 700; border-radius: 6px; border: 1px solid {tm.color('i2c_test_border')}; }}"
+                f"QPushButton:hover {{ background: {tm.color('i2c_test_hover')}; }}"
+                f"QPushButton:disabled {{ background: {tm.color('bg_disabled')};"
+                f" color: {tm.color('text_disabled')}; border: 1px solid {tm.color('border_subtle')}; }}"
+            )
+
+        if hasattr(self, "_i2c_scan_btn"):
+            self._i2c_scan_btn.setStyleSheet(
+                f"QPushButton {{ background: {tm.color('i2c_scan_bg')}; color: {tm.color('i2c_scan_text')};"
+                f" font-weight: 700; border-radius: 6px; border: 1px solid {tm.color('i2c_scan_border')}; letter-spacing: 0.4px; }}"
+                f"QPushButton:hover {{ background: {tm.color('i2c_scan_hover')}; }}"
+                f"QPushButton:disabled {{ background: {tm.color('bg_disabled')};"
+                f" color: {tm.color('text_disabled')}; border: 1px solid {tm.color('border_subtle')}; }}"
+            )
+        if hasattr(self, "_i2c_ack_led") and "N/A" in self._i2c_ack_led.text():
+            self._i2c_ack_led.setStyleSheet(
+                f"background: {tm.color('i2c_ack_bg')}; color: {tm.color('i2c_ack_text')};"
+                f" border-radius: 8px; padding: 4px 10px; font-weight: 800; border: 1px solid {tm.color('i2c_ack_border')};"
+            )
+
+        # SPI
+        if hasattr(self, "_spi_waveform"):
+            self._spi_waveform.setStyleSheet(
+                f"QTextEdit {{ background: {tm.color('spi_waveform_bg')}; color: {tm.color('spi_waveform_text')};"
+                f" border: 1px solid {tm.color('spi_waveform_border')}; border-radius: 6px; padding: 8px 12px;"
+                f" font-family: Consolas; font-size: 11px; }}"
+            )
+
+        spi_btn_style = (
+            f"QPushButton {{ background: {tm.color('spi_btn_bg')}; color: {tm.color('spi_btn_text')}; border-radius: 6px;"
+            f" border: 1px solid {tm.color('spi_btn_border')}; font-weight: 700; }}"
+            f"QPushButton:hover {{ background: {tm.color('spi_btn_hover')}; }}"
+            f"QPushButton:disabled {{ background: {tm.color('bg_disabled')}; color: {tm.color('text_disabled')}; border: 1px solid {tm.color('border_subtle')}; }}"
+        )
+        if hasattr(self, "_spi_loopback_btn"):
+            self._spi_loopback_btn.setStyleSheet(spi_btn_style)
+        if hasattr(self, "_spi_id_btn"):
+            self._spi_id_btn.setStyleSheet(spi_btn_style)
+
+        spi_idle = (
+            f"background: {tm.color('spi_result_idle_bg')}; color: {tm.color('spi_result_idle_text')}; border-radius: 8px;"
+            f" padding: 4px 10px; font-weight: 800; border: 1px solid {tm.color('spi_result_idle_border')};"
+        )
+        if hasattr(self, "_spi_loopback_result") and "Idle" in self._spi_loopback_result.text():
+            self._spi_loopback_result.setStyleSheet(spi_idle)
+        if hasattr(self, "_spi_id_result") and "Idle" in self._spi_id_result.text():
+            self._spi_id_result.setStyleSheet(spi_idle)
+
+        if hasattr(self, "_spi_id_addr"):
+            self._spi_id_addr.setStyleSheet(
+                f"background: {tm.color('spi_input_bg')}; color: {tm.color('spi_input_text')}; border: 1px solid {tm.color('spi_input_border')}; border-radius: 4px; padding: 2px 6px;"
+            )
+        if hasattr(self, "_spi_id_expect"):
+            self._spi_id_expect.setStyleSheet(
+                f"background: {tm.color('spi_input_bg')}; color: {tm.color('spi_input_text')}; border: 1px solid {tm.color('spi_input_border')}; border-radius: 4px; padding: 2px 8px;"
+            )
+
+        # JTAG
+        if hasattr(self, "_jtag_test_btn"):
+            self._jtag_test_btn.setStyleSheet(
+                f"QPushButton {{ background: {tm.color('jtag_btn_bg')}; color: {tm.color('jtag_btn_text')}; font-weight: 700; border-radius: 6px; border: 1px solid {tm.color('jtag_btn_border')}; }}"
+                f"QPushButton:hover {{ background: {tm.color('jtag_btn_hover')}; }}"
+                f"QPushButton:disabled {{ background: {tm.color('bg_disabled')}; color: {tm.color('text_disabled')}; border: 1px solid {tm.color('border_subtle')}; }}"
+            )
+
+        # UART
+        if hasattr(self, "_uart_console"):
+            self._uart_console.setStyleSheet(
+                f"QTableWidget {{ background: {tm.color('uart_console_bg')}; color: {tm.color('uart_console_text')};"
+                f" border: 1px solid {tm.color('uart_console_border')}; border-radius: 6px; gridline-color: transparent; }}"
+                f"QHeaderView::section {{ background: {tm.color('bg_header')}; color: {tm.color('text_secondary')}; padding: 2px 6px; border: 0px; font-size: 10px; }}"
+                f"QTableWidget::item {{ padding: 1px 4px; border-bottom: 1px solid {tm.color('border_subtle')}; }}"
+                f"QTableWidget::item:selected {{ background: {tm.color('bg_pressed')}; }}"
+            )
+        if hasattr(self, "_uart_input"):
+            self._uart_input.setStyleSheet(
+                f"background: {tm.color('uart_input_bg')}; color: {tm.color('uart_input_text')}; border: 1px solid {tm.color('uart_input_border')}; border-radius: 4px; padding: 2px 8px;"
+            )
+        if hasattr(self, "_uart_send_btn"):
+            self._uart_send_btn.setStyleSheet(
+                f"QPushButton {{ background: {tm.color('uart_send_bg')}; color: {tm.color('uart_send_text')}; font-weight: 700; border-radius: 4px; border: 1px solid {tm.color('uart_send_border')}; }}"
+                f"QPushButton:hover {{ background: {tm.color('uart_send_hover')}; }}"
+                f"QPushButton:disabled {{ background: {tm.color('bg_disabled')}; color: {tm.color('text_disabled')}; border 1px solid {tm.color('border_subtle')}; }}"
+            )
+        if hasattr(self, "_uart_refresh_btn"):
+            self._uart_refresh_btn.setStyleSheet(
+                f"QPushButton {{ background: {tm.color('bg_control')}; color: {tm.color('text_primary')}; border-radius: 5px; font-size: 14px; border: 1px solid {tm.color('border_control')}; }}"
+                f"QPushButton:hover {{ background: {tm.color('bg_hover')}; }}"
+            )
+        self._apply_uart_open_style(opened=(self._uart_serial is not None))
+
+        # GPIO
+        if hasattr(self, "_gpio_poll_btn"):
+            if self._gpio_poll_btn.isChecked():
+                self._gpio_poll_btn.setStyleSheet(
+                    f"QPushButton {{ background: {tm.color('gpio_poll_running_bg')}; color: {tm.color('gpio_poll_running_text')}; font-weight: 700; border-radius: 6px; border: 1px solid {tm.color('gpio_poll_running_border')}; }}"
+                    f"QPushButton:hover {{ background: {tm.color('btn_hold_checked_hover')}; }}"
+                    f"QPushButton:disabled {{ background: {tm.color('bg_disabled')}; color: {tm.color('text_disabled')}; border: 1px solid {tm.color('border_subtle')}; }}"
+                )
+            else:
+                self._gpio_poll_btn.setStyleSheet(
+                    f"QPushButton {{ background: {tm.color('gpio_poll_bg')}; color: {tm.color('gpio_poll_text')}; font-weight: 700; border-radius: 6px; border: 1px solid {tm.color('gpio_poll_border')}; }}"
+                    f"QPushButton:hover {{ background: {tm.color('gpio_toggle_hover')}; }}"
+                    f"QPushButton:disabled {{ background: {tm.color('bg_disabled')}; color: {tm.color('text_disabled')}; border: 1px solid {tm.color('border_subtle')}; }}"
+                )
+        if hasattr(self, "_gpio_backend_label"):
+            self._set_gpio_backend_label(self._gpio_backend)
+        if hasattr(self, "_gpio_poll_status"):
+            self._gpio_poll_status.setStyleSheet(
+                f"color: {tm.color('gpio_poll_running_text')}; font-weight: 800; font-size: 12px;"
+            )
+        if hasattr(self, "_legend_labels"):
+            for lbl in self._legend_labels:
+                lbl.setStyleSheet(f"color: {tm.color('text_secondary')}; font-size: 10px;")

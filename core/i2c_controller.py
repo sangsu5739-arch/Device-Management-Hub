@@ -17,6 +17,9 @@ if TYPE_CHECKING:
 class I2cController(MpsseBaseController):
     """MPSSE I2C controller for FTDI devices."""
 
+    _PIN_SCL = MpsseBaseController.PIN_ADBUS0
+    _PIN_SDA = MpsseBaseController.PIN_ADBUS1
+
     _I2C_DIR_SDA_OUT = MpsseBaseController.PIN_ADBUS0 | MpsseBaseController.PIN_ADBUS1
     _I2C_DIR_SDA_IN = MpsseBaseController.PIN_ADBUS0
 

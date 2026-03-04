@@ -228,6 +228,64 @@ class VerifierWorker(QObject):
 
         self.protocol_test_done.emit(result)
 
+    # -- SPI device ID read --
+
+    def test_spi_read_id(self, register: int = 0x9F, length: int = 2,
+                         expected: Optional[bytes] = None) -> None:
+        """Read SPI device ID via command + read-back.
+
+        Sends the register command byte followed by `length` dummy bytes
+        and reads back the response (full-duplex).
+
+        Args:
+            register: ID register command (e.g. 0x9F for JEDEC ID).
+            length: number of ID bytes to read.
+            expected: optional expected bytes for comparison.
+        """
+        if not self._ftdi.is_connected:
+            self.error_occurred.emit("FTDI not connected")
+            return
+
+        tx = bytes([register]) + bytes(length)
+        self._log(f"SPI Read ID: cmd=0x{register:02X}, len={length}")
+
+        try:
+            rx_data = self._ftdi.spi_transfer(tx)
+            if rx_data is None:
+                result = ProtocolTestResult(
+                    timestamp=time.time(), protocol="SPI", success=False,
+                    message="SPI ID read: transfer returned None",
+                )
+                self._log("SPI ID read: transfer failed (None)")
+            else:
+                # First byte is dummy (received during command TX), skip it
+                id_bytes = rx_data[1:]
+                hex_str = " ".join(f"0x{b:02X}" for b in id_bytes)
+
+                if expected and id_bytes != expected:
+                    exp_str = " ".join(f"0x{b:02X}" for b in expected)
+                    result = ProtocolTestResult(
+                        timestamp=time.time(), protocol="SPI", success=False,
+                        message=f"ID Mismatch: got [{hex_str}], expected [{exp_str}]",
+                        raw_data=id_bytes,
+                    )
+                    self._log(f"SPI ID MISMATCH: {hex_str} (expected {exp_str})")
+                else:
+                    result = ProtocolTestResult(
+                        timestamp=time.time(), protocol="SPI", success=True,
+                        message=f"ID: [{hex_str}]",
+                        raw_data=id_bytes,
+                    )
+                    self._log(f"SPI ID read OK: {hex_str}")
+        except Exception as e:
+            result = ProtocolTestResult(
+                timestamp=time.time(), protocol="SPI", success=False,
+                message=f"SPI ID read error: {e}",
+            )
+            self._log(f"SPI ID read error: {e}")
+
+        self.protocol_test_done.emit(result)
+
     # -- Utils --
 
     def _log(self, msg: str) -> None:

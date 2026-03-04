@@ -18,6 +18,8 @@ from PySide6.QtGui import (
 )
 from PySide6.QtWidgets import QWidget
 
+from core.theme_manager import ThemeManager
+
 
 # ----------------------------------------------
 # Color palette
@@ -27,21 +29,34 @@ COLOR_BG = QColor(24, 26, 32)
 COLOR_GRID = QColor(50, 55, 70)
 COLOR_LABEL = QColor(160, 170, 190)
 
-# Q0: cyan family (+: bright, -: dark)
-COLOR_Q0_POS = QColor(0, 210, 255)
-COLOR_Q0_NEG = QColor(0, 140, 180)
+# Dark-mode waveform colors (originals)
+_DARK_Q0_POS = QColor(0, 210, 255)
+_DARK_Q0_NEG = QColor(0, 140, 180)
+_DARK_Q1_POS = QColor(255, 100, 180)
+_DARK_Q1_NEG = QColor(180, 60, 130)
 
-# Q1: pink/magenta family
-COLOR_Q1_POS = QColor(255, 100, 180)
-COLOR_Q1_NEG = QColor(180, 60, 130)
+# Light-mode waveform colors (deeper/more saturated for contrast)
+_LIGHT_Q0_POS = QColor(0, 150, 200)
+_LIGHT_Q0_NEG = QColor(0, 100, 150)
+_LIGHT_Q1_POS = QColor(210, 50, 130)
+_LIGHT_Q1_NEG = QColor(160, 30, 100)
 
-COLOR_DISABLED = QColor(70, 75, 85)
+COLOR_DISABLED = QColor(120, 125, 140)
 
-# Channel definition: (name, +color, -color)
-CHANNELS = [
-    ("Q0", COLOR_Q0_POS, COLOR_Q0_NEG),
-    ("Q1", COLOR_Q1_POS, COLOR_Q1_NEG),
-]
+
+def _get_channels():
+    """Return channel colors based on current theme."""
+    tm = ThemeManager.instance()
+    if tm.is_dark():
+        return [
+            ("Q0", _DARK_Q0_POS, _DARK_Q0_NEG),
+            ("Q1", _DARK_Q1_POS, _DARK_Q1_NEG),
+        ]
+    else:
+        return [
+            ("Q0", _LIGHT_Q0_POS, _LIGHT_Q0_NEG),
+            ("Q1", _LIGHT_Q1_POS, _LIGHT_Q1_NEG),
+        ]
 
 
 class ClockVisualizer(QWidget):
@@ -123,14 +138,17 @@ class ClockVisualizer(QWidget):
 
     def _draw_background(self, painter: QPainter, w: int, h: int) -> None:
         """Background gradient."""
+        tm = ThemeManager.instance()
         gradient = QLinearGradient(0, 0, 0, h)
-        gradient.setColorAt(0.0, QColor(18, 20, 28))
-        gradient.setColorAt(1.0, QColor(28, 32, 42))
+        bg = QColor(tm.color("graph_bg"))
+        gradient.setColorAt(0.0, bg.darker(105))
+        gradient.setColorAt(1.0, bg.lighter(103))
         painter.fillRect(0, 0, w, h, gradient)
 
     def _draw_grid(self, painter: QPainter, w: int, h: int) -> None:
         """Grid lines."""
-        pen = QPen(COLOR_GRID, 1, Qt.PenStyle.DotLine)
+        tm = ThemeManager.instance()
+        pen = QPen(QColor(tm.color("graph_grid")), 1, Qt.PenStyle.DotLine)
         painter.setPen(pen)
 
         x_step = max(w // 16, 30)
@@ -160,10 +178,13 @@ class ClockVisualizer(QWidget):
             channel_idx: channel index (0=Q0, 1=Q1)
             is_active: OE enable state
         """
-        ch_name, color_pos, color_neg = CHANNELS[channel_idx]
+        ch_list = _get_channels()
+        ch_name, color_pos, color_neg = ch_list[channel_idx]
+        tm = ThemeManager.instance()
 
         # Channel name label
-        font = QFont("Consolas", 12, QFont.Weight.Bold)
+        font_weight = QFont.Weight.Bold if tm.is_dark() else QFont.Weight.ExtraBold
+        font = QFont("Consolas", 12, font_weight)
         painter.setFont(font)
         label_color = color_pos if is_active else COLOR_DISABLED
         painter.setPen(QPen(label_color, 1))
@@ -208,11 +229,11 @@ class ClockVisualizer(QWidget):
             inverted=True,
         )
 
-        # Render - Q+ (glow + main)
-        self._render_path(painter, path_pos, color_pos)
+        # Render - Q+ (glow + main) thicker
+        self._render_path(painter, path_pos, color_pos, width_scale=1.0)
 
-        # Render - Q- (glow + main, slightly transparent)
-        self._render_path(painter, path_neg, color_neg)
+        # Render - Q- (glow + main) thinner for easier differentiation
+        self._render_path(painter, path_neg, color_neg, width_scale=0.72)
 
         # Label (+/-)
         label_font = QFont("Consolas", 10, QFont.Weight.Medium)
@@ -223,9 +244,10 @@ class ClockVisualizer(QWidget):
         painter.drawText(30, int(y_center + wave_height * 0.8 + wave_height + 6), f"{ch_name}-")
 
         # Voltage annotation
-        value_font = QFont("Consolas", 10, QFont.Weight.Medium)
+        value_font = QFont("Consolas", 10, QFont.Weight.Bold)
         painter.setFont(value_font)
-        painter.setPen(QPen(COLOR_LABEL, 1))
+        lbl_color = QColor("#1e2a3a") if not tm.is_dark() else QColor(160, 170, 190)
+        painter.setPen(QPen(lbl_color, 1))
         painter.drawText(
             width - 50, int(y_center - max_height / 2 + 14),
             f"+/-{self._amplitude_v:.1f}V"
@@ -284,29 +306,40 @@ class ClockVisualizer(QWidget):
 
         return path
 
-    def _render_path(self, painter: QPainter, path: QPainterPath, color: QColor) -> None:
+    def _render_path(
+        self,
+        painter: QPainter,
+        path: QPainterPath,
+        color: QColor,
+        width_scale: float = 1.0,
+    ) -> None:
         """Render waveform path (glow + main line)."""
+        tm = ThemeManager.instance()
+        line_w = (3.0 if not tm.is_dark() else 2.0) * width_scale
+        glow_w = (7.0 if not tm.is_dark() else 5.0) * width_scale
+        glow_alpha = 60 if not tm.is_dark() else 35
         # Glow
         glow_color = QColor(color)
-        glow_color.setAlpha(35)
-        glow_pen = QPen(glow_color, 5, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap)
+        glow_color.setAlpha(glow_alpha)
+        glow_pen = QPen(glow_color, glow_w, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap)
         painter.setPen(glow_pen)
         painter.drawPath(path)
 
         # Main line
-        main_pen = QPen(color, 2, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap)
+        main_pen = QPen(color, line_w, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap)
         painter.setPen(main_pen)
         painter.drawPath(path)
 
     def _draw_legend(self, painter: QPainter, w: int, h: int) -> None:
         """Legend (top)."""
-        font = QFont("Segoe UI", 8)
+        font = QFont("Segoe UI", 8, QFont.Weight.Bold)
         painter.setFont(font)
 
         x_pos = 10
         y_pos = 14
+        ch_list = _get_channels()
 
-        for idx, (ch_name, color_pos, color_neg) in enumerate(CHANNELS):
+        for idx, (ch_name, color_pos, color_neg) in enumerate(ch_list):
             is_on = self._oe_states[idx] if idx < len(self._oe_states) else False
             status = "ON" if is_on else "OFF"
             color = color_pos if is_on else COLOR_DISABLED
@@ -325,7 +358,9 @@ class ClockVisualizer(QWidget):
         """Parameter info (bottom)."""
         font = QFont("Consolas", 8)
         painter.setFont(font)
-        painter.setPen(QPen(COLOR_LABEL, 1))
+        tm = ThemeManager.instance()
+        text_color = tm.color("text_secondary") if tm.is_dark() else tm.color("text_primary")
+        painter.setPen(QPen(QColor(text_color), 1))
 
         active = sum(1 for s in self._oe_states if s)
         info_text = (

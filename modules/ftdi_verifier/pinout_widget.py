@@ -22,6 +22,8 @@ from modules.ftdi_verifier.ftdi_chip_specs import (
 )
 
 
+from core.theme_manager import ThemeManager
+
 # -- Pin functions -> human-readable abbreviations --
 _FUNC_SHORT_LABELS: Dict[PinFunction, str] = {
     PinFunction.I2C_SCL:     "SCL",
@@ -154,7 +156,8 @@ class PinoutWidget(QWidget):
             painter.setRenderHint(QPainter.RenderHint.TextAntialiasing)
 
             # Background
-            painter.fillRect(self.rect(), QColor("#2a3040"))
+            tm = ThemeManager.instance()
+            painter.fillRect(self.rect(), QColor(tm.color("pinout_bg")))
 
             w, h = self.width(), self.height()
             self._pin_rects.clear()
@@ -177,50 +180,54 @@ class PinoutWidget(QWidget):
     def _draw_chip_body(self, p: QPainter, r: QRectF) -> None:
         """Chip body - dark gray + metallic border + logo."""
         # Outer shadow
+        tm = ThemeManager.instance()
         shadow = QRectF(r.x() + 3, r.y() + 3, r.width(), r.height())
-        p.setBrush(QColor(0, 0, 0, 60))
+        p.setBrush(QColor(0, 0, 0, 40 if not tm.is_dark() else 60))
         p.setPen(Qt.PenStyle.NoPen)
         p.drawRoundedRect(shadow, self._CORNER_RADIUS, self._CORNER_RADIUS)
 
-        # Gradient background (matte epoxy feel)
+        # Gradient background
         grad = QLinearGradient(r.topLeft(), r.bottomRight())
-        grad.setColorAt(0.0, QColor("#1A1A1A"))
-        grad.setColorAt(0.5, QColor("#222222"))
-        grad.setColorAt(1.0, QColor("#2A2A2A"))
+        mid = QColor(tm.color("pinout_chip_mid"))
+        grad.setColorAt(0.0, mid.darker(110))
+        grad.setColorAt(0.5, mid)
+        grad.setColorAt(1.0, mid.lighter(110))
         p.setBrush(QBrush(grad))
-        p.setPen(QPen(QColor("#3a3a3a"), 2.5))
+        p.setPen(QPen(QColor(tm.color("pinout_chip_border")), 2.5))
         p.drawRoundedRect(r, self._CORNER_RADIUS, self._CORNER_RADIUS)
 
         # Inner border (bright line)
         inner = r.adjusted(4, 4, -4, -4)
         p.setBrush(Qt.BrushStyle.NoBrush)
-        p.setPen(QPen(QColor(100, 120, 160, 50), 1))
+        notch = QColor(tm.color("pinout_notch"))
+        notch.setAlpha(80)
+        p.setPen(QPen(notch, 1))
         p.drawRoundedRect(inner, self._CORNER_RADIUS - 2, self._CORNER_RADIUS - 2)
 
         # Pin 1 marker
         marker_r = 7
-        p.setBrush(QColor("#8899bb"))
-        p.setPen(QPen(QColor("#aabbdd"), 1.5))
+        p.setBrush(QColor(tm.color("pinout_notch")))
+        p.setPen(QPen(QColor(tm.color("pinout_chip_text")), 1.5))
         p.drawEllipse(QPointF(r.left() + 18, r.top() + 18), marker_r, marker_r)
 
         # Chip name (large and clear)
         name_font = QFont("Segoe UI", 18, QFont.Weight.Bold)
         p.setFont(name_font)
-        p.setPen(QColor("#D1D1D1"))
+        p.setPen(QColor(tm.color("pinout_chip_text")))
         name_rect = QRectF(r.x(), r.center().y() - 22, r.width(), 36)
         p.drawText(name_rect, Qt.AlignmentFlag.AlignCenter, self._chip.name)
 
         # Package + description
         sub_font = QFont("Segoe UI", 10)
         p.setFont(sub_font)
-        p.setPen(QColor("#B8B8B8"))
+        p.setPen(QColor(tm.color("text_secondary")))
         sub_rect = QRectF(r.x(), r.center().y() + 16, r.width(), 20)
         p.drawText(sub_rect, Qt.AlignmentFlag.AlignCenter, self._chip.package)
 
         # FTDI logo text
         logo_font = QFont("Segoe UI", 11, QFont.Weight.DemiBold)
         p.setFont(logo_font)
-        p.setPen(QColor("#D1D1D1"))
+        p.setPen(QColor(tm.color("pinout_chip_text")))
         logo_rect = QRectF(r.x(), r.bottom() - 24, r.width(), 16)
         p.drawText(logo_rect, Qt.AlignmentFlag.AlignCenter, "FTDI")
 
@@ -287,14 +294,15 @@ class PinoutWidget(QWidget):
         self, p: QPainter, pin: PinSpec, rect: QRectF,
         direction: PinDirection, body: QRectF,
     ) -> None:
+        tm = ThemeManager.instance()
         active_func = self._pin_active_funcs.get(pin.number, pin.default_function)
-        color_str = PIN_COLORS.get(active_func, "#555555")
+        color_str = PIN_COLORS.get(active_func, tm.color("text_muted"))
         base_color = QColor(color_str)
 
         dimmed = False
         if self._channel_filter and pin.channel and pin.channel != self._channel_filter:
             dimmed = True
-            base_color = QColor("#292d3a")
+            base_color = QColor(tm.color("pinout_pin_text_dimmed")).darker(150)
 
         is_hover = (pin.number == self._hovered_pin)
         is_selected = (pin.number == self._selected_pin)
@@ -360,7 +368,7 @@ class PinoutWidget(QWidget):
         if direction in (PinDirection.LEFT, PinDirection.RIGHT):
             inner_font = QFont("Consolas", 8, QFont.Weight.Bold)
             p.setFont(inner_font)
-            text_color = QColor("#111111") if fill.lightness() > 140 else QColor("#e8eeff")
+            text_color = QColor("#111111") if fill.lightness() > 140 else QColor("#ffffff")
             p.setPen(text_color)
             p.drawText(rect, Qt.AlignmentFlag.AlignCenter, func_label)
 
@@ -368,7 +376,10 @@ class PinoutWidget(QWidget):
         label_font = QFont("Consolas", 9, QFont.Weight.Bold)
         p.setFont(label_font)
         fm = QFontMetrics(label_font)
-        label_color = QColor("#d0d8ee") if not dimmed else QColor("#3a3f50")
+        if not tm.is_dark() and not dimmed:
+            label_color = QColor("#ffffff")
+        else:
+            label_color = QColor(tm.color("text_primary")) if not dimmed else QColor(tm.color("text_muted"))
         p.setPen(label_color)
 
         margin = self._PIN_LABEL_MARGIN
@@ -397,7 +408,7 @@ class PinoutWidget(QWidget):
             p.restore()
 
         # -- Connection lines (dashed) --
-        line_color = fill.darker(130) if not dimmed else QColor("#222233")
+        line_color = fill.darker(130) if not dimmed else QColor(tm.color("pinout_pin_line"))
         p.setPen(QPen(line_color, 1.0, Qt.PenStyle.DotLine))
         if direction == PinDirection.LEFT:
             p.drawLine(QPointF(rect.right(), rect.center().y()),
@@ -455,8 +466,11 @@ class PinoutWidget(QWidget):
         tip_rect = QRectF(tip_x, tip_y, max_w, box_h)
 
         # Translucent background + border
-        p.setBrush(QColor(18, 22, 34, 240))
-        func_color = QColor(PIN_COLORS.get(active_func, "#5577aa"))
+        tm = ThemeManager.instance()
+        tip_bg = QColor(tm.color("bg_card"))
+        tip_bg.setAlpha(240)
+        p.setBrush(tip_bg)
+        func_color = QColor(PIN_COLORS.get(active_func, tm.color("text_muted")))
         p.setPen(QPen(func_color, 2.0))
         p.drawRoundedRect(tip_rect, 8, 8)
 
@@ -469,7 +483,7 @@ class PinoutWidget(QWidget):
 
         # Remaining lines
         p.setFont(tip_font)
-        p.setPen(QColor("#c8d4ee"))
+        p.setPen(QColor(tm.color("text_desc")))
         for i, line in enumerate(lines[1:], start=1):
             y = y0 + i * line_h
             p.drawText(QPointF(tip_rect.left() + 14, y + fm.ascent()), line)

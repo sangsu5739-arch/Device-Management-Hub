@@ -6,7 +6,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from modules.ftdi_verifier.ftdi_chip_specs import PinFunction, PinDirection
+from modules.ftdi_verifier.ftdi_chip_specs import PinFunction
 
 if TYPE_CHECKING:
     from modules.ftdi_verifier.ftdi_verifier_module import FtdiVerifierModule
@@ -64,10 +64,6 @@ class PinmapController:
                     self._m._pinout.set_pin_function(num, PinFunction.GPIO_OUT)
                 elif PinFunction.GPIO_IN in pin.functions:
                     self._m._pinout.set_pin_function(num, PinFunction.GPIO_IN)
-                elif pin.direction == PinDirection.INPUT:
-                    self._m._pinout.set_pin_function(num, PinFunction.GPIO_IN)
-                elif pin.direction in (PinDirection.OUTPUT, PinDirection.BIDIRECTIONAL):
-                    self._m._pinout.set_pin_function(num, PinFunction.GPIO_OUT)
                 continue
 
             assigned = func_map.get(pin.mpsse_bit)

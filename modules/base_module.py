@@ -13,6 +13,7 @@ from PySide6.QtWidgets import QWidget, QMessageBox
 from PySide6.QtCore import Signal
 
 from core.ftdi_manager import FtdiManager
+from core.theme_manager import ThemeManager
 
 
 class BaseModule(QWidget):
@@ -33,28 +34,18 @@ class BaseModule(QWidget):
     REQUIRED_MODE: Optional[str] = None
     REQUIRE_MPSSE: bool = False
 
-    _MSGBOX_STYLESHEET = """
-        QMessageBox {
-            background-color: #22242e;
-        }
-        QMessageBox QLabel {
-            color: #c8cdd8;
-            font-size: 13px;
-        }
-        QMessageBox QPushButton {
-            min-width: 92px;
-            min-height: 30px;
-            border-radius: 6px;
-            border: 1px solid #4a6880;
-            background-color: #1d2d3a;
-            color: #90d0e8;
-            font-weight: 600;
-            padding: 4px 10px;
-        }
-        QMessageBox QPushButton:hover {
-            background-color: #243548;
-        }
-    """
+    @classmethod
+    def _msgbox_stylesheet(cls) -> str:
+        tm = ThemeManager.instance()
+        return (
+            f"QMessageBox {{ background-color: {tm.color('msgbox_bg')}; }}"
+            f"QMessageBox QLabel {{ color: {tm.color('msgbox_text')}; font-size: 13px; }}"
+            f"QMessageBox QPushButton {{ min-width: 92px; min-height: 30px;"
+            f" border-radius: 6px; border: 1px solid {tm.color('msgbox_btn_border')};"
+            f" background-color: {tm.color('msgbox_btn_bg')};"
+            f" color: {tm.color('msgbox_btn_text')}; font-weight: 600; padding: 4px 10px; }}"
+            f"QMessageBox QPushButton:hover {{ background-color: {tm.color('msgbox_btn_hover')}; }}"
+        )
 
     # Signals
     status_message = Signal(str)
@@ -142,5 +133,5 @@ class BaseModule(QWidget):
             "Switch to an MPSSE-capable channel (A or B) and try again."
         )
         box.setStandardButtons(QMessageBox.StandardButton.Ok)
-        box.setStyleSheet(self._MSGBOX_STYLESHEET)
+        box.setStyleSheet(self._msgbox_stylesheet())
         box.exec()

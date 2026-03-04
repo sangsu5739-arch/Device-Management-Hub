@@ -22,6 +22,7 @@ from PySide6.QtWidgets import (
 )
 
 from core.ftdi_manager import FtdiManager
+from core.theme_manager import ThemeManager
 from modules.base_module import BaseModule
 from modules.ina228.ina228_registers import (
     INA228Reg, REGISTER_SIZE, REGISTER_NAMES, REGISTER_DESCRIPTIONS,
@@ -106,6 +107,60 @@ class INA228Module(BaseModule):
 
         layout.addWidget(v_splitter, 1)
         self._load_io_hold_state()
+
+        # Theme support
+        self._apply_theme()
+        ThemeManager.instance().theme_changed.connect(self._apply_theme)
+
+    def _apply_theme(self) -> None:
+        """Re-apply all inline styles from the current theme."""
+        tm = ThemeManager.instance()
+        # Scan button
+        self._scan_btn.setStyleSheet(
+            f"QPushButton {{ background: {tm.color('btn_auto_checked_bg')};"
+            f" color: {tm.color('btn_auto_checked_text')}; font-weight: 700; border-radius: 6px;"
+            f" border: 1px solid {tm.color('btn_auto_checked_border')}; }}"
+            f"QPushButton:hover {{ background: {tm.color('btn_auto_checked_bg')}; }}"
+            f"QPushButton:disabled {{ background: {tm.color('bg_disabled')};"
+            f" color: {tm.color('text_disabled')}; border: 1px solid {tm.color('border_subtle')}; }}"
+        )
+        self._scan_result_label.setStyleSheet(
+            f"color: {tm.color('text_label')}; font-style: italic;"
+        )
+        # Hold buttons
+        for btn in self._hold_btns.values():
+            btn.setStyleSheet(
+                f"QPushButton {{ background: {tm.color('btn_hold_bg')};"
+                f" color: {tm.color('btn_hold_text')}; font-weight: 700; border-radius: 6px;"
+                f" border: 1px solid {tm.color('btn_hold_border')}; }}"
+                f"QPushButton:hover {{ background: {tm.color('btn_hold_hover')}; }}"
+                f"QPushButton:checked {{ background: {tm.color('btn_hold_checked_bg')};"
+                f" color: {tm.color('btn_hold_checked_text')};"
+                f" border: 1px solid {tm.color('btn_hold_checked_border')}; }}"
+                f"QPushButton:checked:hover {{ background: {tm.color('btn_hold_checked_hover')}; }}"
+            )
+        # Hold tags & LEDs
+        for w in self.findChildren(QLabel, "holdTag"):
+            w.setStyleSheet(f"color: {tm.color('text_tag')};")
+        for led in self._hold_leds.values():
+            led.setStyleSheet(f"background: {tm.color('led_off')}; border-radius: 6px;")
+        for w in self.findChildren(QFrame, "holdBarBg"):
+            w.setStyleSheet(f"background: {tm.color('bg_bar')}; border-radius: 4px;")
+        for bar in self._hold_bars.values():
+            bar.setStyleSheet(f"background: {tm.color('bg_bar_fill')}; border-radius: 3px;")
+        # Auto range
+        self._auto_range_btn.setStyleSheet(
+            f"QPushButton {{ font-weight: bold; font-size: 12px; padding: 6px 10px;"
+            f" border-radius: 6px; background: {tm.color('btn_auto_bg')};"
+            f" color: {tm.color('text_accent')}; }}"
+            f"QPushButton:checked {{ background: #1f5eff; color: #ffffff; }}"
+        )
+        # Separator
+        if hasattr(self, '_ctrl_sep'):
+            self._ctrl_sep.setStyleSheet(f"color: {tm.color('separator')};")
+        # Metric containers
+        for c in self._metric_containers:
+            c.setStyleSheet(f"background-color: {tm.color('metric_bg')}; border-radius: 6px;")
 
     def on_device_connected(self) -> None:
         self._scan_btn.setEnabled(True)
@@ -259,13 +314,7 @@ class INA228Module(BaseModule):
         self._scan_btn = QPushButton("Scan Addresses")
         self._scan_btn.setFixedWidth(140)
         self._scan_btn.setEnabled(False)
-        self._scan_btn.setStyleSheet(
-            "QPushButton { background: #1a2d20; color: #80c890; font-weight: 700; border-radius: 6px; "
-            "border: 1px solid #2a5a38; }"
-            "QPushButton:hover { background: #203828; color: #a0e0a8; border-color: #3a7048; }"
-            "QPushButton:pressed { background: #162218; border: 1px solid #4a8858; }"
-            "QPushButton:disabled { background: #1e2028; color: #4a5068; border: 1px solid #2a2e3a; }"
-        )
+        # Style applied in _apply_theme()
         self._scan_btn.clicked.connect(self._on_scan_addresses)
         layout.addWidget(self._scan_btn)
 
@@ -279,7 +328,7 @@ class INA228Module(BaseModule):
 
         layout.addSpacing(20)
         self._scan_result_label = QLabel("-")
-        self._scan_result_label.setStyleSheet("color: #88a0cc; font-style: italic;")
+        # Style applied in _apply_theme()
         layout.addWidget(self._scan_result_label)
         layout.addStretch()
         return group
@@ -300,17 +349,10 @@ class INA228Module(BaseModule):
             btn.setCheckable(True)
             btn.setMinimumWidth(80)
             btn.setMinimumHeight(28)
-            btn.setStyleSheet(
-                "QPushButton { background: #2a303b; color: #cbd5e1; font-weight: 700; border-radius: 6px; "
-                "border: 1px solid #3b4458; }"
-                "QPushButton:hover { background: #343d4a; }"
-                "QPushButton:checked { background: #1a2d20; color: #80c890; border: 1px solid #2a5a38; }"
-                "QPushButton:checked:hover { background: #203828; color: #a0e0a8; }"
-            )
+            # Style applied in _apply_theme()
             btn.toggled.connect(lambda checked, b=bit: self._on_hold_toggled(b, checked))
             self._hold_btns[bit] = btn
             row.addWidget(btn)
-        row.addStretch()
         layout.addLayout(row)
 
         led_row = QHBoxLayout()
@@ -318,22 +360,21 @@ class INA228Module(BaseModule):
         led_row.addWidget(QLabel("Current:"))
         for bit in range(4, 8):
             tag = QLabel(f"D{bit}")
-            tag.setStyleSheet("color: #9aa4b8;")
+            tag.setObjectName("holdTag")
             led = QLabel("")
             led.setFixedSize(12, 12)
-            led.setStyleSheet("background: #2a303b; border-radius: 6px;")
+            # Style applied in _apply_theme()
             self._hold_leds[bit] = led
             led_row.addWidget(tag)
             led_row.addWidget(led)
             bar_bg = QFrame()
             bar_bg.setFixedSize(56, 8)
-            bar_bg.setStyleSheet("background: #1b202a; border-radius: 4px;")
+            bar_bg.setObjectName("holdBarBg")
             bar_fill = QFrame(bar_bg)
             bar_fill.setGeometry(1, 1, 6, 6)
-            bar_fill.setStyleSheet("background: #3b4458; border-radius: 3px;")
+            # Style applied in _apply_theme()
             self._hold_bars[bit] = bar_fill
             led_row.addWidget(bar_bg)
-        led_row.addStretch()
         layout.addLayout(led_row)
         return group
 
@@ -371,19 +412,20 @@ class INA228Module(BaseModule):
         for bit in range(4, 8):
             high = bool(value & (1 << bit))
 
+            tm = ThemeManager.instance()
             led = self._hold_leds.get(bit)
             if led:
-                color = "#80c890" if high else "#3b4458"
+                color = tm.color('led_on') if high else tm.color('led_off')
                 led.setStyleSheet(f"background: {color}; border-radius: 6px;")
 
             bar = self._hold_bars.get(bit)
             if bar:
                 if high:
                     bar.setGeometry(1, 1, 54, 6)
-                    bar.setStyleSheet("background: #80c890; border-radius: 3px;")
+                    bar.setStyleSheet(f"background: {tm.color('led_on')}; border-radius: 3px;")
                 else:
                     bar.setGeometry(1, 1, 10, 6)
-                    bar.setStyleSheet("background: #3b4458; border-radius: 3px;")
+                    bar.setStyleSheet(f"background: {tm.color('bg_bar_fill')}; border-radius: 3px;")
 
             if sync_buttons:
                 btn = self._hold_btns.get(bit)
@@ -484,20 +526,7 @@ class INA228Module(BaseModule):
         self._auto_range_btn.setCheckable(True)
         self._auto_range_btn.setChecked(True)
         self._auto_range_btn.setMinimumHeight(32)
-        self._auto_range_btn.setStyleSheet(
-            "QPushButton {"
-            "  font-weight: bold;"
-            "  font-size: 12px;"
-            "  padding: 6px 10px;"
-            "  border-radius: 6px;"
-            "  background: #1d2433;"
-            "  color: #c8d2f0;"
-            "}"
-            "QPushButton:checked {"
-            "  background: #1f5eff;"
-            "  color: #ffffff;"
-            "}"
-        )
+        # Style applied in _apply_theme()
         self._auto_range_btn.toggled.connect(self._on_auto_range_toggled)
         grid.addWidget(self._auto_range_btn, 7, 1)
 
@@ -506,7 +535,8 @@ class INA228Module(BaseModule):
         # Divider
         sep = QFrame()
         sep.setFrameShape(QFrame.Shape.HLine)
-        sep.setStyleSheet("color: #3a3f50;")
+        # Style applied in _apply_theme()
+        self._ctrl_sep = sep
         layout.addWidget(sep)
 
         # Start / Stop buttons
@@ -557,7 +587,7 @@ class INA228Module(BaseModule):
             val.setStyleSheet(f"color: {color}; font-size: 14px; font-weight: bold;")
             val.setAlignment(Qt.AlignmentFlag.AlignCenter)
             vl.addWidget(val)
-            container.setStyleSheet("background-color: #22242e; border-radius: 6px;")
+            container.setObjectName("metricContainer")
             metrics_layout.addWidget(container)
             return val
 

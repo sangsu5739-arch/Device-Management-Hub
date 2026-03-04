@@ -20,6 +20,7 @@ from PySide6.QtWidgets import (
 )
 
 from core.ftdi_manager import FtdiManager
+from core.theme_manager import ThemeManager
 from modules.base_module import BaseModule
 from modules.pi6cg18201.register_map import (
     RegisterMap,
@@ -120,6 +121,28 @@ class PI6CGModule(BaseModule):
         self._refresh_register_table()
         self._load_ui_settings()
 
+        # Theme support
+        self._apply_theme()
+        ThemeManager.instance().theme_changed.connect(self._apply_theme)
+
+    def _apply_theme(self) -> None:
+        tm = ThemeManager.instance()
+        # Section headings
+        for w in self.findChildren(QLabel, "sectionHeading"):
+            w.setStyleSheet(f"color: {tm.color('text_heading')}; font-weight: bold; font-size: 12px;")
+        # Advanced hints
+        for w in self.findChildren(QLabel, "advHint"):
+            w.setStyleSheet(f"color: {tm.color('text_hint')}; font-size: 11px;")
+        # SS readback badge
+        self._ss_readback_badge.setStyleSheet(
+            f"color: {tm.color('accent_blue')}; font-weight: bold;"
+            f" background-color: {tm.color('ss_badge_bg')};"
+            f" padding: 2px 8px; border-radius: 8px;"
+        )
+        # Separator
+        if hasattr(self, '_ctrl_separator'):
+            self._ctrl_separator.setStyleSheet(f"color: {tm.color('separator')};")
+
     def on_device_connected(self) -> None:
         self.status_message.emit(f"PI6CG18201 ready (0x{self._slave_address:02X})")
 
@@ -164,7 +187,7 @@ class PI6CGModule(BaseModule):
 
         # Output enable (OE)
         oe_label = QLabel("Output Enable")
-        oe_label.setStyleSheet("color: #88c0ff; font-weight: bold; font-size: 12px;")
+        oe_label.setObjectName("sectionHeading")
         layout.addWidget(oe_label)
 
         oe_frame = QFrame()
@@ -177,24 +200,22 @@ class PI6CGModule(BaseModule):
         for i in range(2):
             cb = QCheckBox(f" {ch_labels[i]}")
             cb.setChecked(True)
-            cb.setStyleSheet(f"""
-                QCheckBox {{ font-size: 13px; font-weight: bold; }}
-                QCheckBox::indicator:checked {{ background-color: {ch_colors[i]}; }}
-            """)
+            cb.setStyleSheet(f"QCheckBox {{ font-size: 13px; font-weight: bold; }}"
+                             f"QCheckBox::indicator:checked {{ background-color: {ch_colors[i]}; }}")
             cb.stateChanged.connect(self._on_control_changed)
             self._oe_checks.append(cb)
             oe_layout.addWidget(cb, 0, i)
         layout.addWidget(oe_frame)
 
         self._oe_hint = QLabel("Advanced: OE_Q0=Byte0[1], OE_Q1=Byte0[2]")
-        self._oe_hint.setStyleSheet("color: #7f8aa4; font-size: 11px;")
+        self._oe_hint.setObjectName("advHint")
         self._oe_hint.setVisible(False)
         self._advanced_hint_labels.append(self._oe_hint)
         layout.addWidget(self._oe_hint)
 
         # Amplitude
         amp_label = QLabel("Output amplitude")
-        amp_label.setStyleSheet("color: #88c0ff; font-weight: bold; font-size: 12px;")
+        amp_label.setObjectName("sectionHeading")
         layout.addWidget(amp_label)
 
         amp_frame = QFrame()
@@ -208,19 +229,19 @@ class PI6CGModule(BaseModule):
         amp_layout.addWidget(self._amplitude_combo)
         amp_layout.addStretch()
         self._amp_indicator = QLabel("o 0.8V")
-        self._amp_indicator.setStyleSheet("color: #ffcc44; font-weight: bold; font-size: 14px;")
+        self._amp_indicator.setStyleSheet("color: #ffcc44; font-weight: bold; font-size: 14px;")  # data color, keep
         amp_layout.addWidget(self._amp_indicator)
         layout.addWidget(amp_frame)
 
         self._amp_hint = QLabel("Advanced: AMPLITUDE=Byte1[1:0]")
-        self._amp_hint.setStyleSheet("color: #7f8aa4; font-size: 11px;")
+        self._amp_hint.setObjectName("advHint")
         self._amp_hint.setVisible(False)
         self._advanced_hint_labels.append(self._amp_hint)
         layout.addWidget(self._amp_hint)
 
         # Spread spectrum
         ss_label = QLabel("Spread spectrum")
-        ss_label.setStyleSheet("color: #88c0ff; font-weight: bold; font-size: 12px;")
+        ss_label.setObjectName("sectionHeading")
         layout.addWidget(ss_label)
 
         ss_frame = QFrame()
@@ -236,23 +257,20 @@ class PI6CGModule(BaseModule):
         ss_layout.addWidget(self._ss_combo)
         ss_layout.addStretch()
         self._ss_readback_badge = QLabel("Current: -")
-        self._ss_readback_badge.setStyleSheet(
-            "color: #9ac6ff; font-weight: bold; background-color: #26374f; "
-            "padding: 2px 8px; border-radius: 8px;"
-        )
+        # Style applied in _apply_theme()
         self._ss_readback_badge.setVisible(False)
         ss_layout.addWidget(self._ss_readback_badge)
         layout.addWidget(ss_frame)
 
         self._ss_hint = QLabel("Advanced: SS_SW_CTRL=Byte1[5], SS_MODE=Byte1[4:3]")
-        self._ss_hint.setStyleSheet("color: #7f8aa4; font-size: 11px;")
+        self._ss_hint.setObjectName("advHint")
         self._ss_hint.setVisible(False)
         self._advanced_hint_labels.append(self._ss_hint)
         layout.addWidget(self._ss_hint)
 
         # Slew Rate
         slew_label = QLabel("Slew Rate")
-        slew_label.setStyleSheet("color: #88c0ff; font-weight: bold; font-size: 12px;")
+        slew_label.setObjectName("sectionHeading")
         layout.addWidget(slew_label)
 
         slew_frame = QFrame()
@@ -276,12 +294,12 @@ class PI6CGModule(BaseModule):
         slew_grid.addWidget(self._slew_fine_combo, 1, 1)
 
         self._slew_indicator = QLabel("Combined: Lv.8/15")
-        self._slew_indicator.setStyleSheet("color: #66ccaa; font-weight: bold;")
+        self._slew_indicator.setStyleSheet("color: #66ccaa; font-weight: bold;")  # data color, keep
         slew_grid.addWidget(self._slew_indicator, 2, 0, 1, 2)
         layout.addWidget(slew_frame)
 
         self._slew_hint = QLabel("Advanced: SLEW_Q1=Byte2[2], SLEW_Q0=Byte2[1], REF_SLEW=Byte3[7:6]")
-        self._slew_hint.setStyleSheet("color: #7f8aa4; font-size: 11px;")
+        self._slew_hint.setObjectName("advHint")
         self._slew_hint.setVisible(False)
         self._advanced_hint_labels.append(self._slew_hint)
         layout.addWidget(self._slew_hint)
@@ -289,17 +307,17 @@ class PI6CGModule(BaseModule):
         # Live mode
         separator = QFrame()
         separator.setFrameShape(QFrame.Shape.HLine)
-        separator.setStyleSheet("color: #3a3f50;")
+        self._ctrl_separator = separator
         layout.addWidget(separator)
 
         live_frame = QFrame()
         live_layout = QHBoxLayout(live_frame)
         live_layout.setContentsMargins(4, 2, 4, 2)
         self._live_mode_cb = QCheckBox(" Live mode (real-time I2C send)")
-        self._live_mode_cb.setStyleSheet("""
-            QCheckBox { font-weight: bold; color: #ff8888; font-size: 12px; }
-            QCheckBox::indicator:checked { background-color: #cc3344; border-color: #ff4455; }
-        """)
+        self._live_mode_cb.setStyleSheet(
+            "QCheckBox { font-weight: bold; color: #ff8888; font-size: 12px; }"
+            "QCheckBox::indicator:checked { background-color: #cc3344; border-color: #ff4455; }"
+        )  # semantic warning color, keep
         self._live_mode_cb.stateChanged.connect(self._on_live_mode_changed)
         live_layout.addWidget(self._live_mode_cb)
         layout.addWidget(live_frame)
@@ -343,7 +361,7 @@ class PI6CGModule(BaseModule):
 
         # Overview
         overview_label = QLabel("Register Map (8-Byte Overview)")
-        overview_label.setStyleSheet("color: #88c0ff; font-weight: bold; font-size: 12px;")
+        overview_label.setObjectName("sectionHeading")
         reg_layout.addWidget(overview_label)
 
         self._reg_overview_table = QTableWidget(1, 8)
@@ -358,7 +376,7 @@ class PI6CGModule(BaseModule):
 
         # Detail
         detail_label = QLabel("Bit Field Detail")
-        detail_label.setStyleSheet("color: #88c0ff; font-weight: bold; font-size: 12px;")
+        detail_label.setObjectName("sectionHeading")
         detail_header = QHBoxLayout()
         detail_header.addWidget(detail_label)
         detail_header.addStretch()
