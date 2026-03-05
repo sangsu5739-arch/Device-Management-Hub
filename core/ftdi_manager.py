@@ -722,8 +722,10 @@ class FtdiManager(QObject):
         """Configure SPI clock and mode."""
         if not self._is_connected or self._ft is None:
             return
+        if self._channel_modes.get(self._active_channel) != "spi":
+            self.set_protocol_mode("SPI")
         locker = QMutexLocker(self._mutex)
-        self._spi.configure(clock_hz=clock_hz, cpol=cpol, cpha=cpha)
+        self._spi.reconfigure(clock_hz=clock_hz, cpol=cpol, cpha=cpha)
 
     def spi_transfer(self, tx_data: bytes,
                      cs_pin: int = SpiController.PIN_CS0) -> Optional[bytes]:
@@ -742,6 +744,8 @@ class FtdiManager(QObject):
         if not self.supports_mpsse(self._active_channel):
             self.comm_error.emit("MPSSE is required for SPI.")
             return None
+        if self._channel_modes.get(self._active_channel) != "spi":
+            self.set_protocol_mode("SPI")
         locker = QMutexLocker(self._mutex)
         try:
             return self._spi.transfer(tx_data, cs_pin)
@@ -760,6 +764,8 @@ class FtdiManager(QObject):
         if not self.supports_mpsse(self._active_channel):
             self.comm_error.emit("MPSSE is required for SPI.")
             return False
+        if self._channel_modes.get(self._active_channel) != "spi":
+            self.set_protocol_mode("SPI")
         locker = QMutexLocker(self._mutex)
         try:
             self._spi.write_only(tx_data, cs_pin)
@@ -769,6 +775,26 @@ class FtdiManager(QObject):
             self._log(f"[Error] {err}")
             self.comm_error.emit(err)
             return False
+
+    def spi_write_then_read(self, write_data: bytes, read_len: int,
+                            cs_pin: int = SpiController.PIN_CS0) -> Optional[bytes]:
+        """Half-duplex SPI transaction under one CS: write then read."""
+        if not self._is_connected or self._ft is None:
+            self.comm_error.emit("Device not connected.")
+            return None
+        if not self.supports_mpsse(self._active_channel):
+            self.comm_error.emit("MPSSE is required for SPI.")
+            return None
+        if self._channel_modes.get(self._active_channel) != "spi":
+            self.set_protocol_mode("SPI")
+        locker = QMutexLocker(self._mutex)
+        try:
+            return self._spi.write_then_read(write_data, read_len, cs_pin)
+        except Exception as e:
+            err = f"SPI write/read error: {e}"
+            self._log(f"[Error] {err}")
+            self.comm_error.emit(err)
+            return None
 
     def spi_set_gpio(self, mask: int, value: int,
                      direction: int = 0xFF) -> None:

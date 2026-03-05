@@ -32,11 +32,26 @@ class SpiController(MpsseBaseController):
 
     # SPI data transfer opcodes (indexed by [cpol][cpha])
     # Each entry = (write-only opcode, full-duplex opcode)
+    #
+    # MPSSE opcode semantics:
+    #   0x11/0x31: data OUT on -ve (falling), data IN on +ve (rising)
+    #   0x10/0x34: data OUT on +ve (rising),  data IN on -ve (falling)
+    #
+    # Mode 0 (CPOL=0,CPHA=0): sample rising,  shift falling → 0x31
+    # Mode 1 (CPOL=0,CPHA=1): shift rising,   sample falling → 0x34
+    # Mode 2 (CPOL=1,CPHA=0): sample falling,  shift rising  → 0x34
+    # Mode 3 (CPOL=1,CPHA=1): shift falling,  sample rising  → 0x31
     _XFER_OPCODES = {
-        (0, 0): (0x11, 0x31),  # OUT -ve, IN +ve  (Mode 0)
-        (0, 1): (0x10, 0x34),  # OUT +ve, IN -ve  (Mode 1)
-        (1, 0): (0x10, 0x34),  # OUT +ve, IN -ve  (Mode 2)
-        (1, 1): (0x11, 0x31),  # OUT -ve, IN +ve  (Mode 3)
+        (0, 0): (0x11, 0x31),  # Mode 0: OUT -ve, IN +ve
+        (0, 1): (0x10, 0x34),  # Mode 1: OUT +ve, IN -ve
+        (1, 0): (0x10, 0x34),  # Mode 2: OUT +ve, IN -ve
+        (1, 1): (0x11, 0x31),  # Mode 3: OUT -ve, IN +ve
+    }
+    _READ_OPCODES = {
+        (0, 0): 0x20,  # Mode 0: IN +ve
+        (0, 1): 0x24,  # Mode 1: IN -ve
+        (1, 0): 0x24,  # Mode 2: IN -ve
+        (1, 1): 0x20,  # Mode 3: IN +ve
     }
 
     # Deprecated: use MpsseBaseController.PIN_ADBUS* going forward
@@ -70,7 +85,10 @@ class SpiController(MpsseBaseController):
         cpol: int = 0,
         cpha: int = 0,
     ) -> None:
-        """Initialize MPSSE for SPI mode.
+        """Full MPSSE initialization + SPI mode setup.
+
+        Called once when first entering SPI protocol mode.
+        For subsequent mode/clock changes, use reconfigure().
 
         Args:
             clock_hz: SPI clock frequency (max 30 MHz with divide-by-5 off).
@@ -78,12 +96,39 @@ class SpiController(MpsseBaseController):
             cpha: Clock phase (0 or 1).
         """
         self.init_mpsse()
+        self._apply_spi_setup(clock_hz, cpol, cpha)
 
-        # 60 MHz base clock, adaptive off, 3-phase off, loopback off
+    def reconfigure(
+        self,
+        clock_hz: int = 1_000_000,
+        cpol: int = 0,
+        cpha: int = 0,
+    ) -> None:
+        """Change SPI parameters without full MPSSE re-initialization.
+
+        Skips resetDevice/setBitMode/sync — only sends MPSSE commands
+        to update clock divisor, pin idle state, and mode variables.
+        """
+        self._apply_spi_setup(clock_hz, cpol, cpha)
+
+    def _apply_spi_setup(
+        self,
+        clock_hz: int,
+        cpol: int,
+        cpha: int,
+    ) -> None:
+        """Send MPSSE commands to configure SPI clock and pin states."""
+        self._cpol = cpol
+        self._cpha = cpha
+
+        # 60 MHz base clock, adaptive off, loopback off.
+        # CPHA=1 (Mode 1/3) can require 3-phase clocking on FTDI MPSSE
+        # to avoid a one-bit sampling skew.
+        phase_cmd = self._MPSSE_ENABLE_3_PHASE if cpha else self._MPSSE_DISABLE_3_PHASE
         self.write(bytes([
             self._MPSSE_DIV_BY_5_DISABLE,
             self._MPSSE_DISABLE_ADAPTIVE,
-            self._MPSSE_DISABLE_3_PHASE,
+            phase_cmd,
             self._MPSSE_DISABLE_LOOPBACK,
         ]))
 
@@ -142,6 +187,22 @@ class SpiController(MpsseBaseController):
         len_lo = (length - 1) & 0xFF
         len_hi = ((length - 1) >> 8) & 0xFF
 
+        if self._cpha == 1:
+            # CPHA=1 path: separate CS assert and data phase to preserve setup/hold.
+            self._assert_cs(cs_pin)
+            time.sleep(0.001)
+
+            cmd = bytearray([duplex_op, len_lo, len_hi])
+            cmd.extend(tx_data)
+            cmd.append(self._MPSSE_SEND_IMMEDIATE)
+            self.write(bytes(cmd))
+
+            time.sleep(0.002)
+            rx = self.read_with_wait(length)
+            time.sleep(0.001)
+            self._deassert_cs(cs_pin)
+            return rx
+
         cmd = bytearray()
 
         # Assert CS
@@ -154,20 +215,13 @@ class SpiController(MpsseBaseController):
         cmd.append(len_lo)
         cmd.append(len_hi)
         cmd.extend(tx_data)
-
-        # Deassert CS
-        cs_val_high = self._gpio_value | cs_pin
-        for _ in range(3):
-            cmd.extend([self._MPSSE_SET_BITS_LOW, cs_val_high & 0xFF, self._gpio_direction & 0xFF])
-
-        # Send immediate to flush read buffer
         cmd.append(self._MPSSE_SEND_IMMEDIATE)
 
         self.write(bytes(cmd))
-        time.sleep(0.005)
-
-        # Read response
-        return self.read_with_wait(length)
+        time.sleep(0.001)
+        rx = self.read_with_wait(length)
+        self._deassert_cs(cs_pin)
+        return rx
 
     def write_only(self, tx_data: bytes, cs_pin: int = MpsseBaseController.PIN_ADBUS3) -> None:
         """Write-only SPI transfer with automatic CS handling.
@@ -184,6 +238,16 @@ class SpiController(MpsseBaseController):
         len_lo = (length - 1) & 0xFF
         len_hi = ((length - 1) >> 8) & 0xFF
 
+        if self._cpha == 1:
+            self._assert_cs(cs_pin)
+            time.sleep(0.001)
+            cmd = bytearray([write_op, len_lo, len_hi])
+            cmd.extend(tx_data)
+            self.write(bytes(cmd))
+            time.sleep(0.001)
+            self._deassert_cs(cs_pin)
+            return
+
         cmd = bytearray()
 
         # Assert CS
@@ -197,12 +261,63 @@ class SpiController(MpsseBaseController):
         cmd.append(len_hi)
         cmd.extend(tx_data)
 
-        # Deassert CS
-        cs_val_high = self._gpio_value | cs_pin
-        for _ in range(3):
-            cmd.extend([self._MPSSE_SET_BITS_LOW, cs_val_high & 0xFF, self._gpio_direction & 0xFF])
+        self.write(bytes(cmd))
+        self._deassert_cs(cs_pin)
+
+    def write_then_read(
+        self,
+        write_data: bytes,
+        read_len: int,
+        cs_pin: int = MpsseBaseController.PIN_ADBUS3,
+    ) -> bytes:
+        """Half-duplex SPI sequence under one CS: write phase, then read phase.
+
+        This mirrors the tc72.py access style:
+          1) CLOCK_DATA_OUT_* (register/command)
+          2) CLOCK_DATA_IN_*  (response bytes)
+        """
+        if read_len < 0:
+            raise ValueError("read_len must be >= 0")
+        if not write_data and read_len == 0:
+            return b""
+
+        # tc72 reference path uses explicit OUT then IN commands.
+        if self._cpha == 1:
+            write_op = 0x11  # CLOCK_DATA_OUT_BYTES_N_VE
+            read_op = 0x24   # CLOCK_DATA_IN_BYTES_N_VE
+        else:
+            write_op, _ = self._XFER_OPCODES[(self._cpol, self._cpha)]
+            read_op = self._READ_OPCODES[(self._cpol, self._cpha)]
+
+        self._assert_cs(cs_pin)
+        if self._cpha == 1:
+            time.sleep(0.001)
+
+        cmd = bytearray()
+        if write_data:
+            wlen = len(write_data) - 1
+            cmd.extend([write_op, wlen & 0xFF, (wlen >> 8) & 0xFF])
+            cmd.extend(write_data)
+
+        if read_len > 0:
+            rlen = read_len - 1
+            cmd.extend([read_op, rlen & 0xFF, (rlen >> 8) & 0xFF])
+            cmd.append(self._MPSSE_SEND_IMMEDIATE)
 
         self.write(bytes(cmd))
+
+        if read_len <= 0:
+            if self._cpha == 1:
+                time.sleep(0.001)
+            self._deassert_cs(cs_pin)
+            return b""
+
+        time.sleep(0.002 if self._cpha == 1 else 0.001)
+        rx = self.read_with_wait(read_len)
+        if self._cpha == 1:
+            time.sleep(0.001)
+        self._deassert_cs(cs_pin)
+        return rx
 
     # ------------------------------------------------------------------
     # GPIO (non-SPI pins)
@@ -247,3 +362,17 @@ class SpiController(MpsseBaseController):
 
     def _set_low_bits(self, value: int, direction: int) -> None:
         self.write(bytes([self._MPSSE_SET_BITS_LOW, value & 0xFF, direction & 0xFF]))
+
+    def _assert_cs(self, cs_pin: int) -> None:
+        cs_val = self._gpio_value & ~cs_pin
+        cmd = bytearray()
+        for _ in range(3):
+            cmd.extend([self._MPSSE_SET_BITS_LOW, cs_val & 0xFF, self._gpio_direction & 0xFF])
+        self.write(bytes(cmd))
+
+    def _deassert_cs(self, cs_pin: int) -> None:
+        cs_val_high = self._gpio_value | cs_pin
+        cmd = bytearray()
+        for _ in range(3):
+            cmd.extend([self._MPSSE_SET_BITS_LOW, cs_val_high & 0xFF, self._gpio_direction & 0xFF])
+        self.write(bytes(cmd))

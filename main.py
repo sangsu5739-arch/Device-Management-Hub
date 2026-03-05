@@ -71,6 +71,7 @@ class CustomTitleBar(QWidget):
     def __init__(self, parent_window: QMainWindow) -> None:
         super().__init__(parent_window)
         self._window = parent_window
+        self._drag_pos = None
         self.setFixedHeight(34)
         self._build()
         self._tm = ThemeManager.instance()
@@ -201,11 +202,12 @@ class CustomTitleBar(QWidget):
         super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event) -> None:
-        if event.buttons() == Qt.MouseButton.LeftButton and self._drag_pos is not None:
+        drag_pos = getattr(self, "_drag_pos", None)
+        if event.buttons() == Qt.MouseButton.LeftButton and drag_pos is not None:
             if self._window.isMaximized():
                 self._window.showNormal()
                 self.update_max_icon()
-            self._window.move(self._window.pos() + event.globalPosition().toPoint() - self._drag_pos)
+            self._window.move(self._window.pos() + event.globalPosition().toPoint() - drag_pos)
             self._drag_pos = event.globalPosition().toPoint()
         super().mouseMoveEvent(event)
 
@@ -245,8 +247,8 @@ class MainWindow(QMainWindow):
         self.setWindowFlags(
             Qt.WindowType.FramelessWindowHint | Qt.WindowType.Window
         )
-        self.setMinimumSize(1360, 900)
-        self.resize(1520, 1080)
+        self.setMinimumSize(1360, 950)
+        self.resize(1520, 1130)
 
         self._ftdi = FtdiManager.instance()
         self._modules: List[BaseModule] = []

@@ -1,4 +1,4 @@
-"""
+﻿"""
 FTDI Hardware Verifier module - Universal Device Studio plugin
 
 Validates connected FTDI chip hardware resources,
@@ -47,7 +47,7 @@ class FtdiVerifierModule(BaseModule):
     """
 
     MODULE_NAME = "FTDI Verifier"
-    MODULE_ICON = "🛠️"
+    MODULE_ICON = "\U0001f6e0\ufe0f"
     MODULE_VERSION = "1.0.0"
     MODULE_ORDER = 10
 
@@ -80,6 +80,12 @@ class FtdiVerifierModule(BaseModule):
         self._gpio_poll_interval_value: int = 500
         self._poll_blink_state: bool = False
         self._gpio_backend: str = "BITBANG"
+        self._spi_test_thread: Optional[QThread] = None
+        self._spi_id_thread: Optional[QThread] = None
+        self._i2c_test_thread: Optional[QThread] = None
+        self._i2c_scan_thread: Optional[QThread] = None
+        self._spi_loopback_running: bool = False
+        self._spi_loopback_interval_ms: int = 500
         self._pinmap = PinmapController(self)
         self._gpio = GpioController(self)
         super().__init__(ftdi_manager, parent)
@@ -212,6 +218,8 @@ class FtdiVerifierModule(BaseModule):
         pass  # GPIO polling starts from a separate button
 
     def stop_communication(self) -> None:
+        self._spi_loopback_running = False
+        self._stop_single_shot_threads()
         self._stop_worker()
         # On global stop (disconnect or channel switch), do not restore FTDI from UART.
         self._close_uart(restore=False)
@@ -265,7 +273,7 @@ class FtdiVerifierModule(BaseModule):
         self._mode_desc_label = QLabel("")
         self._mode_desc_label.setFont(QFont("Malgun Gothic", 9))
         self._mode_desc_label.setWordWrap(True)
-        self._mode_desc_label.setStyleSheet("color: #8899bb; font-size: 11px;")
+        self._mode_desc_label.setStyleSheet(f"color: {ThemeManager.instance().color('text_desc')}; font-size: 11px;")
         mode_layout.addWidget(self._mode_desc_label)
 
         main_layout.addWidget(mode_group)
@@ -347,10 +355,13 @@ class FtdiVerifierModule(BaseModule):
         # -- SPI Configuration --
         cfg_panel = QGroupBox("Configuration")
         cfg_layout = QGridLayout(cfg_panel)
-        cfg_layout.setSpacing(6)
+        cfg_layout.setHorizontalSpacing(6)
+        cfg_layout.setVerticalSpacing(8)
         cfg_layout.setContentsMargins(8, 8, 8, 8)
 
-        cfg_layout.addWidget(QLabel("SPI Mode:"), 0, 0)
+        mode_label = QLabel("SPI Mode:")
+        mode_label.setMinimumWidth(64)
+        cfg_layout.addWidget(mode_label, 0, 0)
         self._spi_mode_combo = QComboBox()
         self._spi_mode_combo.addItems([
             "Mode 0 (CPOL=0, CPHA=0)",
@@ -365,12 +376,20 @@ class FtdiVerifierModule(BaseModule):
         self._spi_waveform = QTextEdit()
         self._spi_waveform.setReadOnly(True)
         self._spi_waveform.setLineWrapMode(QTextEdit.LineWrapMode.NoWrap)
-        self._spi_waveform.setFixedHeight(148)
+        self._spi_waveform.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self._spi_waveform.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self._spi_waveform.setFixedHeight(140)
         cfg_layout.addWidget(self._spi_waveform, 1, 0, 1, 3)
         self._spi_mode_combo.currentIndexChanged.connect(self._update_spi_waveform)
         self._update_spi_waveform(0)
 
-        cfg_layout.addWidget(QLabel("Clock:"), 2, 0)
+        # Keep clock controls on a dedicated row to avoid overlap with waveform text.
+        clock_row = QHBoxLayout()
+        clock_row.setContentsMargins(0, 0, 0, 0)
+        clock_row.setSpacing(6)
+        clock_label = QLabel("Clock:")
+        clock_label.setMinimumWidth(64)
+        clock_row.addWidget(clock_label)
         self._spi_clock_combo = QComboBox()
         self._spi_clock_combo.addItems([
             "100 kHz", "250 kHz", "500 kHz", "1 MHz",
@@ -378,7 +397,8 @@ class FtdiVerifierModule(BaseModule):
         ])
         self._spi_clock_combo.setCurrentText("1 MHz")
         self._spi_clock_combo.currentTextChanged.connect(lambda _: self._apply_spi_config())
-        cfg_layout.addWidget(self._spi_clock_combo, 2, 1, 1, 2)
+        clock_row.addWidget(self._spi_clock_combo, 1)
+        cfg_layout.addLayout(clock_row, 3, 0, 1, 3)
 
         spi_layout.addWidget(cfg_panel)
 
@@ -394,6 +414,7 @@ class FtdiVerifierModule(BaseModule):
         self._spi_loopback_btn = QPushButton("\u25b6  Loopback Test")
         self._spi_loopback_btn.setEnabled(False)
         self._spi_loopback_btn.setMinimumHeight(30)
+        self._spi_loopback_btn.setToolTip("Checks TX/RX match with MOSI-MISO loopback wiring.")
         self._spi_loopback_btn.clicked.connect(self._on_spi_loopback)
         lb_row.addWidget(self._spi_loopback_btn)
         self._spi_loopback_result = QLabel("  Idle")
@@ -487,10 +508,7 @@ class FtdiVerifierModule(BaseModule):
         self._uart_refresh_btn = QPushButton("\u21ba")
         self._uart_refresh_btn.setToolTip("Refresh port list")
         self._uart_refresh_btn.setFixedSize(28, 28)
-        self._uart_refresh_btn.setStyleSheet(
-            "QPushButton { background: #2a303b; color: #c8d2f0; border-radius: 5px; font-size: 14px; }"
-            "QPushButton:hover { background: #3a4050; }"
-        )
+        # Style set in _apply_theme()
         self._uart_refresh_btn.clicked.connect(self._refresh_uart_ports)
         port_hbox.addWidget(self._uart_refresh_btn)
         cfg_layout.addLayout(port_hbox, 0, 1)
@@ -588,14 +606,7 @@ class FtdiVerifierModule(BaseModule):
         self._uart_console.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
         self._uart_console.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         self._uart_console.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
-        self._uart_console.setStyleSheet(
-            "QTableWidget { background: #0b0f14; color: #e7eef9; border: 1px solid #273043; "
-            "border-radius: 6px; gridline-color: transparent; }"
-            "QHeaderView::section { background: #141a22; color: #708090; padding: 2px 6px;"
-            " border: 0px; font-size: 10px; }"
-            "QTableWidget::item { padding: 1px 4px; border-bottom: 1px solid #161c26; }"
-            "QTableWidget::item:selected { background: #1e3050; }"
-        )
+        # Style set in _apply_theme()
         uart_layout.addWidget(self._uart_console)
 
         # -- Send row --
@@ -604,10 +615,7 @@ class FtdiVerifierModule(BaseModule):
         self._uart_input = QLineEdit()
         self._uart_input.setPlaceholderText("Send data...")
         self._uart_input.setMinimumHeight(32)
-        self._uart_input.setStyleSheet(
-            "background: #1a2030; color: #e7eef9; border: 1px solid #3a4560; "
-            "border-radius: 4px; padding: 2px 8px;"
-        )
+        # Style set in _apply_theme()
         self._uart_input.returnPressed.connect(self._on_uart_send_clicked)
         send_row.addWidget(self._uart_input, 1)
         self._uart_crlf = QComboBox()
@@ -619,11 +627,7 @@ class FtdiVerifierModule(BaseModule):
         self._uart_send_btn.setEnabled(False)
         self._uart_send_btn.setFixedWidth(76)
         self._uart_send_btn.setMinimumHeight(32)
-        self._uart_send_btn.setStyleSheet(
-            "QPushButton { background: #3a5a8a; color: #e7eef9; font-weight: 700; border-radius: 4px; }"
-            "QPushButton:hover { background: #4a6a9a; }"
-            "QPushButton:disabled { background: #2a303b; color: #6a7488; }"
-        )
+        # Style set in _apply_theme()
         self._uart_send_btn.clicked.connect(self._on_uart_send_clicked)
         send_row.addWidget(self._uart_send_btn)
         uart_layout.addLayout(send_row)
@@ -632,9 +636,12 @@ class FtdiVerifierModule(BaseModule):
         # GPIO Control
         self._gpio_group = QGroupBox("GPIO Control")
         gpio_layout = QVBoxLayout(self._gpio_group)
-        gpio_layout.setSpacing(4)
+        gpio_layout.setContentsMargins(11, 9, 11, 9)
+        gpio_layout.setSpacing(7)
 
         poll_row = QHBoxLayout()
+        poll_row.setContentsMargins(0, 5, 0, 5)
+        poll_row.setSpacing(11)
         poll_row.addWidget(QLabel("Polling interval (ms):"))
         self._gpio_poll_interval = QSpinBox()
         self._gpio_poll_interval.setRange(50, 10000)
@@ -664,16 +671,17 @@ class FtdiVerifierModule(BaseModule):
 
         # Selected pin info
         self._pin_info_group = QGroupBox("Selected Pin")
+        self._pin_info_group.setMaximumHeight(205)
         pin_info_layout = QGridLayout(self._pin_info_group)
-        pin_info_layout.setSpacing(4)
-        pin_info_layout.setHorizontalSpacing(6)
+        pin_info_layout.setSpacing(9)
+        pin_info_layout.setHorizontalSpacing(11)
         pin_info_layout.setColumnMinimumWidth(0, 100)
         pin_info_layout.setColumnStretch(0, 0)
         pin_info_layout.setColumnStretch(1, 1)
 
         pin_info_layout.addWidget(QLabel("Pin:"), 0, 0)
         self._pin_name_label = QLabel("-")
-        self._pin_name_label.setStyleSheet("font-weight: bold; color: #00d2ff;")
+        self._pin_name_label.setStyleSheet(f"font-weight: bold; color: {ThemeManager.instance().color('gpio_pin_name')};")
         pin_info_layout.addWidget(self._pin_name_label, 0, 1)
 
         pin_info_layout.addWidget(QLabel("Function:"), 1, 0)
@@ -695,14 +703,7 @@ class FtdiVerifierModule(BaseModule):
         self._gpio_toggle_btn.setEnabled(False)
         self._gpio_toggle_btn.setCheckable(True)
         self._gpio_toggle_btn.setMinimumHeight(32)
-        self._gpio_toggle_btn.setStyleSheet(
-            "QPushButton { font-weight: bold; border-radius: 6px; "
-            "background: #1d2d3a; color: #70b8d0; border: 1px solid #2a5068; }"
-            "QPushButton:hover { background: #243548; color: #90d0e8; border-color: #3a6880; }"
-            "QPushButton:checked { background: #1a2d20; color: #80c890; border: 1px solid #2a5a38; }"
-            "QPushButton:checked:hover { background: #203828; color: #a0e0a8; border-color: #3a7048; }"
-            "QPushButton:disabled { background: #1e2028; color: #4a5068; border: 1px solid #2a2e3a; }"
-        )
+        # Style set in _apply_theme()
         self._gpio_toggle_btn.toggled.connect(self._on_gpio_toggle)
         pin_info_layout.addWidget(self._gpio_toggle_btn, 4, 0, 1, 2)
 
@@ -723,7 +724,7 @@ class FtdiVerifierModule(BaseModule):
         self._gpio_table.setColumnWidth(3, 90)
         self._gpio_table.setColumnWidth(4, 60)
         self._gpio_table.verticalHeader().setVisible(False)
-        self._gpio_table.setMaximumHeight(220)
+        self._gpio_table.setMaximumHeight(320)
         gpio_layout.addWidget(self._gpio_table)
 
         self._proto_tabs.addTab(self._gpio_group, "GPIO")
@@ -1109,9 +1110,10 @@ class FtdiVerifierModule(BaseModule):
         self._append_log(f"[I2C] Bus scan start (0x{start:02X} ~ 0x{end:02X})...")
         self._i2c_result_table.setRowCount(0)
         self._i2c_ack_led.setText("  ACK: N/A")
+        tm = ThemeManager.instance()
         self._i2c_ack_led.setStyleSheet(
-            "background: #6f7a8e; color: #ffffff; border-radius: 8px; padding: 4px 10px;"
-            "font-weight: 700; letter-spacing: 0.5px;"
+            f"background: {tm.color('i2c_ack_bg')}; color: {tm.color('i2c_ack_text')}; border-radius: 8px; padding: 4px 10px;"
+            f"font-weight: 700; letter-spacing: 0.5px; border: 1px solid {tm.color('i2c_ack_border')};"
         )
 
         worker = VerifierWorker(self._ftdi)
@@ -1132,14 +1134,15 @@ class FtdiVerifierModule(BaseModule):
         self._i2c_result_table.setRowCount(len(result.found_addresses))
         self._i2c_addr_combo.blockSignals(True)
         self._i2c_addr_combo.clear()
+        tm = ThemeManager.instance()
         for row, addr in enumerate(result.found_addresses):
             addr_item = QTableWidgetItem(f"0x{addr:02X}")
             addr_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-            addr_item.setForeground(QColor("#00d2ff"))
+            addr_item.setForeground(QColor(tm.color('gpio_pin_name')))
             self._i2c_result_table.setItem(row, 0, addr_item)
 
             status_item = QTableWidgetItem("ACK OK")
-            status_item.setForeground(QColor("#33cc33"))
+            status_item.setForeground(QColor(tm.color('status_connected')))
             self._i2c_result_table.setItem(row, 1, status_item)
 
             self._i2c_addr_combo.addItem(f"0x{addr:02X}", addr)
@@ -1208,15 +1211,44 @@ class FtdiVerifierModule(BaseModule):
     # -- SPI --
 
     @Slot()
-    @Slot()
     def _on_spi_loopback(self) -> None:
-        """SPI loopback test via VerifierWorker."""
+        """SPI loopback test via VerifierWorker (continuous until stopped)."""
         if not self._ftdi.is_connected:
             return
+
+        if self._spi_loopback_running:
+            self._append_log("[SPI] Loopback continuous test stop requested.")
+            self._spi_loopback_running = False
+            if self._spi_test_thread is not None and self._spi_test_thread.isRunning():
+                try:
+                    self._spi_test_thread.quit()
+                    self._spi_test_thread.wait(2000)
+                except Exception:
+                    pass
+            self._on_spi_loopback_finished()
+            self._spi_loopback_result.setText("  Stopped")
+            return
+
+        self._spi_loopback_running = True
+        self._append_log("[SPI] Loopback continuous test started.")
+        self._start_spi_loopback_cycle()
+
+    def _start_spi_loopback_cycle(self) -> None:
+        if not self._spi_loopback_running:
+            return
+        if not self._ftdi.is_connected:
+            self._spi_loopback_running = False
+            self._on_spi_loopback_finished()
+            return
+        if self._spi_test_thread is not None and self._spi_test_thread.isRunning():
+            return
+
+        self._spi_loopback_btn.setText("■  Stop Loopback")
         self._spi_loopback_result.setText("  Testing...")
+        tm = ThemeManager.instance()
         self._spi_loopback_result.setStyleSheet(
-            "background: #3a3520; color: #e8c06a; border-radius: 8px; padding: 4px 10px;"
-            "font-weight: 800; letter-spacing: 0.5px; border: 1px solid #5a4820;"
+            f"background: {tm.color('spi_result_pending_bg')}; color: {tm.color('spi_result_pending_text')}; border-radius: 8px; padding: 4px 10px;"
+            f"font-weight: 800; letter-spacing: 0.5px; border: 1px solid {tm.color('spi_result_pending_border')};"
         )
         # Ensure SPI mode is configured before test
         self._apply_spi_config()
@@ -1231,17 +1263,22 @@ class FtdiVerifierModule(BaseModule):
         worker.protocol_test_done.connect(self._spi_test_thread.quit)
         worker.protocol_test_done.connect(worker.deleteLater)
         self._spi_test_thread.finished.connect(self._spi_test_thread.deleteLater)
+        self._spi_test_thread.finished.connect(self._on_spi_loopback_finished)
         self._spi_test_thread.start()
-
     @Slot()
     def _on_spi_read_id(self) -> None:
         """SPI device ID read via VerifierWorker."""
         if not self._ftdi.is_connected:
             return
+        if self._spi_id_thread is not None and self._spi_id_thread.isRunning():
+            self._append_log("[SPI] Read ID test is already running.")
+            return
+        self._spi_id_btn.setEnabled(False)
         self._spi_id_result.setText("  Reading...")
+        tm = ThemeManager.instance()
         self._spi_id_result.setStyleSheet(
-            "background: #3a3520; color: #e8c06a; border-radius: 8px; padding: 4px 10px;"
-            "font-weight: 800; letter-spacing: 0.5px; border: 1px solid #5a4820;"
+            f"background: {tm.color('spi_result_pending_bg')}; color: {tm.color('spi_result_pending_text')}; border-radius: 8px; padding: 4px 10px;"
+            f"font-weight: 800; letter-spacing: 0.5px; border: 1px solid {tm.color('spi_result_pending_border')};"
         )
         # Parse register address
         reg_text = self._spi_id_addr.text().strip()
@@ -1251,8 +1288,8 @@ class FtdiVerifierModule(BaseModule):
             self._append_log(f"[SPI] Invalid register address: {reg_text}")
             self._spi_id_result.setText("  Invalid register")
             self._spi_id_result.setStyleSheet(
-                "background: #5a1a1a; color: #ff8888; border-radius: 8px; padding: 4px 10px;"
-                "font-weight: 800; letter-spacing: 0.5px; border: 1px solid #8a3030;"
+                f"background: {tm.color('spi_result_fail_bg')}; color: {tm.color('spi_result_fail_text')}; border-radius: 8px; padding: 4px 10px;"
+                f"font-weight: 800; letter-spacing: 0.5px; border: 1px solid {tm.color('spi_result_fail_border')};"
             )
             return
 
@@ -1284,11 +1321,30 @@ class FtdiVerifierModule(BaseModule):
         worker.protocol_test_done.connect(self._spi_id_thread.quit)
         worker.protocol_test_done.connect(worker.deleteLater)
         self._spi_id_thread.finished.connect(self._spi_id_thread.deleteLater)
+        self._spi_id_thread.finished.connect(self._on_spi_id_finished)
         self._spi_id_thread.start()
+
+    @Slot()
+    def _on_spi_loopback_finished(self) -> None:
+        self._spi_test_thread = None
+        if self._spi_loopback_running and self._ftdi.is_connected:
+            QTimer.singleShot(self._spi_loopback_interval_ms, self._start_spi_loopback_cycle)
+            return
+        self._spi_loopback_running = False
+        has_mpsse = self._ftdi.supports_mpsse(self._current_channel)
+        self._spi_loopback_btn.setText("\u25b6  Loopback Test")
+        self._spi_loopback_btn.setEnabled(self._ftdi.is_connected and has_mpsse)
+
+    @Slot()
+    def _on_spi_id_finished(self) -> None:
+        self._spi_id_thread = None
+        has_mpsse = self._ftdi.supports_mpsse(self._current_channel)
+        self._spi_id_btn.setEnabled(self._ftdi.is_connected and has_mpsse)
 
     @Slot(object)
     def _on_protocol_result(self, result: ProtocolTestResult) -> None:
-        color = "#33cc33" if result.success else "#ff6666"
+        tm = ThemeManager.instance()
+        color = tm.color('status_connected') if result.success else tm.color('status_disconnected')
         self._append_log(
             f'<span style="color:{color};">[{result.protocol}] {result.message}</span>'
         )
@@ -1296,14 +1352,14 @@ class FtdiVerifierModule(BaseModule):
             if result.success:
                 self._i2c_ack_led.setText("  ACK")
                 self._i2c_ack_led.setStyleSheet(
-                    "background: #1e4a2a; color: #80c890; border-radius: 8px; padding: 4px 10px;"
-                    "font-weight: 800; letter-spacing: 0.5px; border: 1px solid #2a7040;"
+                    f"background: {tm.color('i2c_ack_led_ack_bg')}; color: {tm.color('i2c_ack_led_ack_text')}; border-radius: 8px; padding: 4px 10px;"
+                    f"font-weight: 800; letter-spacing: 0.5px; border: 1px solid {tm.color('i2c_ack_led_ack_border')};"
                 )
             else:
                 self._i2c_ack_led.setText("  NACK")
                 self._i2c_ack_led.setStyleSheet(
-                    "background: #ff5b5b; color: #1a0b0b; border-radius: 8px; padding: 4px 10px;"
-                    "font-weight: 800; letter-spacing: 0.5px;"
+                    f"background: {tm.color('i2c_ack_led_nack_bg')}; color: {tm.color('i2c_ack_led_nack_text')}; border-radius: 8px; padding: 4px 10px;"
+                    f"font-weight: 800; letter-spacing: 0.5px; border: 1px solid {tm.color('i2c_ack_led_nack_border')};"
                 )
         if result.protocol == "SPI":
             # Determine which result badge to update based on message content
@@ -1314,14 +1370,14 @@ class FtdiVerifierModule(BaseModule):
             if result.success:
                 target.setText(f"  {result.message}")
                 target.setStyleSheet(
-                    "background: #1e4a2a; color: #80c890; border-radius: 8px; padding: 4px 10px;"
-                    "font-weight: 800; letter-spacing: 0.5px; border: 1px solid #2a7040;"
+                    f"background: {tm.color('spi_result_pass_bg')}; color: {tm.color('spi_result_pass_text')}; border-radius: 8px; padding: 4px 10px;"
+                    f"font-weight: 800; letter-spacing: 0.5px; border: 1px solid {tm.color('spi_result_pass_border')};"
                 )
             else:
                 target.setText(f"  {result.message}")
                 target.setStyleSheet(
-                    "background: #5a1a1a; color: #ff8888; border-radius: 8px; padding: 4px 10px;"
-                    "font-weight: 800; letter-spacing: 0.5px; border: 1px solid #8a3030;"
+                    f"background: {tm.color('spi_result_fail_bg')}; color: {tm.color('spi_result_fail_text')}; border-radius: 8px; padding: 4px 10px;"
+                    f"font-weight: 800; letter-spacing: 0.5px; border: 1px solid {tm.color('spi_result_fail_border')};"
                 )
 
     # -- GPIO --
@@ -1683,14 +1739,16 @@ class FtdiVerifierModule(BaseModule):
             return
         # simple blink by toggling opacity
         if self._gpio_poll_status.isVisible():
+            tm = ThemeManager.instance()
+            poll_color = tm.color('gpio_poll_running_text')
             cur = self._gpio_poll_status.styleSheet()
             if "opacity: 0.35" in cur:
                 self._gpio_poll_status.setStyleSheet(
-                    "color: #80c890; font-weight: 700; font-size: 11px; opacity: 1.0;"
+                    f"color: {poll_color}; font-weight: 700; font-size: 11px; opacity: 1.0;"
                 )
             else:
                 self._gpio_poll_status.setStyleSheet(
-                    "color: #80c890; font-weight: 700; font-size: 11px; opacity: 0.35;"
+                    f"color: {poll_color}; font-weight: 700; font-size: 11px; opacity: 0.35;"
                 )
         # Blink all GPIO pins visually while polling is active.
         if not self._gpio_poll_btn.isChecked():
@@ -1745,16 +1803,17 @@ class FtdiVerifierModule(BaseModule):
             return
         ts = time.strftime("%H:%M:%S") if (hasattr(self, "_uart_timestamp") and self._uart_timestamp.isChecked()) else ""
         is_rx = (kind == "RX")
-        direction = "\u25c0 RX" if is_rx else "TX \u25b6"  # ◀ RX / TX ▶
-        dir_color = QColor("#66ff99") if is_rx else QColor("#66ccff")
-        bg_color = QColor("#0d1a10") if is_rx else QColor("#0d1420")  # subtle row tint
+        tm = ThemeManager.instance()
+        direction = "\u25c0 RX" if is_rx else "TX \u25b6"  # ? RX / TX ??
+        dir_color = QColor(tm.color('uart_row_rx_dir')) if is_rx else QColor(tm.color('uart_row_tx_dir'))
+        bg_color = QColor(tm.color('uart_row_rx_bg')) if is_rx else QColor(tm.color('uart_row_tx_bg'))
 
         row = self._uart_console.rowCount()
         self._uart_console.insertRow(row)
 
         # Time column
         time_item = QTableWidgetItem(ts)
-        time_item.setForeground(QBrush(QColor("#607080")))
+        time_item.setForeground(QBrush(QColor(tm.color('uart_row_time'))))
         time_item.setBackground(QBrush(bg_color))
         self._uart_console.setItem(row, 0, time_item)
 
@@ -1770,7 +1829,7 @@ class FtdiVerifierModule(BaseModule):
 
         # Data column
         data_item = QTableWidgetItem(text)
-        data_item.setForeground(QBrush(QColor("#d0d8e4")))
+        data_item.setForeground(QBrush(QColor(tm.color('uart_row_data'))))
         data_item.setBackground(QBrush(bg_color))
         self._uart_console.setItem(row, 2, data_item)
 
@@ -1856,20 +1915,19 @@ class FtdiVerifierModule(BaseModule):
     def _apply_uart_open_style(self, opened: bool) -> None:
         if not hasattr(self, "_uart_open_btn"):
             return
+        tm = ThemeManager.instance()
         if opened:
-            # CLOSE: dark background with muted red border + text
             self._uart_open_btn.setStyleSheet(
-                "QPushButton { background: #2d1e20; color: #e07070; font-weight: 700; "
-                "border: 1px solid #6a3030; border-radius: 6px; padding: 4px 10px; }"
-                "QPushButton:hover { background: #3a2225; color: #f09090; border-color: #8a4040; }"
+                f"QPushButton {{ background: {tm.color('uart_btn_close_bg')}; color: {tm.color('uart_btn_close_text')}; font-weight: 700; "
+                f"border: 1px solid {tm.color('uart_btn_close_border')}; border-radius: 6px; padding: 4px 10px; }}"
+                f"QPushButton:hover {{ background: {tm.color('uart_btn_close_hover')}; }}"
             )
         else:
-            # OPEN: muted teal matching app palette
             self._uart_open_btn.setStyleSheet(
-                "QPushButton { background: #1d2d3a; color: #70b8d0; font-weight: 700; "
-                "border: 1px solid #2a5068; border-radius: 6px; padding: 4px 10px; }"
-                "QPushButton:hover { background: #243548; color: #90d0e8; border-color: #3a6880; }"
-                "QPushButton:disabled { background: #1e2028; color: #4a5068; border: 1px solid #2a2e3a; }"
+                f"QPushButton {{ background: {tm.color('uart_btn_open_bg')}; color: {tm.color('uart_btn_open_text')}; font-weight: 700; "
+                f"border: 1px solid {tm.color('uart_btn_open_border')}; border-radius: 6px; padding: 4px 10px; }}"
+                f"QPushButton:hover {{ background: {tm.color('uart_btn_open_hover')}; }}"
+                f"QPushButton:disabled {{ background: {tm.color('bg_disabled')}; color: {tm.color('text_disabled')}; border: 1px solid {tm.color('border_subtle')}; }}"
             )
 
     def _refresh_uart_ports(self) -> None:
@@ -1924,6 +1982,20 @@ class FtdiVerifierModule(BaseModule):
             self._worker_thread = None
         self._worker = None
 
+    def _stop_single_shot_threads(self) -> None:
+        for name in ("_spi_test_thread", "_spi_id_thread", "_i2c_test_thread", "_i2c_scan_thread"):
+            th = getattr(self, name, None)
+            if th is None:
+                continue
+            try:
+                if th.isRunning():
+                    th.quit()
+                    th.wait(2000)
+                th.deleteLater()
+            except Exception:
+                pass
+            setattr(self, name, None)
+
     def _refresh_gpio_controls(self, pin_selected: bool | None = None, is_gpio: bool | None = None) -> None:
         self._gpio.refresh_controls(pin_selected, is_gpio)
 
@@ -1943,8 +2015,9 @@ class FtdiVerifierModule(BaseModule):
 
         # --- mode descriptions ---
         dch = self._display_channel
-        green_css = "color: #88cc88; font-size: 11px; font-family: 'Malgun Gothic';"
-        warn_css = "color: #ffcc44; font-size: 11px; font-family: 'Malgun Gothic';"
+        tm = ThemeManager.instance()
+        green_css = f"color: {tm.color('mode_desc_ok')}; font-size: 11px; font-family: 'Malgun Gothic';"
+        warn_css = f"color: {tm.color('mode_desc_warn')}; font-size: 11px; font-family: 'Malgun Gothic';"
 
         _DESC = {
             # (supports_mpsse=False, mode)
@@ -1998,22 +2071,23 @@ class FtdiVerifierModule(BaseModule):
         if not hasattr(self, "_log_text"):
             return
 
+        tm = ThemeManager.instance()
         if "<span" in message:
             html = message
         elif "ERROR" in message or "FAIL" in message:
-            html = f'<span style="color:#ff6666;">{message}</span>'
+            html = f'<span style="color:{tm.color("status_disconnected")};">{message}</span>'
         elif "ACK" in message and "NACK" not in message:
-            html = f'<span style="color:#33cc33;">{message}</span>'
+            html = f'<span style="color:{tm.color("status_connected")};">{message}</span>'
         elif "NACK" in message:
-            html = f'<span style="color:#ff6666;">{message}</span>'
+            html = f'<span style="color:{tm.color("status_disconnected")};">{message}</span>'
         elif "TX ->" in message:
-            html = f'<span style="color:#66ccff;">{message}</span>'
+            html = f'<span style="color:{tm.color("uart_row_tx_dir")};">{message}</span>'
         elif "RX <-" in message:
-            html = f'<span style="color:#66ff99;">{message}</span>'
+            html = f'<span style="color:{tm.color("uart_row_rx_dir")};">{message}</span>'
         elif "WARN" in message or "!" in message:
-            html = f'<span style="color:#ffcc44;">{message}</span>'
+            html = f'<span style="color:{tm.color("status_warning")};">{message}</span>'
         else:
-            html = f'<span style="color:#8899aa;">{message}</span>'
+            html = f'<span style="color:{tm.color("text_secondary")};">{message}</span>'
 
         self._log_text.append(html)
 
@@ -2131,7 +2205,7 @@ class FtdiVerifierModule(BaseModule):
             self._uart_send_btn.setStyleSheet(
                 f"QPushButton {{ background: {tm.color('uart_send_bg')}; color: {tm.color('uart_send_text')}; font-weight: 700; border-radius: 4px; border: 1px solid {tm.color('uart_send_border')}; }}"
                 f"QPushButton:hover {{ background: {tm.color('uart_send_hover')}; }}"
-                f"QPushButton:disabled {{ background: {tm.color('bg_disabled')}; color: {tm.color('text_disabled')}; border 1px solid {tm.color('border_subtle')}; }}"
+                f"QPushButton:disabled {{ background: {tm.color('bg_disabled')}; color: {tm.color('text_disabled')}; border: 1px solid {tm.color('border_subtle')}; }}"
             )
         if hasattr(self, "_uart_refresh_btn"):
             self._uart_refresh_btn.setStyleSheet(
@@ -2163,3 +2237,19 @@ class FtdiVerifierModule(BaseModule):
         if hasattr(self, "_legend_labels"):
             for lbl in self._legend_labels:
                 lbl.setStyleSheet(f"color: {tm.color('text_secondary')}; font-size: 10px;")
+
+        # GPIO toggle button
+        if hasattr(self, "_gpio_toggle_btn"):
+            self._gpio_toggle_btn.setStyleSheet(
+                f"QPushButton {{ font-weight: bold; border-radius: 6px; "
+                f"background: {tm.color('gpio_toggle_bg')}; color: {tm.color('gpio_toggle_text')}; border: 1px solid {tm.color('gpio_toggle_border')}; }}"
+                f"QPushButton:hover {{ background: {tm.color('gpio_toggle_hover')}; }}"
+                f"QPushButton:checked {{ background: {tm.color('gpio_toggle_checked_bg')}; color: {tm.color('gpio_toggle_checked_text')}; border: 1px solid {tm.color('gpio_toggle_checked_border')}; }}"
+                f"QPushButton:checked:hover {{ background: {tm.color('gpio_toggle_checked_hover')}; }}"
+                f"QPushButton:disabled {{ background: {tm.color('gpio_toggle_disabled_bg')}; color: {tm.color('gpio_toggle_disabled_text')}; border: 1px solid {tm.color('gpio_toggle_disabled_border')}; }}"
+            )
+
+        # Pin name label
+        if hasattr(self, "_pin_name_label"):
+            self._pin_name_label.setStyleSheet(f"font-weight: bold; color: {tm.color('gpio_pin_name')};")
+

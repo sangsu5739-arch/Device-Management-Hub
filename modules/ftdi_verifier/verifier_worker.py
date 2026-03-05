@@ -246,11 +246,11 @@ class VerifierWorker(QObject):
             self.error_occurred.emit("FTDI not connected")
             return
 
-        tx = bytes([register]) + bytes(length)
         self._log(f"SPI Read ID: cmd=0x{register:02X}, len={length}")
 
         try:
-            rx_data = self._ftdi.spi_transfer(tx)
+            # tc72-style sequence: command write phase, then read phase under one CS
+            rx_data = self._ftdi.spi_write_then_read(bytes([register]), length)
             if rx_data is None:
                 result = ProtocolTestResult(
                     timestamp=time.time(), protocol="SPI", success=False,
@@ -258,8 +258,7 @@ class VerifierWorker(QObject):
                 )
                 self._log("SPI ID read: transfer failed (None)")
             else:
-                # First byte is dummy (received during command TX), skip it
-                id_bytes = rx_data[1:]
+                id_bytes = rx_data
                 hex_str = " ".join(f"0x{b:02X}" for b in id_bytes)
 
                 if expected and id_bytes != expected:

@@ -233,6 +233,50 @@ DARK_PALETTE: Dict[str, str] = {
     "i2c_ack_border":   "#2a3040",
     "i2c_ack_text":     "#6f7a8e",
 
+    # I2C ACK/NACK LED states
+    "i2c_ack_led_ack_bg":   "#1e4a2a",
+    "i2c_ack_led_ack_text": "#80c890",
+    "i2c_ack_led_ack_border":"#2a7040",
+    "i2c_ack_led_nack_bg":  "#ff5b5b",
+    "i2c_ack_led_nack_text":"#1a0b0b",
+    "i2c_ack_led_nack_border":"#ff5b5b",
+
+    # SPI pending (testing/reading)
+    "spi_result_pending_bg":    "#3a3520",
+    "spi_result_pending_text":  "#e8c06a",
+    "spi_result_pending_border":"#5a4820",
+
+    # UART console row tints
+    "uart_row_rx_bg":       "#0d1a10",
+    "uart_row_tx_bg":       "#0d1420",
+    "uart_row_rx_dir":      "#66ff99",
+    "uart_row_tx_dir":      "#66ccff",
+    "uart_row_data":        "#d0d8e4",
+    "uart_row_time":        "#607080",
+
+    # UART open/close button
+    "uart_btn_close_bg":        "#2d1e20",
+    "uart_btn_close_text":      "#e07070",
+    "uart_btn_close_border":    "#6a3030",
+    "uart_btn_close_hover":     "#3a2225",
+    "uart_btn_open_bg":         "#1d2d3a",
+    "uart_btn_open_text":       "#70b8d0",
+    "uart_btn_open_border":     "#2a5068",
+    "uart_btn_open_hover":      "#243548",
+
+    # GPIO toggle button
+    "gpio_toggle_checked_bg":       "#1a2d20",
+    "gpio_toggle_checked_text":     "#80c890",
+    "gpio_toggle_checked_border":   "#2a5a38",
+    "gpio_toggle_checked_hover":    "#203828",
+    "gpio_toggle_disabled_bg":      "#1e2028",
+    "gpio_toggle_disabled_text":    "#4a5068",
+    "gpio_toggle_disabled_border":  "#2a2e3a",
+
+    # Mode description
+    "mode_desc_ok":     "#88cc88",
+    "mode_desc_warn":   "#ffcc44",
+
     # Checkbox special
     "cb_live_bg":         "#2d3040",
     "cb_live_border":     "#4a506a",
@@ -501,6 +545,50 @@ LIGHT_PALETTE: Dict[str, str] = {
     "i2c_ack_bg":       "#e8ecf2",
     "i2c_ack_border":   "#d0d8e2",
     "i2c_ack_text":     "#607080",
+
+    # ── I2C ACK/NACK LED states ─────────────────────────────
+    "i2c_ack_led_ack_bg":   "#d8f0e0",
+    "i2c_ack_led_ack_text": "#1a4830",
+    "i2c_ack_led_ack_border":"#58b878",
+    "i2c_ack_led_nack_bg":  "#f8d0d0",
+    "i2c_ack_led_nack_text":"#6a2020",
+    "i2c_ack_led_nack_border":"#d08080",
+
+    # ── SPI pending (testing/reading) ─────────────────────
+    "spi_result_pending_bg":    "#f8f0d0",
+    "spi_result_pending_text":  "#705810",
+    "spi_result_pending_border":"#c8a840",
+
+    # ── UART console row tints ────────────────────────────
+    "uart_row_rx_bg":       "#e8f5ea",
+    "uart_row_tx_bg":       "#e8eef5",
+    "uart_row_rx_dir":      "#2a8848",
+    "uart_row_tx_dir":      "#2a5888",
+    "uart_row_data":        "#1e2a3a",
+    "uart_row_time":        "#607080",
+
+    # ── UART open/close button ────────────────────────────
+    "uart_btn_close_bg":        "#f8e0e0",
+    "uart_btn_close_text":      "#8a3030",
+    "uart_btn_close_border":    "#d08080",
+    "uart_btn_close_hover":     "#f0c8c8",
+    "uart_btn_open_bg":         "#d0e4f8",
+    "uart_btn_open_text":       "#1e4878",
+    "uart_btn_open_border":     "#78a8d8",
+    "uart_btn_open_hover":      "#b8d4f0",
+
+    # ── GPIO toggle button ────────────────────────────────
+    "gpio_toggle_checked_bg":       "#b8e8c8",
+    "gpio_toggle_checked_text":     "#1a4830",
+    "gpio_toggle_checked_border":   "#58b878",
+    "gpio_toggle_checked_hover":    "#98d8a8",
+    "gpio_toggle_disabled_bg":      "#e0e4ea",
+    "gpio_toggle_disabled_text":    "#98a8b8",
+    "gpio_toggle_disabled_border":  "#d0d8e2",
+
+    # ── Mode description ──────────────────────────────────
+    "mode_desc_ok":     "#2a7848",
+    "mode_desc_warn":   "#c85000",
 
     # ── Checkbox special (live mode) ─────────────────────────
     "cb_live_bg":         "#dce2eb",
