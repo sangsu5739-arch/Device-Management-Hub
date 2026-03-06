@@ -47,14 +47,14 @@ class JtagSequencerPanel(QWidget):
         tap_layout.addWidget(self._tap_diagram)
 
         # ── BOTTOM: \ub9e4\ud551 \uad00\ub9ac ──
-        mapping_group = QGroupBox("\ub9e4\ud551 \uad00\ub9ac")
+        mapping_group = QGroupBox("Mapping Management")
         mapping_layout = QVBoxLayout(mapping_group)
         mapping_layout.setContentsMargins(6, 6, 6, 6)
         mapping_layout.setSpacing(4)
 
         # Header
         header_row = QHBoxLayout()
-        header_row.addWidget(QLabel("\ub300\uc0c1 \ud30c\uc77c:"))
+        header_row.addWidget(QLabel("Target File:"))
         self._mapping_file_label = QLabel("-")
         self._mapping_file_label.setFont(QFont("Consolas", 9))
         header_row.addWidget(self._mapping_file_label, 1)
@@ -69,7 +69,7 @@ class JtagSequencerPanel(QWidget):
         # Mapping Table
         self._mapping_table = QTableWidget(0, 5)
         self._mapping_table.setHorizontalHeaderLabels(
-            ["\uc2e0\ud638\uba85", "\uc720\ud615", "\ube44\ud2b8\uc218", "\ubc29\ud5a5", "\ub9e4\ud551 \ud540"]
+            ["Signal", "Type", "Bits", "Dir", "Mapped Pin"]
         )
         h_hdr = self._mapping_table.horizontalHeader()
         h_hdr.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
@@ -89,7 +89,7 @@ class JtagSequencerPanel(QWidget):
         mapping_layout.addWidget(self._mapping_table, 1)
 
         # \ub9e4\ud551 \uc0c1\ud0dc
-        self._mapping_status = QLabel("\ub9e4\ud551 \uc0c1\ud0dc: -")
+        self._mapping_status = QLabel("Mapping Status: -")
         self._mapping_status.setFont(QFont("Segoe UI", 8))
         mapping_layout.addWidget(self._mapping_status)
 
@@ -111,7 +111,7 @@ class JtagSequencerPanel(QWidget):
     def clear_mapping(self) -> None:
         self._mapping_table.setRowCount(0)
         self._mapping_file_label.setText("-")
-        self._mapping_status.setText("\ub9e4\ud551 \uc0c1\ud0dc: -")
+        self._mapping_status.setText("Mapping Status: -")
 
     def set_current_state(self, state: str) -> None:
         self._tap_diagram.set_current_state(state)

@@ -747,10 +747,10 @@ class FtdiVerifierModule(BaseModule):
         layout.addWidget(self._build_jtag_file_preview())
 
         # \uc2e4\ud589 \ubc84\ud2bc
-        self._jtag_run_btn = QPushButton("\u25b6  \uc2dc\ud000\uc2a4 \uc2e4\ud589")
+        self._jtag_run_btn = QPushButton("\u25b6  Run Sequence")
         self._jtag_run_btn.setEnabled(False)
         self._jtag_run_btn.setMinimumHeight(34)
-        self._jtag_run_btn.setToolTip("\ub85c\ub4dc\ub41c ATP \ud328\ud134 \uc2dc\ud000\uc2a4\ub97c \uc2e4\ud589\ud569\ub2c8\ub2e4.")
+        self._jtag_run_btn.setToolTip("Execute loaded ATP pattern sequence.")
         self._jtag_run_btn.clicked.connect(self._on_jtag_run)
         layout.addWidget(self._jtag_run_btn)
 
@@ -758,7 +758,7 @@ class FtdiVerifierModule(BaseModule):
 
     def _build_jtag_header(self) -> QGroupBox:
         """TCK \uc124\uc815 + \ud30c\uc77c \uc120\ud0dd \ubc84\ud2bc."""
-        grp = QGroupBox("TCK \uc124\uc815")
+        grp = QGroupBox("TCK Settings")
         g = QGridLayout(grp)
         g.setSpacing(4)
         g.setContentsMargins(6, 4, 6, 4)
@@ -771,12 +771,12 @@ class FtdiVerifierModule(BaseModule):
         self._jtag_tck_combo.setCurrentIndex(2)  # 1 MHz \uae30\ubcf8
         g.addWidget(self._jtag_tck_combo, 0, 1)
 
-        self._jtag_folder_btn = QPushButton("\ud83d\udcc2  \ud328\ud134 \ud3f4\ub354")
+        self._jtag_folder_btn = QPushButton("\ud83d\udcc2  Pattern Folder")
         self._jtag_folder_btn.setFixedHeight(28)
         self._jtag_folder_btn.clicked.connect(self._on_jtag_select_folder)
         g.addWidget(self._jtag_folder_btn, 1, 0)
 
-        self._jtag_csv_btn = QPushButton("\ud83d\udcc4  CSV \ud30c\uc77c")
+        self._jtag_csv_btn = QPushButton("\ud83d\udcc4  CSV File")
         self._jtag_csv_btn.setFixedHeight(28)
         self._jtag_csv_btn.clicked.connect(self._on_jtag_select_csv)
         g.addWidget(self._jtag_csv_btn, 1, 1)
@@ -790,13 +790,13 @@ class FtdiVerifierModule(BaseModule):
 
     def _build_jtag_sequence_list(self) -> QGroupBox:
         """\uc2dc\ud000\uc2a4 \ubaa9\ub85d \ud14c\uc774\ube14."""
-        grp = QGroupBox("\uc2dc\ud000\uc2a4 \ubaa9\ub85d")
+        grp = QGroupBox("Sequence List")
         layout = QVBoxLayout(grp)
         layout.setContentsMargins(4, 4, 4, 4)
 
         self._jtag_seq_table = QTableWidget(0, 4)
         self._jtag_seq_table.setHorizontalHeaderLabels(
-            ["#", "\ud30c\uc77c\uba85", "Dynamic", "\ub9e4\ud551"]
+            ["#", "Filename", "Dynamic", "Map"]
         )
         h_hdr = self._jtag_seq_table.horizontalHeader()
         h_hdr.setSectionResizeMode(0, QHeaderView.ResizeMode.Fixed)
@@ -819,7 +819,7 @@ class FtdiVerifierModule(BaseModule):
 
     def _build_jtag_file_preview(self) -> QGroupBox:
         """ATP \ud30c\uc77c \ubbf8\ub9ac\ubcf4\uae30."""
-        grp = QGroupBox("\ud30c\uc77c \ubbf8\ub9ac\ubcf4\uae30")
+        grp = QGroupBox("File Preview")
         layout = QVBoxLayout(grp)
         layout.setContentsMargins(4, 4, 4, 4)
 
@@ -828,7 +828,7 @@ class FtdiVerifierModule(BaseModule):
         self._jtag_file_preview.setFont(QFont("Consolas", 9))
         self._jtag_file_preview.setMaximumHeight(150)
         self._jtag_file_preview.setPlaceholderText(
-            "\uc2dc\ud000\uc2a4 \ubaa9\ub85d\uc5d0\uc11c \ud30c\uc77c\uc744 \uc120\ud0dd\ud558\uba74 \ub0b4\uc6a9\uc774 \ud45c\uc2dc\ub429\ub2c8\ub2e4."
+            "Select a file from the sequence list to preview its contents."
         )
         layout.addWidget(self._jtag_file_preview)
         return grp
@@ -836,24 +836,24 @@ class FtdiVerifierModule(BaseModule):
     def _build_jtag_status_bar(self) -> QFrame:
         """\ud558\ub2e8 \uc0c1\ud0dc \ud45c\uc2dc \ud504\ub808\uc784."""
         frame = QFrame()
-        frame.setFrameShape(QFrame.Shape.HLine)
+        frame.setFrameShape(QFrame.Shape.NoFrame)
         g = QGridLayout(frame)
         g.setSpacing(2)
         g.setContentsMargins(4, 6, 4, 2)
 
         lbl_font = QFont("Segoe UI", 8)
 
-        g.addWidget(QLabel("\uc9c4\ud589:"), 0, 0)
+        g.addWidget(QLabel("Progress:"), 0, 0)
         self._jtag_progress_label = QLabel("0 / 0")
         self._jtag_progress_label.setFont(lbl_font)
         g.addWidget(self._jtag_progress_label, 0, 1)
 
-        g.addWidget(QLabel("\ud604\uc7ac \ud328\ud134:"), 1, 0)
+        g.addWidget(QLabel("Pattern:"), 1, 0)
         self._jtag_current_pattern = QLabel("-")
         self._jtag_current_pattern.setFont(lbl_font)
         g.addWidget(self._jtag_current_pattern, 1, 1)
 
-        g.addWidget(QLabel("TDO \uc800\uc7a5:"), 2, 0)
+        g.addWidget(QLabel("TDO Save:"), 2, 0)
         self._jtag_tdo_path_label = QLabel("-")
         self._jtag_tdo_path_label.setFont(lbl_font)
         self._jtag_tdo_path_label.setWordWrap(True)
@@ -867,12 +867,12 @@ class FtdiVerifierModule(BaseModule):
     def _on_jtag_select_folder(self) -> None:
         """ATP \ud328\ud134 \ud3f4\ub354 \uc120\ud0dd."""
         folder = QFileDialog.getExistingDirectory(
-            self, "\ud328\ud134 \ud3f4\ub354 \uc120\ud0dd", ""
+            self, "Select Pattern Folder", ""
         )
         if not folder:
             return
         self._jtag_folder_label.setText(folder)
-        self._append_log(f"[JTAG] \ud328\ud134 \ud3f4\ub354: {folder}")
+        self._append_log(f"[JTAG] Pattern folder: {folder}")
 
         # \ud3f4\ub354 \ub0b4 ATP \ud30c\uc77c \ub098\uc5f4
         import os
@@ -904,16 +904,16 @@ class FtdiVerifierModule(BaseModule):
 
         if atp_files:
             self._jtag_run_btn.setEnabled(True)
-            self._append_log(f"[JTAG] {len(atp_files)}\uac1c ATP \ud30c\uc77c \ub85c\ub4dc\ub428")
+            self._append_log(f"[JTAG] {len(atp_files)} ATP file(s) loaded")
         else:
             self._jtag_run_btn.setEnabled(False)
-            self._append_log("[JTAG] \ud3f4\ub354\uc5d0 ATP \ud30c\uc77c\uc774 \uc5c6\uc2b5\ub2c8\ub2e4.")
+            self._append_log("[JTAG] No ATP files found in folder.")
 
     @Slot()
     def _on_jtag_select_csv(self) -> None:
         """CSV \ud30c\uc77c \uc120\ud0dd."""
         path, _ = QFileDialog.getOpenFileName(
-            self, "CSV \ud30c\uc77c \uc120\ud0dd", "", "CSV Files (*.csv);;All Files (*)"
+            self, "Select CSV File", "", "CSV Files (*.csv);;All Files (*)"
         )
         if not path:
             return
@@ -937,7 +937,7 @@ class FtdiVerifierModule(BaseModule):
                 content = f.read(8192)  # \ubbf8\ub9ac\ubcf4\uae30\uc6a9 8KB \uc81c\ud55c
             self._jtag_file_preview.setPlainText(content)
         except Exception as e:
-            self._jtag_file_preview.setPlainText(f"(\ud30c\uc77c \uc77d\uae30 \uc2e4\ud328: {e})")
+            self._jtag_file_preview.setPlainText(f"(Failed to read file: {e})")
 
     @Slot(int, bool)
     def _on_jtag_dynamic_toggled(self, row: int, checked: bool) -> None:
@@ -950,7 +950,7 @@ class FtdiVerifierModule(BaseModule):
     @Slot()
     def _on_jtag_run(self) -> None:
         """\uc2dc\ud000\uc2a4 \uc2e4\ud589 (\ubbf8\uad6c\ud604 stub)."""
-        self._append_log("[JTAG] \uc2dc\ud000\uc2a4 \uc2e4\ud589 \uae30\ub2a5\uc740 \uc544\uc9c1 \uad6c\ud604\ub418\uc9c0 \uc54a\uc558\uc2b5\ub2c8\ub2e4.")
+        self._append_log("[JTAG] Sequence execution is not yet implemented.")
 
     def _create_pinout_panel(self) -> QGroupBox:
         """Right: interactive pinmap."""
