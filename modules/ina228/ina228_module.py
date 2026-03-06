@@ -158,15 +158,20 @@ class INA228Module(BaseModule):
         # Separator
         if hasattr(self, '_ctrl_sep'):
             self._ctrl_sep.setStyleSheet(f"color: {tm.color('separator')};")
-        # Metric containers
+        # Metric containers + labels
         for c in self._metric_containers:
             c.setStyleSheet(f"background-color: {tm.color('metric_bg')}; border-radius: 6px;")
+        for title_lbl, val_lbl, color_key in getattr(self, '_metric_labels', []):
+            color = tm.color(color_key)
+            title_lbl.setStyleSheet(f"color: {color}; font-size: 10px; font-weight: bold;")
+            val_lbl.setStyleSheet(f"color: {color}; font-size: 14px; font-weight: bold;")
 
     def on_device_connected(self) -> None:
         self._scan_btn.setEnabled(True)
         if self._addr_combo.count() == 0:
             self._addr_combo.addItem(f"0x{self._slave_addr:02X}", self._slave_addr)
         self._start_btn.setEnabled(True)
+        self._set_hold_controls_enabled(True)
         self._apply_io_hold()
         self.status_message.emit("INA228: FTDI connected - address scan available")
 
@@ -174,6 +179,7 @@ class INA228Module(BaseModule):
         self.stop_communication()
         self._scan_btn.setEnabled(False)
         self._start_btn.setEnabled(False)
+        self._set_hold_controls_enabled(False)
         self._saved_hold = None
         self._ftdi.clear_i2c_hold()
         self.status_message.emit("INA228: FTDI disconnected")
@@ -188,10 +194,13 @@ class INA228Module(BaseModule):
 
     def on_tab_activated(self) -> None:
         super().on_tab_activated()
-        self._apply_io_hold()
-        # Sync button state to actual GPIO — hardware is the source of truth on tab entry
-        if self._ftdi.is_connected and self._ftdi.supports_mpsse(self._ftdi.channel):
-            self._refresh_hold_status(sync_buttons=True)
+        connected = self._ftdi.is_connected
+        self._set_hold_controls_enabled(connected)
+        if connected:
+            self._ftdi.set_protocol_mode("I2C")
+            self._apply_io_hold()
+            if self._ftdi.supports_mpsse(self._ftdi.channel):
+                self._refresh_hold_status(sync_buttons=True)
 
     def on_channel_changed(self, channel: str) -> None:
         if not self._ftdi.supports_mpsse(channel):
@@ -388,6 +397,18 @@ class INA228Module(BaseModule):
         self._save_io_hold_state()
         self._apply_io_hold()
 
+    def _set_hold_controls_enabled(self, enabled: bool) -> None:
+        """Enable or disable GPIO hold buttons and reset LEDs when disabled."""
+        for btn in self._hold_btns.values():
+            btn.setEnabled(enabled)
+        if not enabled:
+            tm = ThemeManager.instance()
+            for led in self._hold_leds.values():
+                led.setStyleSheet(f"background: {tm.color('led_off')}; border-radius: 6px;")
+            for bar in self._hold_bars.values():
+                bar.setGeometry(1, 1, 10, 6)
+                bar.setStyleSheet(f"background: {tm.color('bg_bar_fill')}; border-radius: 3px;")
+
     def _apply_io_hold(self) -> None:
         if not self._ftdi.is_connected:
             return
@@ -572,8 +593,12 @@ class INA228Module(BaseModule):
         metrics_layout = QHBoxLayout()
         metrics_layout.setSpacing(20)
         self._metric_containers: List[QWidget] = []
+        # (title_label, value_label, color_key) tuples for theme reapply
+        self._metric_labels: List[tuple] = []
 
-        def _make_metric(title: str, unit: str, color: str) -> QLabel:
+        def _make_metric(title: str, unit: str, color_key: str) -> QLabel:
+            from core.theme_manager import ThemeManager as _TM
+            color = _TM.instance().color(color_key)
             container = QWidget()
             self._metric_containers.append(container)
             vl = QVBoxLayout(container)
@@ -589,13 +614,14 @@ class INA228Module(BaseModule):
             vl.addWidget(val)
             container.setObjectName("metricContainer")
             metrics_layout.addWidget(container)
+            self._metric_labels.append((t, val, color_key))
             return val
 
-        self._vbus_label    = _make_metric("VBUS",    "V",  "#00d2ff")
-        self._vshunt_label  = _make_metric("VSHUNT",  "mV", "#88d8ff")
-        self._current_label = _make_metric("Current",    "mA", "#ff64b4")
-        self._power_label   = _make_metric("Power",    "mW", "#ffcc44")
-        self._temp_label    = _make_metric("Temp",    "C", "#88cc88")
+        self._vbus_label    = _make_metric("VBUS",    "V",  "ina_ch_vbus")
+        self._vshunt_label  = _make_metric("VSHUNT",  "mV", "ina_ch_vshunt")
+        self._current_label = _make_metric("Current", "mA", "ina_ch_current")
+        self._power_label   = _make_metric("Power",   "mW", "ina_ch_power")
+        self._temp_label    = _make_metric("Temp",    "C",  "ina_ch_temp")
 
         layout.addLayout(metrics_layout)
 
@@ -768,16 +794,17 @@ class INA228Module(BaseModule):
         """Append a message to the I2C log tab (color-coded)."""
         if not hasattr(self, "_log_text"):
             return
+        tm = ThemeManager.instance()
         if "[ERROR]" in message or "ERROR" in message:
-            color = "#ff6666"
+            color = tm.color("status_disconnected")
         elif "TX ->" in message:
-            color = "#66ccff"
+            color = tm.color("uart_row_tx_dir")
         elif "RX <-" in message:
-            color = "#66ff99"
+            color = tm.color("uart_row_rx_dir")
         elif "[WARN]" in message or "WARN" in message:
-            color = "#ffcc44"
+            color = tm.color("status_warning")
         else:
-            color = "#8899aa"
+            color = tm.color("text_secondary")
 
         html = f'<span style="color:{color};">{message}</span>'
         self._log_text.append(html)

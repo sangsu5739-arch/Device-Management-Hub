@@ -139,6 +139,15 @@ class PI6CGModule(BaseModule):
             f" background-color: {tm.color('ss_badge_bg')};"
             f" padding: 2px 8px; border-radius: 8px;"
         )
+        # Data indicators
+        if hasattr(self, '_amp_indicator'):
+            self._amp_indicator.setStyleSheet(
+                f"color: {tm.color('pi6cg_amp_color')}; font-weight: bold; font-size: 14px;"
+            )
+        if hasattr(self, '_slew_indicator'):
+            self._slew_indicator.setStyleSheet(
+                f"color: {tm.color('pi6cg_slew_color')}; font-weight: bold;"
+            )
         # Separator
         if hasattr(self, '_ctrl_separator'):
             self._ctrl_separator.setStyleSheet(f"color: {tm.color('separator')};")
@@ -229,7 +238,6 @@ class PI6CGModule(BaseModule):
         amp_layout.addWidget(self._amplitude_combo)
         amp_layout.addStretch()
         self._amp_indicator = QLabel("o 0.8V")
-        self._amp_indicator.setStyleSheet("color: #ffcc44; font-weight: bold; font-size: 14px;")  # data color, keep
         amp_layout.addWidget(self._amp_indicator)
         layout.addWidget(amp_frame)
 
@@ -294,7 +302,6 @@ class PI6CGModule(BaseModule):
         slew_grid.addWidget(self._slew_fine_combo, 1, 1)
 
         self._slew_indicator = QLabel("Combined: Lv.8/15")
-        self._slew_indicator.setStyleSheet("color: #66ccaa; font-weight: bold;")  # data color, keep
         slew_grid.addWidget(self._slew_indicator, 2, 0, 1, 2)
         layout.addWidget(slew_frame)
 

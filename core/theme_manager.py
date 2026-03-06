@@ -84,6 +84,27 @@ DARK_PALETTE: Dict[str, str] = {
     "title_winbtn_hover":"#a0b0d0",
     "title_winbtn_bg_hover": "#2a2e42",
 
+    # Connection status LED / text in toolbar
+    "conn_status_connected":    "#33cc33",
+    "conn_status_disconnected": "#cc3333",
+    "conn_status_warning":      "#d4a84b",
+    "conn_status_error":        "#cccc33",
+    "conn_status_info_active":  "#607870",
+    "conn_status_info_vcp":     "#607050",
+
+    # Status bar message colors
+    "statusbar_ok":     "#80c890",
+    "statusbar_warn":   "#d4a84b",
+    "statusbar_error":  "#e07070",
+    "statusbar_info":   "#7888a0",
+
+    # INA228 metric channel colors
+    "ina_ch_vbus":      "#00d2ff",
+    "ina_ch_vshunt":    "#88d8ff",
+    "ina_ch_current":   "#ff64b4",
+    "ina_ch_power":     "#ffcc44",
+    "ina_ch_temp":      "#88cc88",
+
     # Connection bar
     "conn_bar_bg":      "#22262e",
     "conn_bar_border":  "#3a3f50",
@@ -219,6 +240,19 @@ DARK_PALETTE: Dict[str, str] = {
     "jtag_btn_text":    "#80c0e0",
     "jtag_btn_border":  "#2a5070",
     "jtag_btn_hover":   "#2a405a",
+    "jtag_seq_table_bg":"#1a2430",
+    "jtag_seq_selected":"#2a4060",
+    "jtag_preview_bg":  "#141c24",
+    "jtag_preview_text":"#c0d0e0",
+    "jtag_tap_bg":      "#161e28",
+    "jtag_tap_state":   "#223040",
+    "jtag_tap_state_active": "#6644aa",
+    "jtag_tap_text":    "#d0d8e0",
+    "jtag_tap_arrow":   "#607080",
+    "jtag_mapping_bg":  "#1a2430",
+    "jtag_run_bg":      "#2a1848",
+    "jtag_run_text":    "#cc88ff",
+    "jtag_status_text": "#8090a0",
 
     # I2C buttons
     "i2c_scan_bg":      "#22303e",
@@ -301,6 +335,12 @@ DARK_PALETTE: Dict[str, str] = {
     "ads_vi_btn_bg":    "#282a3a",
     "ads_vi_btn_text":  "#8890a0",
     "ads_vi_btn_border":"#3a4060",
+    "ads_vi_v_checked_bg":    "#3a4a70",
+    "ads_vi_v_checked_text":  "#ffffff",
+    "ads_vi_v_checked_border":"#5090e0",
+    "ads_vi_i_checked_bg":    "#704a3a",
+    "ads_vi_i_checked_text":  "#ffffff",
+    "ads_vi_i_checked_border":"#e09050",
     "ads_config_bg":    "#0e1018",
     "ads_config_text":  "#c8d0e0",
     "ads_config_border":"#1e2030",
@@ -314,6 +354,9 @@ DARK_PALETTE: Dict[str, str] = {
     "ss_badge_bg":      "#2a303b",
     "ss_badge_text":    "#9aa4b8",
     "ss_badge_border":  "#3a3f50",
+    # PI6CG data indicators
+    "pi6cg_amp_color":  "#ffcc44",
+    "pi6cg_slew_color": "#66ccaa",
 
     # Pinout widget
     "pinout_bg":        "#2a3040",
@@ -396,6 +439,27 @@ LIGHT_PALETTE: Dict[str, str] = {
     "title_winbtn":     "#445566",
     "title_winbtn_hover":"#1e2a3a",
     "title_winbtn_bg_hover": "#c0c8d8",
+
+    # Connection status LED / text in toolbar
+    "conn_status_connected":    "#2f855a",
+    "conn_status_disconnected": "#c53030",
+    "conn_status_warning":      "#c85000",
+    "conn_status_error":        "#9a6b00",
+    "conn_status_info_active":  "#286848",
+    "conn_status_info_vcp":     "#8a6010",
+
+    # Status bar message colors
+    "statusbar_ok":     "#2f855a",
+    "statusbar_warn":   "#c85000",
+    "statusbar_error":  "#c53030",
+    "statusbar_info":   "#445566",
+
+    # INA228 metric channel colors (darker for light bg)
+    "ina_ch_vbus":      "#0070a8",
+    "ina_ch_vshunt":    "#3060c0",
+    "ina_ch_current":   "#c03070",
+    "ina_ch_power":     "#a06800",
+    "ina_ch_temp":      "#2a7848",
 
     # ── Connection bar ───────────────────────────────────────
     "conn_bar_bg":      "#d5dbe6",
@@ -532,6 +596,19 @@ LIGHT_PALETTE: Dict[str, str] = {
     "jtag_btn_text":    "#1e4878",
     "jtag_btn_border":  "#78a8d8",
     "jtag_btn_hover":   "#b8d4f0",
+    "jtag_seq_table_bg":"#f0f4f8",
+    "jtag_seq_selected":"#c8d8f0",
+    "jtag_preview_bg":  "#fafafa",
+    "jtag_preview_text":"#2a3040",
+    "jtag_tap_bg":      "#f8f8fc",
+    "jtag_tap_state":   "#d8e4f0",
+    "jtag_tap_state_active": "#9966cc",
+    "jtag_tap_text":    "#2a3040",
+    "jtag_tap_arrow":   "#8090a0",
+    "jtag_mapping_bg":  "#f0f4f8",
+    "jtag_run_bg":      "#e0d0f0",
+    "jtag_run_text":    "#5522aa",
+    "jtag_status_text": "#506070",
 
     # ── I2C buttons ──────────────────────────────────────────
     "i2c_scan_bg":      "#d0e4f8",
@@ -614,6 +691,12 @@ LIGHT_PALETTE: Dict[str, str] = {
     "ads_vi_btn_bg":    "#dce2eb",
     "ads_vi_btn_text":  "#3a5070",
     "ads_vi_btn_border":"#b8c4d4",
+    "ads_vi_v_checked_bg":    "#1e4888",
+    "ads_vi_v_checked_text":  "#ffffff",
+    "ads_vi_v_checked_border":"#4080d0",
+    "ads_vi_i_checked_bg":    "#7a3820",
+    "ads_vi_i_checked_text":  "#ffffff",
+    "ads_vi_i_checked_border":"#c06030",
     "ads_config_bg":    "#f4f6f9",
     "ads_config_text":  "#1e2a3a",
     "ads_config_border":"#b8c4d4",
@@ -627,6 +710,9 @@ LIGHT_PALETTE: Dict[str, str] = {
     "ss_badge_bg":      "#dce2eb",
     "ss_badge_text":    "#3a5070",
     "ss_badge_border":  "#b8c4d4",
+    # PI6CG data indicators (darker for light bg)
+    "pi6cg_amp_color":  "#9a7000",
+    "pi6cg_slew_color": "#1a7058",
 
     # ── Pinout widget (original dark chip for contrast) ─────
     "pinout_bg":        "#2a3040",      # Original dark background

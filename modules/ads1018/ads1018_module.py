@@ -148,6 +148,24 @@ class ADS1018Module(BaseModule):
         # Metric containers
         for w in self.findChildren(QWidget, "metricContainer"):
             w.setStyleSheet(f"background-color: {tm.color('metric_bg')}; border-radius: 6px;")
+        # V/I toggle buttons per channel
+        vi_base = (f"QPushButton {{ font-size: 11px; font-weight: bold; border-radius: 4px;"
+                   f" background: {tm.color('ads_vi_btn_bg')}; color: {tm.color('ads_vi_btn_text')};"
+                   f" border: 1px solid {tm.color('ads_vi_btn_border')}; }}")
+        v_checked = (f"QPushButton:checked {{ background: {tm.color('ads_vi_v_checked_bg')};"
+                     f" color: {tm.color('ads_vi_v_checked_text')};"
+                     f" border: 1px solid {tm.color('ads_vi_v_checked_border')}; }}")
+        i_checked = (f"QPushButton:checked {{ background: {tm.color('ads_vi_i_checked_bg')};"
+                     f" color: {tm.color('ads_vi_i_checked_text')};"
+                     f" border: 1px solid {tm.color('ads_vi_i_checked_border')}; }}")
+        from modules.ads1018.ads1018_driver import ChannelMode as _CM
+        for grp in self._ch_radio_groups:
+            btn_v = grp.button(_CM.VOLTAGE)
+            btn_i = grp.button(_CM.CURRENT)
+            if btn_v:
+                btn_v.setStyleSheet(vi_base + v_checked)
+            if btn_i:
+                btn_i.setStyleSheet(vi_base + i_checked)
         # Console views
         for w in self.findChildren(QTextEdit, "themedConsole"):
             w.setStyleSheet(
@@ -313,11 +331,11 @@ class ADS1018Module(BaseModule):
             btn_v.setCheckable(True)
             btn_v.setChecked(True)
             btn_v.setFixedSize(50, 20)
-            btn_v.setStyleSheet("QPushButton { font-size: 11px; font-weight: bold; border-radius: 4px; background: #282a3a; color: #8890a0; border: 1px solid #3a4060; } QPushButton:checked { background: #3a4a70; color: #ffffff; border: 1px solid #5090e0; }")
+            btn_v.setStyleSheet("")  # styled in _apply_theme
             btn_i = QPushButton("I")
             btn_i.setCheckable(True)
             btn_i.setFixedSize(50, 20)
-            btn_i.setStyleSheet("QPushButton { font-size: 11px; font-weight: bold; border-radius: 4px; background: #282a3a; color: #8890a0; border: 1px solid #3a4060; } QPushButton:checked { background: #704a3a; color: #ffffff; border: 1px solid #e09050; }")
+            btn_i.setStyleSheet("")  # styled in _apply_theme
             
             btn_group.addButton(btn_v, ChannelMode.VOLTAGE)
             btn_group.addButton(btn_i, ChannelMode.CURRENT)
@@ -536,17 +554,22 @@ class ADS1018Module(BaseModule):
 
     def on_device_connected(self) -> None:
         self._start_btn.setEnabled(True)
+        self._set_hold_controls_enabled(True)
         self._append_log("[INFO] FTDI device connected.")
 
     def on_device_disconnected(self) -> None:
         self.stop_communication()
         self._start_btn.setEnabled(False)
+        self._set_hold_controls_enabled(False)
         self._append_log("[INFO] FTDI device disconnected.")
 
     def on_tab_activated(self) -> None:
-        if self._ftdi.is_connected:
+        connected = self._ftdi.is_connected
+        self._set_hold_controls_enabled(connected)
+        if connected:
             self._ftdi.set_protocol_mode("SPI")
             self._append_log("[INFO] Protocol mode: SPI")
+            self._apply_io_hold()
             self._refresh_hold_status(sync_buttons=True)
 
     def on_tab_deactivated(self) -> None:
@@ -732,6 +755,18 @@ class ADS1018Module(BaseModule):
         if not self._running:
             self._apply_io_hold()
 
+    def _set_hold_controls_enabled(self, enabled: bool) -> None:
+        """Enable or disable GPIO hold buttons and reset LEDs when disabled."""
+        for btn in self._hold_btns.values():
+            btn.setEnabled(enabled)
+        if not enabled:
+            tm = ThemeManager.instance()
+            for led in self._hold_leds.values():
+                led.setStyleSheet(
+                    f"background: {tm.color('ads_led_off_bg')}; border-radius: 7px;"
+                    f" border: 1px solid {tm.color('ads_led_off_border')};"
+                )
+
     def _apply_io_hold(self) -> None:
         if not self._ftdi.is_connected:
             return
@@ -779,13 +814,15 @@ class ADS1018Module(BaseModule):
     def _append_log(self, message: str) -> None:
         if not hasattr(self, "_log_view"):
             return
-        color = "#8890a0"
+        tm = ThemeManager.instance()
         if "[ERROR]" in message:
-            color = "#e06060"
+            color = tm.color("status_disconnected")
         elif "[WARN]" in message:
-            color = "#e8c060"
+            color = tm.color("status_warning")
         elif "[INFO]" in message:
-            color = "#50c878"
+            color = tm.color("status_connected")
+        else:
+            color = tm.color("text_secondary")
         self._log_view.append(f'<span style="color:{color}">{message}</span>')
         sb = self._log_view.verticalScrollBar()
         sb.setValue(sb.maximum())

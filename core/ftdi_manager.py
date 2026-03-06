@@ -304,6 +304,10 @@ class FtdiManager(QObject):
             if mode == "bitbang":
                 self._ft.write(bytes([self._gpio_out_value & 0xFF]))
                 return
+            if mode == "spi":
+                # D4-D7은 SPI 핀이 아니므로 set_gpio로 제어
+                self._spi.set_gpio(0xF0, self._gpio_out_value & 0xF0, 0xF0)
+                return
             if mode == "mpsse":
                 self._i2c.apply_gpio_out(self._gpio_out_value)
         except Exception as e:
@@ -808,7 +812,7 @@ class FtdiManager(QObject):
             self._log(f"[Error] SPI GPIO error: {e}")
 
     def read_gpio_low(self) -> Optional[int]:
-        """Read low GPIO bits (ADBUS) in MPSSE mode."""
+        """Read low GPIO bits (ADBUS) in current mode."""
         if not self._is_connected or self._ft is None:
             return None
         locker = QMutexLocker(self._mutex)
@@ -817,6 +821,8 @@ class FtdiManager(QObject):
             if mode == "bitbang":
                 value = self._bitbang.read_pins()
                 return value if value is not None else None
+            if mode == "spi":
+                return self._spi.read_gpio_low()
             return self._i2c.read_gpio_low()
         except Exception as e:
             self._log(f"[ERROR] GPIO read failed: {e}")

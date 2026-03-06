@@ -281,17 +281,10 @@ class SpiController(MpsseBaseController):
         if not write_data and read_len == 0:
             return b""
 
-        # tc72 reference path uses explicit OUT then IN commands.
-        if self._cpha == 1:
-            write_op = 0x11  # CLOCK_DATA_OUT_BYTES_N_VE
-            read_op = 0x24   # CLOCK_DATA_IN_BYTES_N_VE
-        else:
-            write_op, _ = self._XFER_OPCODES[(self._cpol, self._cpha)]
-            read_op = self._READ_OPCODES[(self._cpol, self._cpha)]
+        write_op, _ = self._XFER_OPCODES[(self._cpol, self._cpha)]
+        read_op = self._READ_OPCODES[(self._cpol, self._cpha)]
 
         self._assert_cs(cs_pin)
-        if self._cpha == 1:
-            time.sleep(0.001)
 
         cmd = bytearray()
         if write_data:
@@ -307,15 +300,11 @@ class SpiController(MpsseBaseController):
         self.write(bytes(cmd))
 
         if read_len <= 0:
-            if self._cpha == 1:
-                time.sleep(0.001)
             self._deassert_cs(cs_pin)
             return b""
 
-        time.sleep(0.002 if self._cpha == 1 else 0.001)
+        time.sleep(0.001)
         rx = self.read_with_wait(read_len)
-        if self._cpha == 1:
-            time.sleep(0.001)
         self._deassert_cs(cs_pin)
         return rx
 

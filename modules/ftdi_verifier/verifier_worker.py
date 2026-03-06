@@ -180,51 +180,52 @@ class VerifierWorker(QObject):
 
         self.protocol_test_done.emit(result)
 
-    # -- SPI loopback test --
+    # -- SPI probe test --
 
-    def test_spi_loopback(self) -> None:
-        """SPI loopback test (requires MOSI -> MISO wiring).
+    def test_spi_probe(self, tx_data: bytes = b'\x00\x00\x00\x00') -> None:
+        """SPI probe: send data and check for device response on MISO.
 
-        Sends a known pattern via SPI and checks if the same data
-        is received back (loopback wiring required).
+        PASS if any received byte is not 0xFF (device responded).
+        FAIL if all received bytes are 0xFF (no device or MISO floating).
         """
         if not self._ftdi.is_connected:
             self.error_occurred.emit("FTDI not connected")
             return
 
-        tx_pattern = bytes([0xA5, 0x5A, 0xDE, 0xAD])
-        self._log(f"SPI loopback TX: {' '.join(f'{b:02X}' for b in tx_pattern)}")
+        hex_tx = " ".join(f"{b:02X}" for b in tx_data)
+        self._log(f"SPI probe TX: {hex_tx}")
 
         try:
-            rx_data = self._ftdi.spi_transfer(tx_pattern)
+            rx_data = self._ftdi.spi_transfer(tx_data)
             if rx_data is None:
                 result = ProtocolTestResult(
                     timestamp=time.time(), protocol="SPI", success=False,
-                    message="SPI loopback: transfer returned None",
+                    message="SPI probe: transfer returned None",
                 )
-                self._log("SPI loopback: transfer failed (None)")
-            elif rx_data == tx_pattern:
-                hex_str = " ".join(f"{b:02X}" for b in rx_data)
-                result = ProtocolTestResult(
-                    timestamp=time.time(), protocol="SPI", success=True,
-                    message=f"SPI loopback OK: [{hex_str}]",
-                    raw_data=rx_data,
-                )
-                self._log(f"SPI loopback PASS: RX = {hex_str}")
+                self._log("SPI probe: transfer failed (None)")
             else:
                 hex_rx = " ".join(f"{b:02X}" for b in rx_data)
-                result = ProtocolTestResult(
-                    timestamp=time.time(), protocol="SPI", success=False,
-                    message=f"SPI loopback MISMATCH: RX=[{hex_rx}]",
-                    raw_data=rx_data,
-                )
-                self._log(f"SPI loopback FAIL: RX = {hex_rx}")
+                has_response = any(b != 0xFF for b in rx_data)
+                if has_response:
+                    result = ProtocolTestResult(
+                        timestamp=time.time(), protocol="SPI", success=True,
+                        message=f"SPI probe OK: [{hex_rx}]",
+                        raw_data=rx_data,
+                    )
+                    self._log(f"SPI probe PASS: RX = {hex_rx}")
+                else:
+                    result = ProtocolTestResult(
+                        timestamp=time.time(), protocol="SPI", success=False,
+                        message=f"SPI probe: no response (0xFF) [{hex_rx}]",
+                        raw_data=rx_data,
+                    )
+                    self._log(f"SPI probe FAIL: RX = {hex_rx} (all 0xFF)")
         except Exception as e:
             result = ProtocolTestResult(
                 timestamp=time.time(), protocol="SPI", success=False,
-                message=f"SPI loopback error: {e}",
+                message=f"SPI probe error: {e}",
             )
-            self._log(f"SPI loopback error: {e}")
+            self._log(f"SPI probe error: {e}")
 
         self.protocol_test_done.emit(result)
 

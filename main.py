@@ -22,7 +22,7 @@ from typing import List, Optional, Type
 from functools import partial
 
 from PySide6.QtCore import Qt, Slot, QSettings, QTimer, QPoint
-from PySide6.QtGui import QFont
+from PySide6.QtGui import QFont, QIcon, QPixmap, QPainter, QColor, QPolygon
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QLabel, QPushButton, QComboBox, QTabWidget, QMessageBox,
@@ -39,6 +39,37 @@ logger = logging.getLogger(__name__)
 APP_VERSION = "1.0.0"
 APP_NAME    = "Universal Device Studio"
 # ─────────────────────────────────────────────────────────────────────────────
+
+
+def _build_app_icon(size: int = 64) -> QIcon:
+    """Build a simple custom app icon used by windows and message boxes."""
+    try:
+        pix = QPixmap(size, size)
+        pix.fill(Qt.GlobalColor.transparent)
+
+        p = QPainter(pix)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        p.setPen(Qt.PenStyle.NoPen)
+
+        # Outer plate
+        p.setBrush(QColor("#2a3040"))
+        p.drawRoundedRect(4, 4, size - 8, size - 8, 10, 10)
+
+        # Brand diamond
+        c = size // 2
+        d = int(size * 0.22)
+        p.setBrush(QColor("#5ab8d0"))
+        diamond = QPolygon([
+            QPoint(c, c - d),
+            QPoint(c + d, c),
+            QPoint(c, c + d),
+            QPoint(c - d, c),
+        ])
+        p.drawPolygon(diamond)
+        p.end()
+        return QIcon(pix)
+    except Exception:
+        return QIcon()
 
 
 def discover_module_classes() -> List[Type[BaseModule]]:
@@ -156,8 +187,9 @@ class CustomTitleBar(QWidget):
             f"color: {tm.color('pipe')}; font-size: 14px; background: transparent;"
             f" border: none; padding: 0 10px;"
         )
+        brand_color = tm.color("accent_blue") if is_dark else tm.color("text_accent")
         self._brand_lbl.setStyleSheet(
-            f"color: {tm.color('accent_brand')}; font-size: 10px; font-weight: 600;"
+            f"color: {brand_color}; font-size: 10px; font-weight: 600;"
             f" letter-spacing: 1.5px; background: transparent; border: none;"
         )
         self._theme_btn.setStyleSheet(
@@ -240,6 +272,16 @@ class MainWindow(QMainWindow):
             f" color: {tm.color('msgbox_btn_text')}; font-weight: 600; padding: 4px 10px; }}"
             f"QMessageBox QPushButton:hover {{ background-color: {tm.color('msgbox_btn_hover')}; }}"
         )
+
+    @staticmethod
+    def _apply_msgbox_window_icon(box: QMessageBox) -> None:
+        app = QApplication.instance()
+        if app is None:
+            return
+        icon = app.windowIcon()
+        if icon.isNull():
+            return
+        box.setWindowIcon(icon)
 
     def __init__(self) -> None:
         super().__init__()
@@ -475,10 +517,12 @@ class MainWindow(QMainWindow):
             if btn.isVisible():
                 btn.setStyleSheet(self._ch_btn_style(active=btn.isChecked(), enabled=btn.isEnabled()))
         self._apply_connect_btn_style(connected=self._connect_btn.isChecked())
-        # Re-style status (keep current status color)
-        self._conn_info_label.setStyleSheet(
-            f"color: {tm.color('conn_info')}; font-size: 10px; background: transparent;"
-        )
+        # Re-apply connection status with current theme colors
+        if self._connect_btn.isChecked():
+            info = self._conn_info_label.text()
+            self._apply_conn_status("connected", info)
+        else:
+            self._apply_conn_status("disconnected")
         self._sep1.setStyleSheet(f"background: {tm.color('separator')}; border: none;")
         self._sep2.setStyleSheet(f"background: {tm.color('separator')}; border: none;")
 
@@ -532,6 +576,7 @@ class MainWindow(QMainWindow):
     def _show_warning_dialog(self, title: str, message: str) -> None:
         """Warning message box."""
         box = QMessageBox(self)
+        self._apply_msgbox_window_icon(box)
         box.setWindowTitle(title)
         box.setIcon(QMessageBox.Icon.Warning)
         box.setText(message)
@@ -654,6 +699,7 @@ class MainWindow(QMainWindow):
                 pass
 
         msg = QMessageBox(self)
+        self._apply_msgbox_window_icon(msg)
         msg.setWindowTitle("Confirm Channel Switch")
         msg.setIcon(QMessageBox.Icon.Question)
         msg.setText(f"Switch control channel to {new_channel}?")
@@ -703,12 +749,7 @@ class MainWindow(QMainWindow):
     def set_vcp_mode(self, active: bool, port: str = "") -> None:
         """Update toolbar to reflect VCP (UART) mode. Called by modules."""
         if active:
-            self._status_led.setStyleSheet("color: #d4a84b; font-size: 13px; background: transparent;")
-            self._status_text.setText("VCP Mode")
-            self._status_text.setStyleSheet("color: #d4a84b; font-weight: 700; font-size: 11px;"
-                                            " background: transparent;")
-            self._conn_info_label.setText(f"UART: {port}" if port else "UART")
-            self._conn_info_label.setStyleSheet("color: #607050; font-size: 10px; background: transparent;")
+            self._apply_conn_status("vcp", f"UART: {port}" if port else "UART")
             self._connect_btn.blockSignals(True)
             self._connect_btn.setChecked(False)
             self._connect_btn.setText("Connect")
@@ -722,12 +763,7 @@ class MainWindow(QMainWindow):
             self._connect_btn.setEnabled(True)
             if self._ftdi.is_connected:
                 info = f"Connected: SN={self._ftdi.serial_number}, CH={self._ftdi.channel}"
-                self._status_led.setStyleSheet("color: #33cc33; font-size: 13px; background: transparent;")
-                self._status_text.setText("Connected")
-                self._status_text.setStyleSheet("color: #33cc33; font-weight: 700; font-size: 11px;"
-                                                " background: transparent;")
-                self._conn_info_label.setText(info)
-                self._conn_info_label.setStyleSheet("color: #607870; font-size: 10px; background: transparent;")
+                self._apply_conn_status("connected", info)
                 self._connect_btn.blockSignals(True)
                 self._connect_btn.setChecked(True)
                 self._connect_btn.setText("Disconnect")
@@ -737,12 +773,7 @@ class MainWindow(QMainWindow):
                 self._scan_btn.setEnabled(False)
                 self._set_status("Connected", "ok")
             else:
-                self._status_led.setStyleSheet("color: #cc3333; font-size: 13px; background: transparent;")
-                self._status_text.setText("Disconnected")
-                self._status_text.setStyleSheet("color: #cc3333; font-weight: 700; font-size: 11px;"
-                                                " background: transparent;")
-                self._conn_info_label.setText("")
-                self._conn_info_label.setStyleSheet("color: #505870; font-size: 10px; background: transparent;")
+                self._apply_conn_status("disconnected")
                 self._connect_btn.blockSignals(True)
                 self._connect_btn.setChecked(False)
                 self._connect_btn.setText("Connect")
@@ -762,12 +793,7 @@ class MainWindow(QMainWindow):
         if self._is_uart_switching():
             return
 
-        self._status_led.setStyleSheet("color: #33cc33; font-size: 13px; background: transparent;")
-        self._status_text.setText("Connected")
-        self._status_text.setStyleSheet("color: #33cc33; font-weight: 700; font-size: 11px;"
-                                        " background: transparent;")
-        self._conn_info_label.setText(info)
-        self._conn_info_label.setStyleSheet("color: #607870; font-size: 10px; background: transparent;")
+        self._apply_conn_status("connected", info)
         self._connect_btn.blockSignals(True)
         self._connect_btn.setChecked(True)
         self._connect_btn.setText("Disconnect")
@@ -803,12 +829,7 @@ class MainWindow(QMainWindow):
         if self._is_uart_switching():
             return
 
-        self._status_led.setStyleSheet("color: #cc3333; font-size: 13px; background: transparent;")
-        self._status_text.setText("Disconnected")
-        self._status_text.setStyleSheet("color: #cc3333; font-weight: 700; font-size: 11px;"
-                                        " background: transparent;")
-        self._conn_info_label.setText("")
-        self._conn_info_label.setStyleSheet("color: #505870; font-size: 10px; background: transparent;")
+        self._apply_conn_status("disconnected")
         self._connect_btn.blockSignals(True)
         self._connect_btn.setChecked(False)
         self._connect_btn.setText("Connect")
@@ -831,14 +852,52 @@ class MainWindow(QMainWindow):
     @Slot(str)
     def _on_hw_error(self, error_msg: str) -> None:
         """Show hardware error."""
-        self._status_led.setStyleSheet("color: #cccc33; font-size: 13px; background: transparent;")
-        self._status_text.setText("Error")
-        self._status_text.setStyleSheet("color: #cccc33; font-weight: 700; font-size: 11px;"
-                                        " background: transparent;")
+        self._apply_conn_status("error")
         if self._device_combo.count() > 0 and self._device_combo.currentIndex() < 0:
             self._device_combo.setCurrentIndex(0)
 
         self._set_status(f"Error: {error_msg}", "error")
+
+    def _apply_conn_status(self, state: str, info: str = "") -> None:
+        """Update status LED + text using ThemeManager colors.
+
+        state: "connected" | "disconnected" | "warning" | "error" | "vcp"
+        """
+        tm = ThemeManager.instance()
+        color_key = {
+            "connected":    "conn_status_connected",
+            "disconnected": "conn_status_disconnected",
+            "warning":      "conn_status_warning",
+            "error":        "conn_status_error",
+            "vcp":          "conn_status_warning",
+        }.get(state, "conn_status_disconnected")
+        color = tm.color(color_key)
+        label_map = {
+            "connected":    "Connected",
+            "disconnected": "Disconnected",
+            "warning":      "Warning",
+            "error":        "Error",
+            "vcp":          "VCP Mode",
+        }
+        text = label_map.get(state, state)
+        self._status_led.setStyleSheet(f"color: {color}; font-size: 13px; background: transparent;")
+        self._status_text.setText(text)
+        self._status_text.setStyleSheet(
+            f"color: {color}; font-weight: 700; font-size: 11px; background: transparent;"
+        )
+        if info:
+            info_key = "conn_status_info_active" if state == "connected" else (
+                "conn_status_info_vcp" if state == "vcp" else "conn_info"
+            )
+            self._conn_info_label.setText(info)
+            self._conn_info_label.setStyleSheet(
+                f"color: {tm.color(info_key)}; font-size: 10px; background: transparent;"
+            )
+        else:
+            self._conn_info_label.setText("")
+            self._conn_info_label.setStyleSheet(
+                f"color: {tm.color('conn_info')}; font-size: 10px; background: transparent;"
+            )
 
     def _apply_connect_btn_style(self, connected: bool) -> None:
         if not hasattr(self, "_connect_btn"):
@@ -887,14 +946,14 @@ class MainWindow(QMainWindow):
 
         level: "info" | "ok" | "warn" | "error"
         """
-        colors = {
-            "info":  "#7888a0",
-            "ok":    "#80c890",
-            "warn":  "#d4a84b",
-            "error": "#e07070",
-        }
         tm = ThemeManager.instance()
-        color = colors.get(level, colors["info"])
+        key_map = {
+            "info":  "statusbar_info",
+            "ok":    "statusbar_ok",
+            "warn":  "statusbar_warn",
+            "error": "statusbar_error",
+        }
+        color = tm.color(key_map.get(level, "statusbar_info"))
         fw = "700" if level in ("warn", "error") else "400"
         self.statusBar().setStyleSheet(
             f"QStatusBar {{ color: {color}; background-color: {tm.color('bg_statusbar')};"
@@ -1046,6 +1105,7 @@ class MainWindow(QMainWindow):
     def closeEvent(self, event) -> None:
         """Confirm exit, stop all communications, and disconnect FTDI."""
         box = QMessageBox(self)
+        self._apply_msgbox_window_icon(box)
         box.setWindowTitle("Confirm Exit")
         box.setIcon(QMessageBox.Icon.Question)
         box.setText("Exit Universal Device Studio?")
@@ -1093,6 +1153,7 @@ def main() -> None:
     )
 
     app = QApplication(sys.argv)
+    app.setWindowIcon(_build_app_icon())
 
     # Clean exit on Ctrl+C
     signal.signal(signal.SIGINT, lambda *_: app.quit())
@@ -1106,6 +1167,7 @@ def main() -> None:
     app.setFont(default_font)
 
     window = MainWindow()
+    window.setWindowIcon(app.windowIcon())
     window.show()
 
     sys.exit(app.exec())

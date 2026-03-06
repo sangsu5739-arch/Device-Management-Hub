@@ -9,7 +9,7 @@ from __future__ import annotations
 from abc import abstractmethod
 from typing import Optional
 
-from PySide6.QtWidgets import QWidget, QMessageBox
+from PySide6.QtWidgets import QWidget, QMessageBox, QApplication
 from PySide6.QtCore import Signal
 
 from core.ftdi_manager import FtdiManager
@@ -124,6 +124,9 @@ class BaseModule(QWidget):
     def _show_mpsse_warning(self, channel: str) -> None:
         """Show MPSSE-not-supported warning dialog. Override to suppress (e.g., FTDI Verifier)."""
         box = QMessageBox(self)
+        app = QApplication.instance()
+        if app is not None and not app.windowIcon().isNull():
+            box.setWindowIcon(app.windowIcon())
         box.setWindowTitle("MPSSE Not Supported")
         box.setIcon(QMessageBox.Icon.Warning)
         box.setText(f"Channel {channel} does not support MPSSE.")

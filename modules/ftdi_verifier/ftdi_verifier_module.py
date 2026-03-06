@@ -20,7 +20,7 @@ from PySide6.QtGui import QFont, QColor, QBrush
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QGridLayout,
     QGroupBox, QLabel, QPushButton, QComboBox, QSpinBox,
-    QSplitter, QTabWidget, QFrame, QTextEdit,
+    QSplitter, QTabWidget, QFrame, QTextEdit, QStackedWidget,
     QTableWidget, QTableWidgetItem, QHeaderView, QLineEdit, QCheckBox, QFileDialog, QStyle, QAbstractItemView,
 )
 
@@ -32,6 +32,7 @@ from modules.ftdi_verifier.ftdi_chip_specs import (
     ProtocolMode, ChannelSpec, PIN_COLORS, PROTOCOL_COLORS,
     get_chip_spec, get_channel_protocols,
 )
+from modules.ftdi_verifier.jtag_sequencer_panel import JtagSequencerPanel
 from modules.ftdi_verifier.pinout_widget import PinoutWidget
 from modules.ftdi_verifier.pinmap_controller import PinmapController
 from modules.ftdi_verifier.gpio_controller import GpioController
@@ -84,8 +85,8 @@ class FtdiVerifierModule(BaseModule):
         self._spi_id_thread: Optional[QThread] = None
         self._i2c_test_thread: Optional[QThread] = None
         self._i2c_scan_thread: Optional[QThread] = None
-        self._spi_loopback_running: bool = False
-        self._spi_loopback_interval_ms: int = 500
+        self._spi_probe_running: bool = False
+        self._spi_probe_interval_ms: int = 500
         self._pinmap = PinmapController(self)
         self._gpio = GpioController(self)
         super().__init__(ftdi_manager, parent)
@@ -104,20 +105,25 @@ class FtdiVerifierModule(BaseModule):
         v_splitter = QSplitter(Qt.Orientation.Vertical)
         v_splitter.setHandleWidth(3)
 
-        # Left (control) + right (pinmap)
-        h_splitter = QSplitter(Qt.Orientation.Horizontal)
-        h_splitter.setHandleWidth(3)
+        # Left (control) + right (pinmap / JTAG panel)
+        self._h_splitter = QSplitter(Qt.Orientation.Horizontal)
+        self._h_splitter.setHandleWidth(3)
         control_panel = self._create_control_panel()
         pinout_panel = self._create_pinout_panel()
+        self._jtag_right_panel = JtagSequencerPanel()
+        self._right_stack = QStackedWidget()
+        self._right_stack.addWidget(pinout_panel)       # index 0: pinout
+        self._right_stack.addWidget(self._jtag_right_panel)  # index 1: JTAG
+        self._right_stack.setCurrentIndex(0)
         control_panel.setMinimumWidth(260)
-        pinout_panel.setMinimumWidth(520)
-        h_splitter.addWidget(control_panel)
-        h_splitter.addWidget(pinout_panel)
-        h_splitter.setStretchFactor(0, 2)
-        h_splitter.setStretchFactor(1, 5)
-        h_splitter.setSizes([260, 520])
+        self._right_stack.setMinimumWidth(520)
+        self._h_splitter.addWidget(control_panel)
+        self._h_splitter.addWidget(self._right_stack)
+        self._h_splitter.setStretchFactor(0, 2)
+        self._h_splitter.setStretchFactor(1, 5)
+        self._h_splitter.setSizes([260, 520])
 
-        v_splitter.addWidget(h_splitter)
+        v_splitter.addWidget(self._h_splitter)
         v_splitter.addWidget(self._create_log_panel())
         v_splitter.setStretchFactor(0, 4)
         v_splitter.setStretchFactor(1, 2)
@@ -126,7 +132,7 @@ class FtdiVerifierModule(BaseModule):
 
         # Load default chip
         self._apply_chip_and_channel("FT232H", "A")
-        QTimer.singleShot(0, lambda: h_splitter.setSizes([260, 520]))
+        QTimer.singleShot(0, lambda: self._h_splitter.setSizes([260, 520]))
         if self._uart_read_timer is None:
             self._uart_read_timer = QTimer(self)
             self._uart_read_timer.setInterval(50)
@@ -146,7 +152,7 @@ class FtdiVerifierModule(BaseModule):
             return
         self._i2c_scan_btn.setEnabled(True)
         self._i2c_test_btn.setEnabled(True)
-        self._spi_loopback_btn.setEnabled(True)
+        self._spi_probe_btn.setEnabled(True)
         self._spi_id_btn.setEnabled(True)
         self._set_bitbang_controls_enabled(True)
         self._apply_bitbang_mask(self._bitbang_mask, push=True)
@@ -168,7 +174,7 @@ class FtdiVerifierModule(BaseModule):
         self.stop_communication()
         self._i2c_scan_btn.setEnabled(False)
         self._i2c_test_btn.setEnabled(False)
-        self._spi_loopback_btn.setEnabled(False)
+        self._spi_probe_btn.setEnabled(False)
         self._spi_id_btn.setEnabled(False)
         self._set_bitbang_controls_enabled(False)
         self._gpio_poll_btn.setEnabled(False)
@@ -218,7 +224,7 @@ class FtdiVerifierModule(BaseModule):
         pass  # GPIO polling starts from a separate button
 
     def stop_communication(self) -> None:
-        self._spi_loopback_running = False
+        self._spi_probe_running = False
         self._stop_single_shot_threads()
         self._stop_worker()
         # On global stop (disconnect or channel switch), do not restore FTDI from UART.
@@ -402,25 +408,24 @@ class FtdiVerifierModule(BaseModule):
 
         spi_layout.addWidget(cfg_panel)
 
-        # -- Loopback Test --
-        # -- Loopback Test --
+        # -- SPI Probe --
 
-        lb_group = QGroupBox("Loopback Test")
+        lb_group = QGroupBox("SPI Probe")
         lb_layout = QVBoxLayout(lb_group)
         lb_layout.setSpacing(6)
         lb_layout.setContentsMargins(8, 8, 8, 8)
         lb_row = QHBoxLayout()
         lb_row.setSpacing(8)
-        self._spi_loopback_btn = QPushButton("\u25b6  Loopback Test")
-        self._spi_loopback_btn.setEnabled(False)
-        self._spi_loopback_btn.setMinimumHeight(30)
-        self._spi_loopback_btn.setToolTip("Checks TX/RX match with MOSI-MISO loopback wiring.")
-        self._spi_loopback_btn.clicked.connect(self._on_spi_loopback)
-        lb_row.addWidget(self._spi_loopback_btn)
-        self._spi_loopback_result = QLabel("  Idle")
-        self._spi_loopback_result.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._spi_loopback_result.setFixedHeight(30)
-        lb_row.addWidget(self._spi_loopback_result, 1)
+        self._spi_probe_btn = QPushButton("\u25b6  SPI Probe")
+        self._spi_probe_btn.setEnabled(False)
+        self._spi_probe_btn.setMinimumHeight(30)
+        self._spi_probe_btn.setToolTip("CS\ub97c \ud65c\uc131\ud654\ud558\uace0 \ub370\uc774\ud130\ub97c \uc804\uc1a1\ud558\uc5ec \ub514\ubc14\uc774\uc2a4 \uc751\ub2f5 \uc5ec\ubd80\ub97c \ud655\uc778\ud569\ub2c8\ub2e4.")
+        self._spi_probe_btn.clicked.connect(self._on_spi_probe)
+        lb_row.addWidget(self._spi_probe_btn)
+        self._spi_probe_result = QLabel("  Idle")
+        self._spi_probe_result.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._spi_probe_result.setFixedHeight(30)
+        lb_row.addWidget(self._spi_probe_result, 1)
         lb_layout.addLayout(lb_row)
         spi_layout.addWidget(lb_group)
 
@@ -473,16 +478,9 @@ class FtdiVerifierModule(BaseModule):
         self._proto_tabs.addTab(self._i2c_group, "I2C")
         self._proto_tabs.addTab(self._spi_group, "SPI")
 
-        # JTAG Test (GUI only)
-        self._jtag_group = QGroupBox("JTAG Pattern Test")
-        jtag_layout = QVBoxLayout(self._jtag_group)
-        jtag_layout.setSpacing(4)
-        jtag_layout.setContentsMargins(6, 4, 6, 4)
-        jtag_layout.addWidget(QLabel("TDI/TDO Pattern Transmit & Verify"))
-        self._jtag_test_btn = QPushButton("Run Pattern Test")
-        self._jtag_test_btn.setEnabled(False)
-        self._jtag_test_btn.setMinimumHeight(30)
-        jtag_layout.addWidget(self._jtag_test_btn)
+        # JTAG Sequencer (GUI only)
+        self._jtag_group = QGroupBox("JTAG Sequencer")
+        self._build_jtag_left_panel()
         self._proto_tabs.addTab(self._jtag_group, "JTAG")
 
         # UART Test (GUI only)
@@ -736,6 +734,224 @@ class FtdiVerifierModule(BaseModule):
         main_layout.addStretch()
         return container
 
+    # ── JTAG Sequencer \uc88c\uce21 \ud328\ub110 \ube4c\ub354 ──────────────────────────────
+
+    def _build_jtag_left_panel(self) -> None:
+        """JTAG \uc88c\uce21 \ud328\ub110 \uc804\uccb4 \uad6c\uc131."""
+        layout = QVBoxLayout(self._jtag_group)
+        layout.setSpacing(4)
+        layout.setContentsMargins(6, 4, 6, 4)
+
+        layout.addWidget(self._build_jtag_header())
+        layout.addWidget(self._build_jtag_sequence_list(), 1)
+        layout.addWidget(self._build_jtag_file_preview())
+
+        # \uc2e4\ud589 \ubc84\ud2bc
+        self._jtag_run_btn = QPushButton("\u25b6  \uc2dc\ud000\uc2a4 \uc2e4\ud589")
+        self._jtag_run_btn.setEnabled(False)
+        self._jtag_run_btn.setMinimumHeight(34)
+        self._jtag_run_btn.setToolTip("\ub85c\ub4dc\ub41c ATP \ud328\ud134 \uc2dc\ud000\uc2a4\ub97c \uc2e4\ud589\ud569\ub2c8\ub2e4.")
+        self._jtag_run_btn.clicked.connect(self._on_jtag_run)
+        layout.addWidget(self._jtag_run_btn)
+
+        layout.addWidget(self._build_jtag_status_bar())
+
+    def _build_jtag_header(self) -> QGroupBox:
+        """TCK \uc124\uc815 + \ud30c\uc77c \uc120\ud0dd \ubc84\ud2bc."""
+        grp = QGroupBox("TCK \uc124\uc815")
+        g = QGridLayout(grp)
+        g.setSpacing(4)
+        g.setContentsMargins(6, 4, 6, 4)
+
+        g.addWidget(QLabel("TCK Freq:"), 0, 0)
+        self._jtag_tck_combo = QComboBox()
+        self._jtag_tck_combo.addItems([
+            "100 kHz", "500 kHz", "1 MHz", "2 MHz", "3 MHz", "6 MHz",
+        ])
+        self._jtag_tck_combo.setCurrentIndex(2)  # 1 MHz \uae30\ubcf8
+        g.addWidget(self._jtag_tck_combo, 0, 1)
+
+        self._jtag_folder_btn = QPushButton("\ud83d\udcc2  \ud328\ud134 \ud3f4\ub354")
+        self._jtag_folder_btn.setFixedHeight(28)
+        self._jtag_folder_btn.clicked.connect(self._on_jtag_select_folder)
+        g.addWidget(self._jtag_folder_btn, 1, 0)
+
+        self._jtag_csv_btn = QPushButton("\ud83d\udcc4  CSV \ud30c\uc77c")
+        self._jtag_csv_btn.setFixedHeight(28)
+        self._jtag_csv_btn.clicked.connect(self._on_jtag_select_csv)
+        g.addWidget(self._jtag_csv_btn, 1, 1)
+
+        self._jtag_folder_label = QLabel("-")
+        self._jtag_folder_label.setFont(QFont("Consolas", 8))
+        self._jtag_folder_label.setWordWrap(True)
+        g.addWidget(self._jtag_folder_label, 2, 0, 1, 2)
+
+        return grp
+
+    def _build_jtag_sequence_list(self) -> QGroupBox:
+        """\uc2dc\ud000\uc2a4 \ubaa9\ub85d \ud14c\uc774\ube14."""
+        grp = QGroupBox("\uc2dc\ud000\uc2a4 \ubaa9\ub85d")
+        layout = QVBoxLayout(grp)
+        layout.setContentsMargins(4, 4, 4, 4)
+
+        self._jtag_seq_table = QTableWidget(0, 4)
+        self._jtag_seq_table.setHorizontalHeaderLabels(
+            ["#", "\ud30c\uc77c\uba85", "Dynamic", "\ub9e4\ud551"]
+        )
+        h_hdr = self._jtag_seq_table.horizontalHeader()
+        h_hdr.setSectionResizeMode(0, QHeaderView.ResizeMode.Fixed)
+        h_hdr.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+        h_hdr.setSectionResizeMode(2, QHeaderView.ResizeMode.Fixed)
+        h_hdr.setSectionResizeMode(3, QHeaderView.ResizeMode.Fixed)
+        self._jtag_seq_table.setColumnWidth(0, 30)
+        self._jtag_seq_table.setColumnWidth(2, 60)
+        self._jtag_seq_table.setColumnWidth(3, 50)
+        self._jtag_seq_table.verticalHeader().setVisible(False)
+        self._jtag_seq_table.setSelectionBehavior(
+            QAbstractItemView.SelectionBehavior.SelectRows
+        )
+        self._jtag_seq_table.setEditTriggers(
+            QAbstractItemView.EditTrigger.NoEditTriggers
+        )
+        self._jtag_seq_table.cellClicked.connect(self._on_jtag_seq_selected)
+        layout.addWidget(self._jtag_seq_table)
+        return grp
+
+    def _build_jtag_file_preview(self) -> QGroupBox:
+        """ATP \ud30c\uc77c \ubbf8\ub9ac\ubcf4\uae30."""
+        grp = QGroupBox("\ud30c\uc77c \ubbf8\ub9ac\ubcf4\uae30")
+        layout = QVBoxLayout(grp)
+        layout.setContentsMargins(4, 4, 4, 4)
+
+        self._jtag_file_preview = QTextEdit()
+        self._jtag_file_preview.setReadOnly(True)
+        self._jtag_file_preview.setFont(QFont("Consolas", 9))
+        self._jtag_file_preview.setMaximumHeight(150)
+        self._jtag_file_preview.setPlaceholderText(
+            "\uc2dc\ud000\uc2a4 \ubaa9\ub85d\uc5d0\uc11c \ud30c\uc77c\uc744 \uc120\ud0dd\ud558\uba74 \ub0b4\uc6a9\uc774 \ud45c\uc2dc\ub429\ub2c8\ub2e4."
+        )
+        layout.addWidget(self._jtag_file_preview)
+        return grp
+
+    def _build_jtag_status_bar(self) -> QFrame:
+        """\ud558\ub2e8 \uc0c1\ud0dc \ud45c\uc2dc \ud504\ub808\uc784."""
+        frame = QFrame()
+        frame.setFrameShape(QFrame.Shape.HLine)
+        g = QGridLayout(frame)
+        g.setSpacing(2)
+        g.setContentsMargins(4, 6, 4, 2)
+
+        lbl_font = QFont("Segoe UI", 8)
+
+        g.addWidget(QLabel("\uc9c4\ud589:"), 0, 0)
+        self._jtag_progress_label = QLabel("0 / 0")
+        self._jtag_progress_label.setFont(lbl_font)
+        g.addWidget(self._jtag_progress_label, 0, 1)
+
+        g.addWidget(QLabel("\ud604\uc7ac \ud328\ud134:"), 1, 0)
+        self._jtag_current_pattern = QLabel("-")
+        self._jtag_current_pattern.setFont(lbl_font)
+        g.addWidget(self._jtag_current_pattern, 1, 1)
+
+        g.addWidget(QLabel("TDO \uc800\uc7a5:"), 2, 0)
+        self._jtag_tdo_path_label = QLabel("-")
+        self._jtag_tdo_path_label.setFont(lbl_font)
+        self._jtag_tdo_path_label.setWordWrap(True)
+        g.addWidget(self._jtag_tdo_path_label, 2, 1)
+
+        return frame
+
+    # ── JTAG Sequencer \uc2ac\ub86f ──────────────────────────────────────
+
+    @Slot()
+    def _on_jtag_select_folder(self) -> None:
+        """ATP \ud328\ud134 \ud3f4\ub354 \uc120\ud0dd."""
+        folder = QFileDialog.getExistingDirectory(
+            self, "\ud328\ud134 \ud3f4\ub354 \uc120\ud0dd", ""
+        )
+        if not folder:
+            return
+        self._jtag_folder_label.setText(folder)
+        self._append_log(f"[JTAG] \ud328\ud134 \ud3f4\ub354: {folder}")
+
+        # \ud3f4\ub354 \ub0b4 ATP \ud30c\uc77c \ub098\uc5f4
+        import os
+        atp_files = sorted(
+            f for f in os.listdir(folder)
+            if f.lower().endswith((".atp", ".txt", ".pat"))
+        )
+        self._jtag_seq_table.setRowCount(0)
+        self._jtag_atp_folder = folder
+        self._jtag_atp_files = atp_files
+        for i, fname in enumerate(atp_files):
+            row = self._jtag_seq_table.rowCount()
+            self._jtag_seq_table.insertRow(row)
+            # #
+            item_num = QTableWidgetItem(str(i + 1))
+            item_num.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            self._jtag_seq_table.setItem(row, 0, item_num)
+            # \ud30c\uc77c\uba85
+            self._jtag_seq_table.setItem(row, 1, QTableWidgetItem(fname))
+            # Dynamic \uccb4\ud06c\ubc15\uc2a4
+            chk = QCheckBox()
+            chk.setStyleSheet("margin-left: 18px;")
+            chk.toggled.connect(lambda checked, r=row: self._on_jtag_dynamic_toggled(r, checked))
+            self._jtag_seq_table.setCellWidget(row, 2, chk)
+            # \ub9e4\ud551 \uc0c1\ud0dc
+            item_map = QTableWidgetItem("-")
+            item_map.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            self._jtag_seq_table.setItem(row, 3, item_map)
+
+        if atp_files:
+            self._jtag_run_btn.setEnabled(True)
+            self._append_log(f"[JTAG] {len(atp_files)}\uac1c ATP \ud30c\uc77c \ub85c\ub4dc\ub428")
+        else:
+            self._jtag_run_btn.setEnabled(False)
+            self._append_log("[JTAG] \ud3f4\ub354\uc5d0 ATP \ud30c\uc77c\uc774 \uc5c6\uc2b5\ub2c8\ub2e4.")
+
+    @Slot()
+    def _on_jtag_select_csv(self) -> None:
+        """CSV \ud30c\uc77c \uc120\ud0dd."""
+        path, _ = QFileDialog.getOpenFileName(
+            self, "CSV \ud30c\uc77c \uc120\ud0dd", "", "CSV Files (*.csv);;All Files (*)"
+        )
+        if not path:
+            return
+        import os
+        self._jtag_csv_path = path
+        self._append_log(f"[JTAG] CSV: {os.path.basename(path)}")
+        if hasattr(self, "_jtag_right_panel"):
+            self._jtag_right_panel.set_mapping_file(os.path.basename(path))
+
+    @Slot(int, int)
+    def _on_jtag_seq_selected(self, row: int, _col: int = 0) -> None:
+        """\uc2dc\ud000\uc2a4 \ud589 \ud074\ub9ad \u2192 \ud30c\uc77c \ubbf8\ub9ac\ubcf4\uae30."""
+        if not hasattr(self, "_jtag_atp_folder") or not hasattr(self, "_jtag_atp_files"):
+            return
+        if row < 0 or row >= len(self._jtag_atp_files):
+            return
+        import os
+        filepath = os.path.join(self._jtag_atp_folder, self._jtag_atp_files[row])
+        try:
+            with open(filepath, "r", encoding="utf-8", errors="replace") as f:
+                content = f.read(8192)  # \ubbf8\ub9ac\ubcf4\uae30\uc6a9 8KB \uc81c\ud55c
+            self._jtag_file_preview.setPlainText(content)
+        except Exception as e:
+            self._jtag_file_preview.setPlainText(f"(\ud30c\uc77c \uc77d\uae30 \uc2e4\ud328: {e})")
+
+    @Slot(int, bool)
+    def _on_jtag_dynamic_toggled(self, row: int, checked: bool) -> None:
+        """Dynamic \ubaa8\ub4dc \uccb4\ud06c\ubc15\uc2a4 \ud1a0\uae00."""
+        status = "\u2713" if checked else "-"
+        item = self._jtag_seq_table.item(row, 3)
+        if item:
+            item.setText(status)
+
+    @Slot()
+    def _on_jtag_run(self) -> None:
+        """\uc2dc\ud000\uc2a4 \uc2e4\ud589 (\ubbf8\uad6c\ud604 stub)."""
+        self._append_log("[JTAG] \uc2dc\ud000\uc2a4 \uc2e4\ud589 \uae30\ub2a5\uc740 \uc544\uc9c1 \uad6c\ud604\ub418\uc9c0 \uc54a\uc558\uc2b5\ub2c8\ub2e4.")
+
     def _create_pinout_panel(self) -> QGroupBox:
         """Right: interactive pinmap."""
         group = QGroupBox("Pinout View")
@@ -920,7 +1136,7 @@ class FtdiVerifierModule(BaseModule):
         ch_match = (not connected) or (self._ftdi.channel == self._current_channel)
         self._i2c_scan_btn.setEnabled(has_mpsse and connected)
         self._i2c_test_btn.setEnabled(has_mpsse and connected)
-        self._spi_loopback_btn.setEnabled(has_mpsse and connected)
+        self._spi_probe_btn.setEnabled(has_mpsse and connected)
         self._spi_id_btn.setEnabled(has_mpsse and connected)
         if not (has_mpsse and connected and ch_match):
             self._pin_name_label.setText("Unavailable")
@@ -969,6 +1185,10 @@ class FtdiVerifierModule(BaseModule):
         if mode == "GPIO":
             self._append_log("GPIO mode: auto-switch Bitbang/MPSSE for GPIO control.")
             self.status_message.emit("GPIO mode: auto Bitbang/MPSSE for GPIO")
+
+        # JTAG: \uc6b0\uce21 \ud328\ub110 \uc804\ud658 (TAP Diagram \u2194 Pinout)
+        if hasattr(self, "_right_stack"):
+            self._right_stack.setCurrentIndex(1 if mode == "JTAG" else 0)
 
         # Update pinout mapping based on mode
         self._pinmap.apply_mode(mode)
@@ -1211,59 +1431,72 @@ class FtdiVerifierModule(BaseModule):
     # -- SPI --
 
     @Slot()
-    def _on_spi_loopback(self) -> None:
-        """SPI loopback test via VerifierWorker (continuous until stopped)."""
+    def _on_spi_probe(self) -> None:
+        """SPI probe test via VerifierWorker (continuous until stopped)."""
         if not self._ftdi.is_connected:
             return
 
-        if self._spi_loopback_running:
-            self._append_log("[SPI] Loopback continuous test stop requested.")
-            self._spi_loopback_running = False
+        if self._spi_probe_running:
+            self._append_log("[SPI] Probe test stop requested.")
+            self._spi_probe_running = False
             if self._spi_test_thread is not None and self._spi_test_thread.isRunning():
                 try:
                     self._spi_test_thread.quit()
                     self._spi_test_thread.wait(2000)
                 except Exception:
                     pass
-            self._on_spi_loopback_finished()
-            self._spi_loopback_result.setText("  Stopped")
+            self._on_spi_probe_finished()
+            self._spi_probe_result.setText("  Stopped")
             return
 
-        self._spi_loopback_running = True
-        self._append_log("[SPI] Loopback continuous test started.")
-        self._start_spi_loopback_cycle()
+        self._spi_probe_running = True
+        self._append_log("[SPI] Probe test started.")
+        self._start_spi_probe_cycle()
 
-    def _start_spi_loopback_cycle(self) -> None:
-        if not self._spi_loopback_running:
+    def _get_spi_probe_tx_data(self) -> bytes:
+        """Get TX data for SPI probe from user input or default dummy bytes."""
+        if hasattr(self, "_spi_id_addr"):
+            text = self._spi_id_addr.text().strip()
+            if text:
+                try:
+                    raw = text.replace("0x", "").replace("0X", "").replace(",", " ").replace(";", " ")
+                    return bytes(int(b, 16) for b in raw.split() if b)
+                except (ValueError, TypeError):
+                    pass
+        return b'\x00\x00\x00\x00'
+
+    def _start_spi_probe_cycle(self) -> None:
+        if not self._spi_probe_running:
             return
         if not self._ftdi.is_connected:
-            self._spi_loopback_running = False
-            self._on_spi_loopback_finished()
+            self._spi_probe_running = False
+            self._on_spi_probe_finished()
             return
         if self._spi_test_thread is not None and self._spi_test_thread.isRunning():
             return
 
-        self._spi_loopback_btn.setText("■  Stop Loopback")
-        self._spi_loopback_result.setText("  Testing...")
+        self._spi_probe_btn.setText("\u25a0  Stop Probe")
+        self._spi_probe_result.setText("  Probing...")
         tm = ThemeManager.instance()
-        self._spi_loopback_result.setStyleSheet(
+        self._spi_probe_result.setStyleSheet(
             f"background: {tm.color('spi_result_pending_bg')}; color: {tm.color('spi_result_pending_text')}; border-radius: 8px; padding: 4px 10px;"
             f"font-weight: 800; letter-spacing: 0.5px; border: 1px solid {tm.color('spi_result_pending_border')};"
         )
         # Ensure SPI mode is configured before test
         self._apply_spi_config()
 
+        tx_data = self._get_spi_probe_tx_data()
         worker = VerifierWorker(self._ftdi)
         worker.protocol_test_done.connect(self._on_protocol_result)
         worker.log_message.connect(self._append_log)
 
         self._spi_test_thread = QThread()
         worker.moveToThread(self._spi_test_thread)
-        self._spi_test_thread.started.connect(worker.test_spi_loopback)
+        self._spi_test_thread.started.connect(lambda: worker.test_spi_probe(tx_data))
         worker.protocol_test_done.connect(self._spi_test_thread.quit)
         worker.protocol_test_done.connect(worker.deleteLater)
         self._spi_test_thread.finished.connect(self._spi_test_thread.deleteLater)
-        self._spi_test_thread.finished.connect(self._on_spi_loopback_finished)
+        self._spi_test_thread.finished.connect(self._on_spi_probe_finished)
         self._spi_test_thread.start()
     @Slot()
     def _on_spi_read_id(self) -> None:
@@ -1325,15 +1558,15 @@ class FtdiVerifierModule(BaseModule):
         self._spi_id_thread.start()
 
     @Slot()
-    def _on_spi_loopback_finished(self) -> None:
+    def _on_spi_probe_finished(self) -> None:
         self._spi_test_thread = None
-        if self._spi_loopback_running and self._ftdi.is_connected:
-            QTimer.singleShot(self._spi_loopback_interval_ms, self._start_spi_loopback_cycle)
+        if self._spi_probe_running and self._ftdi.is_connected:
+            QTimer.singleShot(self._spi_probe_interval_ms, self._start_spi_probe_cycle)
             return
-        self._spi_loopback_running = False
+        self._spi_probe_running = False
         has_mpsse = self._ftdi.supports_mpsse(self._current_channel)
-        self._spi_loopback_btn.setText("\u25b6  Loopback Test")
-        self._spi_loopback_btn.setEnabled(self._ftdi.is_connected and has_mpsse)
+        self._spi_probe_btn.setText("\u25b6  SPI Probe")
+        self._spi_probe_btn.setEnabled(self._ftdi.is_connected and has_mpsse)
 
     @Slot()
     def _on_spi_id_finished(self) -> None:
@@ -1363,8 +1596,8 @@ class FtdiVerifierModule(BaseModule):
                 )
         if result.protocol == "SPI":
             # Determine which result badge to update based on message content
-            if "loopback" in result.message.lower():
-                target = self._spi_loopback_result
+            if "probe" in result.message.lower():
+                target = self._spi_probe_result
             else:
                 target = self._spi_id_result
             if result.success:
@@ -2157,8 +2390,8 @@ class FtdiVerifierModule(BaseModule):
             f"QPushButton:hover {{ background: {tm.color('spi_btn_hover')}; }}"
             f"QPushButton:disabled {{ background: {tm.color('bg_disabled')}; color: {tm.color('text_disabled')}; border: 1px solid {tm.color('border_subtle')}; }}"
         )
-        if hasattr(self, "_spi_loopback_btn"):
-            self._spi_loopback_btn.setStyleSheet(spi_btn_style)
+        if hasattr(self, "_spi_probe_btn"):
+            self._spi_probe_btn.setStyleSheet(spi_btn_style)
         if hasattr(self, "_spi_id_btn"):
             self._spi_id_btn.setStyleSheet(spi_btn_style)
 
@@ -2166,8 +2399,8 @@ class FtdiVerifierModule(BaseModule):
             f"background: {tm.color('spi_result_idle_bg')}; color: {tm.color('spi_result_idle_text')}; border-radius: 8px;"
             f" padding: 4px 10px; font-weight: 800; border: 1px solid {tm.color('spi_result_idle_border')};"
         )
-        if hasattr(self, "_spi_loopback_result") and "Idle" in self._spi_loopback_result.text():
-            self._spi_loopback_result.setStyleSheet(spi_idle)
+        if hasattr(self, "_spi_probe_result") and "Idle" in self._spi_probe_result.text():
+            self._spi_probe_result.setStyleSheet(spi_idle)
         if hasattr(self, "_spi_id_result") and "Idle" in self._spi_id_result.text():
             self._spi_id_result.setStyleSheet(spi_idle)
 
@@ -2180,13 +2413,37 @@ class FtdiVerifierModule(BaseModule):
                 f"background: {tm.color('spi_input_bg')}; color: {tm.color('spi_input_text')}; border: 1px solid {tm.color('spi_input_border')}; border-radius: 4px; padding: 2px 8px;"
             )
 
-        # JTAG
-        if hasattr(self, "_jtag_test_btn"):
-            self._jtag_test_btn.setStyleSheet(
-                f"QPushButton {{ background: {tm.color('jtag_btn_bg')}; color: {tm.color('jtag_btn_text')}; font-weight: 700; border-radius: 6px; border: 1px solid {tm.color('jtag_btn_border')}; }}"
+        # JTAG Sequencer
+        if hasattr(self, "_jtag_run_btn"):
+            jtag_btn_css = (
+                f"QPushButton {{ background: {tm.color('jtag_run_bg')}; color: {tm.color('jtag_run_text')}; font-weight: 700; border-radius: 6px; border: 1px solid {tm.color('jtag_btn_border')}; }}"
                 f"QPushButton:hover {{ background: {tm.color('jtag_btn_hover')}; }}"
                 f"QPushButton:disabled {{ background: {tm.color('bg_disabled')}; color: {tm.color('text_disabled')}; border: 1px solid {tm.color('border_subtle')}; }}"
             )
+            self._jtag_run_btn.setStyleSheet(jtag_btn_css)
+            # \ud3f4\ub354/CSV \ubc84\ud2bc
+            header_btn_css = (
+                f"QPushButton {{ background: {tm.color('jtag_btn_bg')}; color: {tm.color('jtag_btn_text')}; font-weight: 600; border-radius: 4px; border: 1px solid {tm.color('jtag_btn_border')}; }}"
+                f"QPushButton:hover {{ background: {tm.color('jtag_btn_hover')}; }}"
+            )
+            self._jtag_folder_btn.setStyleSheet(header_btn_css)
+            self._jtag_csv_btn.setStyleSheet(header_btn_css)
+            # \uc2dc\ud000\uc2a4 \ud14c\uc774\ube14
+            self._jtag_seq_table.setStyleSheet(
+                f"QTableWidget {{ background: {tm.color('jtag_seq_table_bg')}; color: {tm.color('jtag_tap_text')}; gridline-color: {tm.color('jtag_btn_border')}; border: 1px solid {tm.color('jtag_btn_border')}; }}"
+                f"QHeaderView::section {{ background: {tm.color('jtag_tap_state')}; color: {tm.color('jtag_tap_text')}; border: 1px solid {tm.color('jtag_btn_border')}; padding: 2px; }}"
+                f"QTableWidget::item:selected {{ background: {tm.color('jtag_seq_selected')}; }}"
+            )
+            # \ubbf8\ub9ac\ubcf4\uae30
+            self._jtag_file_preview.setStyleSheet(
+                f"QTextEdit {{ background: {tm.color('jtag_preview_bg')}; color: {tm.color('jtag_preview_text')}; border: 1px solid {tm.color('jtag_btn_border')}; border-radius: 4px; }}"
+            )
+            # \uc0c1\ud0dc \ub77c\ubca8
+            status_css = f"color: {tm.color('jtag_status_text')};"
+            self._jtag_progress_label.setStyleSheet(status_css)
+            self._jtag_current_pattern.setStyleSheet(status_css)
+            self._jtag_tdo_path_label.setStyleSheet(status_css)
+            self._jtag_folder_label.setStyleSheet(f"color: {tm.color('jtag_preview_text')};")
 
         # UART
         if hasattr(self, "_uart_console"):
@@ -2252,4 +2509,12 @@ class FtdiVerifierModule(BaseModule):
         # Pin name label
         if hasattr(self, "_pin_name_label"):
             self._pin_name_label.setStyleSheet(f"font-weight: bold; color: {tm.color('gpio_pin_name')};")
+
+        # Mode description label (re-render with current theme)
+        if hasattr(self, "_mode_desc_label"):
+            self._mode_desc_label.setStyleSheet(
+                f"color: {tm.color('text_desc')}; font-size: 11px;"
+            )
+            if hasattr(self, "_proto_mode_combo"):
+                self._update_mode_desc(self._proto_mode_combo.currentText())
 
