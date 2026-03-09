@@ -236,23 +236,23 @@ DARK_PALETTE: Dict[str, str] = {
     "gpio_pin_name":    "#00d2ff",
 
     # JTAG
-    "jtag_btn_bg":      "#2D2D2D",
-    "jtag_btn_text":    "#D4D4D4",
-    "jtag_btn_border":  "#3a3a3a",
-    "jtag_btn_hover":   "#383838",
-    "jtag_seq_table_bg":"#1a1a1a",
-    "jtag_seq_selected":"#2a3a4a",
-    "jtag_preview_bg":  "#0a0a0a",
-    "jtag_preview_text":"#D4D4D4",
-    "jtag_tap_bg":      "#050505",
-    "jtag_tap_state":   "#2D2D2D",
-    "jtag_tap_state_active": "#00F0FF",
-    "jtag_tap_text":    "#D4D4D4",
-    "jtag_tap_arrow":   "#00F0FF",
-    "jtag_mapping_bg":  "#1a1a1a",
-    "jtag_run_bg":      "#2D2D2D",
-    "jtag_run_text":    "#00F0FF",
-    "jtag_status_text": "#808080",
+    "jtag_btn_bg":      "#2B2B3B",
+    "jtag_btn_text":    "#E0E0E0",
+    "jtag_btn_border":  "#3A3F50",
+    "jtag_btn_hover":   "#353548",
+    "jtag_seq_table_bg":"#1E1E2E",
+    "jtag_seq_selected":"#2A3A5A",
+    "jtag_preview_bg":  "#1A1A28",
+    "jtag_preview_text":"#E0E0E0",
+    "jtag_tap_bg":      "#1E1E2E",
+    "jtag_tap_state":   "#2B2B3B",
+    "jtag_tap_state_active": "#4A90E2",
+    "jtag_tap_text":    "#E0E0E0",
+    "jtag_tap_arrow":   "#A9B7C6",
+    "jtag_mapping_bg":  "#1E1E2E",
+    "jtag_run_bg":      "#2B2B3B",
+    "jtag_run_text":    "#4A90E2",
+    "jtag_status_text": "#6A7080",
 
     # I2C buttons
     "i2c_scan_bg":      "#22303e",
@@ -783,6 +783,10 @@ class ThemeManager(QObject):
         if app is None:
             return
         filename = "dark_theme.qss" if self._current == "dark" else "light_theme.qss"
-        qss_path = Path(__file__).parent.parent / "assets" / filename
+        import sys as _sys
+        _base = Path(getattr(_sys, "_MEIPASS", Path(__file__).parent.parent))
+        qss_path = _base / "assets" / filename
+        if not qss_path.exists():
+            qss_path = Path(__file__).parent.parent / "assets" / filename
         if qss_path.exists():
             app.setStyleSheet(qss_path.read_text(encoding="utf-8"))

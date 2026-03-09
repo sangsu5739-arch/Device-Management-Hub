@@ -74,7 +74,16 @@ def _build_app_icon(size: int = 64) -> QIcon:
 
 def discover_module_classes() -> List[Type[BaseModule]]:
     """Discover BaseModule subclasses dynamically under /modules."""
-    modules_dir = Path(__file__).parent / "modules"
+    # PyInstaller onedir: __file__ is inside _internal/, which is already in sys.path.
+    # Fallback: use sys._MEIPASS if available (onefile/onedir bootloader base).
+    base = Path(getattr(sys, "_MEIPASS", Path(__file__).parent))
+    modules_dir = base / "modules"
+    if not modules_dir.exists():
+        modules_dir = Path(__file__).parent / "modules"
+    # Ensure the base directory is on sys.path so importlib can find packages
+    base_str = str(base)
+    if base_str not in sys.path:
+        sys.path.insert(0, base_str)
     classes: List[Type[BaseModule]] = []
 
     for _, name, ispkg in pkgutil.iter_modules([str(modules_dir)]):
@@ -140,6 +149,7 @@ class CustomTitleBar(QWidget):
         # ── Theme toggle button ──
         self._theme_btn = QPushButton("\u263e")
         self._theme_btn.setFixedSize(34, 34)
+        self._theme_btn.setFont(QFont("Segoe UI Symbol", 14))
         self._theme_btn.setToolTip("Toggle dark/light theme")
         self._theme_btn.clicked.connect(self._on_toggle_theme)
         layout.addWidget(self._theme_btn)
@@ -366,6 +376,7 @@ class MainWindow(QMainWindow):
         scan_btn = QPushButton("\u27f3")   # \u27f3
         scan_btn.setToolTip("Scan FTDI devices")
         scan_btn.setFixedSize(28, 28)
+        scan_btn.setFont(QFont("Segoe UI Symbol", 14))
         scan_btn.clicked.connect(self._on_scan_devices)
         self._scan_btn = scan_btn
         layout.addWidget(scan_btn)

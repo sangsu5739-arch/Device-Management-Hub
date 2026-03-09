@@ -22,23 +22,23 @@ from PySide6.QtWidgets import QApplication
 S = 2
 
 # ── Logical dimensions (actual pixels = S * these) ──
-# 21:9 target aspect for less horizontal tearing when scaled.
-W, H = 1400, 600
+# Wide balanced view — 1.5x height for spacious vertical fill
+W, H = 1060, 440
 
-# ── Box size (room for 14pt bold text) ──
-BOX_W, BOX_H = 168, 36
+# ── Box size ──
+BOX_W, BOX_H = 140, 28
 
-# ── Layout ──
-ROW_GAP = 62
-COL_LEFT = 305
-COL_RIGHT = W - 305
+# ── Layout — balanced spacing for 560px height ──
+ROW_GAP = 48
+COL_LEFT = 215
+COL_RIGHT = W - 215
 
-TOP_CX = W / 2
-# +18 vertical buffer so top node breathes under the group-box title.
-TOP_Y = 60
+# Center (slight left shift for asymmetric balance)
+TOP_CX = W / 2 - 15
+TOP_Y = 22   # minimal top margin — no route goes above TLR now
 RTI_Y = TOP_Y + ROW_GAP
 
-CHAIN_TOP = RTI_Y + ROW_GAP + 20
+CHAIN_TOP = RTI_Y + ROW_GAP + 12
 
 STATES = [
     ("Test-Logic-Reset", TOP_CX, TOP_Y),
@@ -126,7 +126,7 @@ def ctr(n: str) -> QPointF:
     return QPointF(cx, cy)
 
 
-def draw_arrow(p, src, tip, color, sz=13):
+def draw_arrow(p, src, tip, color, sz=11):
     """Filled triangle arrowhead."""
     dx, dy = tip.x() - src.x(), tip.y() - src.y()
     ln = math.hypot(dx, dy)
@@ -135,31 +135,28 @@ def draw_arrow(p, src, tip, color, sz=13):
     ux, uy = dx / ln, dy / ln
     px, py = -uy, ux
     base = QPointF(tip.x() - ux * sz, tip.y() - uy * sz)
-    l = QPointF(base.x() + px * sz * 0.45, base.y() + py * sz * 0.45)
-    r = QPointF(base.x() - px * sz * 0.45, base.y() - py * sz * 0.45)
+    l = QPointF(base.x() + px * sz * 0.42, base.y() + py * sz * 0.42)
+    r = QPointF(base.x() - px * sz * 0.42, base.y() - py * sz * 0.42)
     p.setPen(Qt.PenStyle.NoPen)
     p.setBrush(color)
     p.drawPolygon(QPolygonF([tip, l, r]))
 
 
 # ── Routing channels to prevent overlap ──
-# Each long-distance route uses a unique X or Y offset
-# DR side: left bypass channels at -34, -50, -66
-# DR side: right bypass channels at +30, +50, +70
-# IR side: left bypass at -30, -50, right bypass at +26, +50, +70
 
 def route(src, dst):
     rs, rd = rect_of(src), rect_of(dst)
     cs, cd = ctr(src), ctr(dst)
     pair = (src, dst)
 
-    # ── TLR → RTI ──
+    # ── TLR → RTI (offset left to clear self-loop icons) ──
     if pair == ("Test-Logic-Reset", "Run-Test/Idle"):
-        return [QPointF(cs.x(), rs.bottom()), QPointF(cd.x(), rd.top())]
+        return [QPointF(cs.x() - 16, rs.bottom()),
+                QPointF(cd.x() - 16, rd.top())]
 
-    # ── RTI → Select-DR ──
+    # ── RTI → Select-DR (L-route down-left, mid_y at 65% to clear RTI box) ──
     if pair == ("Run-Test/Idle", "Select-DR-Scan"):
-        mid_y = (rs.bottom() + rd.top()) / 2
+        mid_y = rs.bottom() + (rd.top() - rs.bottom()) * 0.65
         return [QPointF(cs.x() - 14, rs.bottom()),
                 QPointF(cs.x() - 14, mid_y),
                 QPointF(cd.x(), mid_y),
@@ -193,21 +190,21 @@ def route(src, dst):
 
     # ── Capture → Exit1 (skip Shift, channel 1 right) ──
     if pair in {("Capture-DR", "Exit1-DR"), ("Capture-IR", "Exit1-IR")}:
-        mx = rs.right() + 30
+        mx = rs.right() + 26
         return [QPointF(rs.right(), cs.y()),
                 QPointF(mx, cs.y()), QPointF(mx, cd.y()),
                 QPointF(rd.right(), cd.y())]
 
     # ── Exit1 → Update (skip Pause+Exit2, channel 2 right) ──
     if pair in {("Exit1-DR", "Update-DR"), ("Exit1-IR", "Update-IR")}:
-        mx = rs.right() + 54
+        mx = rs.right() + 48
         return [QPointF(rs.right(), cs.y()),
                 QPointF(mx, cs.y()), QPointF(mx, cd.y()),
                 QPointF(rd.right(), cd.y())]
 
     # ── Exit2 → Shift (back up, channel 1 left) ──
     if pair in {("Exit2-DR", "Shift-DR"), ("Exit2-IR", "Shift-IR")}:
-        mx = rs.left() - 34
+        mx = rs.left() - 30
         return [QPointF(rs.left(), cs.y()),
                 QPointF(mx, cs.y()), QPointF(mx, cd.y()),
                 QPointF(rd.left(), cd.y())]
@@ -215,7 +212,7 @@ def route(src, dst):
     # ── Update-DR → Select-DR (loop up, channel 3 right) ──
     if pair == ("Update-DR", "Select-DR-Scan"):
         sel = rect_of("Select-DR-Scan")
-        mx = max(rs.right(), sel.right()) + 76
+        mx = max(rs.right(), sel.right()) + 66
         return [QPointF(rs.right(), cs.y()),
                 QPointF(mx, cs.y()),
                 QPointF(mx, ctr("Select-DR-Scan").y()),
@@ -224,16 +221,16 @@ def route(src, dst):
     # ── Update-DR → RTI (channel 2 left) ──
     if pair == ("Update-DR", "Run-Test/Idle"):
         rti = rect_of("Run-Test/Idle")
-        lx = rs.left() - 52
+        lx = rs.left() - 48
         return [QPointF(rs.left(), cs.y()),
                 QPointF(lx, cs.y()),
                 QPointF(lx, ctr("Run-Test/Idle").y()),
                 QPointF(rti.left(), ctr("Run-Test/Idle").y())]
 
-    # ── Update-IR → RTI (channel 2 right of IR) ──
+    # ── Update-IR → RTI (channel 2 right of IR, wide offset) ──
     if pair == ("Update-IR", "Run-Test/Idle"):
         rti = rect_of("Run-Test/Idle")
-        rx = rs.right() + 52
+        rx = rs.right() + 66
         return [QPointF(rs.right(), cs.y()),
                 QPointF(rx, cs.y()),
                 QPointF(rx, ctr("Run-Test/Idle").y()),
@@ -242,32 +239,29 @@ def route(src, dst):
     # ── Update-IR → Select-DR (cross-chain, top route above regions) ──
     if pair == ("Update-IR", "Select-DR-Scan"):
         sel_dr = rect_of("Select-DR-Scan")
-        route_y = CHAIN_TOP - 40
-        lx = rs.left() - 34
+        route_y = CHAIN_TOP - 34
+        lx = rs.left() - 30
         return [QPointF(rs.left(), cs.y()),
                 QPointF(lx, cs.y()),
                 QPointF(lx, route_y),
-                QPointF(sel_dr.right() + 76, route_y),
-                QPointF(sel_dr.right() + 76, ctr("Select-DR-Scan").y()),
+                QPointF(sel_dr.right() + 66, route_y),
+                QPointF(sel_dr.right() + 66, ctr("Select-DR-Scan").y()),
                 QPointF(sel_dr.right(), ctr("Select-DR-Scan").y())]
 
-    # ── Select-IR → TLR (right side up) ──
+    # ── Select-IR → TLR (right bypass → vertical up to TLR.y → horizontal to TLR) ──
     if pair == ("Select-IR-Scan", "Test-Logic-Reset"):
         tlr = rect_of("Test-Logic-Reset")
-        rx = rs.right() + 26
-        top_y = tlr.top() - 18
+        rx = rs.right() + 24  # vertical channel right of IR column
         return [QPointF(rs.right(), cs.y()),
                 QPointF(rx, cs.y()),
-                QPointF(rx, top_y),
-                QPointF(tlr.right() + 18, top_y),
-                QPointF(tlr.right() + 18, ctr("Test-Logic-Reset").y()),
+                QPointF(rx, ctr("Test-Logic-Reset").y()),
                 QPointF(tlr.right(), ctr("Test-Logic-Reset").y())]
 
     return [QPointF(cs.x(), rs.bottom()), QPointF(cd.x(), rd.top())]
 
 
-def _tms_label_pos(pts):
-    """Label position offset from midpoint to avoid overlapping lines."""
+def _tms_label_pos(pts, src, dst):
+    """Compute TMS label position with per-route offset tuning."""
     mi = len(pts) // 2
     if len(pts) > 2:
         ax, ay = pts[mi - 1].x(), pts[mi - 1].y()
@@ -277,17 +271,37 @@ def _tms_label_pos(pts):
         bx, by = pts[1].x(), pts[1].y()
     mx, my = (ax + bx) / 2, (ay + by) / 2
     dx, dy = bx - ax, by - ay
+
+    # Per-route adjustments to ensure no label is hidden behind a box
+    pair = (src, dst)
+    if pair == ("Test-Logic-Reset", "Run-Test/Idle"):
+        return mx + 16, my  # push right of the vertical line
+    if pair == ("Run-Test/Idle", "Select-DR-Scan"):
+        # Place label on horizontal segment between corner and Select-DR
+        return (pts[1].x() + pts[2].x()) / 2, pts[1].y() - 12
+    if pair == ("Select-IR-Scan", "Test-Logic-Reset"):
+        # Label on the vertical segment going up, halfway between IR and TLR
+        rx = rect_of(src).right() + 24
+        mid_y = (POS[src][1] + POS[dst][1]) / 2
+        return rx + 12, mid_y
+    if pair == ("Update-DR", "Select-DR-Scan"):
+        # Push right to separate from Update-IR→Select-DR label
+        return mx + 14, my
+    if pair == ("Update-IR", "Select-DR-Scan"):
+        # Place on the vertical segment left of IR column, well below RTI
+        return pts[1].x() - 14, (pts[1].y() + pts[2].y()) / 2
+
     if math.hypot(dx, dy) < 1:
         return mx, my
     if abs(dx) > abs(dy):
-        return mx, my - 12
+        return mx, my - 11
     else:
-        return mx - 12, my
+        return mx - 11, my
 
 
 def _draw_flat_box(p, rect, bdr_color, fill_color, text_c, text, font):
     """Draw clean flat pill box (no glow)."""
-    p.setPen(QPen(bdr_color, 2.0))
+    p.setPen(QPen(bdr_color, 1.5))
     p.setBrush(fill_color)
     p.drawRoundedRect(rect, BOX_H / 2, BOX_H / 2)
     p.setPen(text_c)
@@ -297,31 +311,36 @@ def _draw_flat_box(p, rect, bdr_color, fill_color, text_c, text, font):
 
 def generate(dark, out):
     if dark:
-        bg       = QColor("#222222")
-        box_fill = QColor("#2B2B2B")
-        box_bdr  = QColor("#A0A0A0")
-        text_c   = QColor("#E5E5E5")
-        arrow_c  = QColor("#A0A0A0")
-        tms_c    = QColor("#E5E5E5")
-        loop_c   = QColor("#A0A0A0")
-        rgn_fill = QColor(160, 160, 160, 12)
-        rgn_bdr  = QColor(74, 112, 139, 96)
-        title_c  = QColor("#D6D6DE")
-        rgn_title = QColor("#E5E5E5")
-        label_bg = QColor(43, 43, 43, 180)
+        # Industrial Engineering Dark palette — Keysight/Tek inspired
+        bg       = QColor("#1E1E2E")
+        box_fill = QColor("#2B2B3B")
+        box_bdr  = QColor("#A9B7C6")
+        text_c   = QColor("#E0E0E0")
+        arrow_c  = QColor("#A9B7C6")     # Steel Silver lines
+        tms_c    = QColor("#E0E0E0")     # Off-White TMS labels (calm)
+        loop_c   = QColor("#E0E0E0")     # Off-White self-loop labels
+        rgn_fill = QColor(74, 144, 226, 10)
+        rgn_bdr  = QColor(74, 144, 226, 50)
+        title_c  = QColor("#6A7080")
+        rgn_title = QColor("#FFFFFF")
+        label_bg = QColor(43, 43, 59, 200)
+        tms_chip_bg  = QColor(30, 30, 46, 210)
+        tms_chip_bdr = QColor("#4A90E2")  # Muted blue border (professional)
     else:
-        bg       = QColor("#222222")
-        box_fill = QColor("#2B2B2B")
-        box_bdr  = QColor("#A0A0A0")
-        text_c   = QColor("#E5E5E5")
-        arrow_c  = QColor("#A0A0A0")
-        tms_c    = QColor("#E5E5E5")
-        loop_c   = QColor("#A0A0A0")
-        rgn_fill = QColor(160, 160, 160, 12)
-        rgn_bdr  = QColor(74, 112, 139, 80)
-        title_c  = QColor("#D6D6DE")
-        rgn_title = QColor("#E5E5E5")
-        label_bg = QColor(43, 43, 43, 160)
+        bg       = QColor("#F4F5F7")
+        box_fill = QColor("#E6E8EC")
+        box_bdr  = QColor("#5A6270")
+        text_c   = QColor("#1a1a2a")
+        arrow_c  = QColor("#5A6270")
+        tms_c    = QColor("#2A4060")
+        loop_c   = QColor("#2A4060")
+        rgn_fill = QColor(74, 144, 226, 8)
+        rgn_bdr  = QColor(74, 144, 226, 30)
+        title_c  = QColor("#8890A0")
+        rgn_title = QColor("#2A3040")
+        label_bg = QColor(230, 232, 236, 200)
+        tms_chip_bg  = QColor(240, 242, 245, 210)
+        tms_chip_bdr = QColor("#4A78A0")
 
     img = QImage(W * S, H * S, QImage.Format.Format_ARGB32_Premultiplied)
     img.fill(bg)
@@ -341,25 +360,25 @@ def generate(dark, out):
             r = rect_of(n)
             x0, y0 = min(x0, r.left()), min(y0, r.top())
             x1, y1 = max(x1, r.right()), max(y1, r.bottom())
-        pad = 20
-        rr = QRectF(x0 - pad, y0 - pad - 20, x1 - x0 + pad * 2, y1 - y0 + pad * 2 + 20)
-        p.setPen(QPen(rgn_bdr, 1.2))
+        pad = 18
+        rr = QRectF(x0 - pad, y0 - pad - 18, x1 - x0 + pad * 2, y1 - y0 + pad * 2 + 18)
+        p.setPen(QPen(rgn_bdr, 1.0))
         p.setBrush(rgn_fill)
-        p.drawRoundedRect(rr, 5, 5)
-        # Semi-transparent header badge for path label visibility.
-        badge = QRectF(rr.left() + 10, rr.top() + 6, 170, 28)
+        p.drawRoundedRect(rr, 4, 4)
+        # Semi-transparent header badge for path label
+        badge = QRectF(rr.left() + 8, rr.top() + 5, 150, 24)
         p.setPen(Qt.PenStyle.NoPen)
         p.setBrush(label_bg)
-        p.drawRoundedRect(badge, 6, 6)
-        p.setFont(QFont("Segoe UI", 14, QFont.Weight.Bold))
+        p.drawRoundedRect(badge, 5, 5)
+        p.setFont(QFont("Segoe UI", 12, QFont.Weight.Bold))
         p.setPen(rgn_title)
         p.drawText(badge,
                    Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
-                   label)
+                   "  " + label)
 
-    # ── Transitions ──
-    line_pen = QPen(arrow_c, 2.0)
-    tms_font = QFont("Segoe UI", 13, QFont.Weight.Bold)
+    # ── Transitions with TMS labels ──
+    line_pen = QPen(arrow_c, 1.5)  # 1.5px Steel Silver — clean & visible
+    tms_font = QFont("Segoe UI", 11, QFont.Weight.Bold)
     for src, dst, tms in TRANSITIONS:
         pts = route(src, dst)
         if len(pts) < 2:
@@ -368,35 +387,41 @@ def generate(dark, out):
         for i in range(len(pts) - 1):
             p.drawLine(pts[i], pts[i + 1])
         draw_arrow(p, pts[-2], pts[-1], arrow_c)
-        lx, ly = _tms_label_pos(pts)
-        chip = QRectF(lx - 10, ly - 10, 20, 20)
-        p.setPen(QPen(QColor("#4A708B"), 0.8))
-        p.setBrush(QColor(34, 34, 34, 170))
-        p.drawRoundedRect(chip, 4, 4)
+        # TMS chip badge — muted blue border, calm Off-White text
+        lx, ly = _tms_label_pos(pts, src, dst)
+        chip = QRectF(lx - 9, ly - 9, 18, 18)
+        p.setPen(QPen(tms_chip_bdr, 0.8))
+        p.setBrush(tms_chip_bg)
+        p.drawRoundedRect(chip, 3, 3)
         p.setFont(tms_font)
         p.setPen(tms_c)
-        p.drawText(chip,
-                   Qt.AlignmentFlag.AlignCenter, str(tms))
+        p.drawText(chip, Qt.AlignmentFlag.AlignCenter, str(tms))
 
-    # ── State boxes (flat) ──
-    box_font = QFont("Segoe UI", 14, QFont.Weight.Bold)
+    # ── State boxes (flat pill) — drawn AFTER lines so boxes are on top ──
+    box_font = QFont("Segoe UI", 12, QFont.Weight.Bold)
     for name, cx, cy in STATES:
         rect = QRectF(cx - BOX_W / 2, cy - BOX_H / 2, BOX_W, BOX_H)
         _draw_flat_box(p, rect, box_bdr, box_fill, text_c, SHORT[name], box_font)
 
-    # ── Self-loop badges ──
-    loop_font = QFont("Segoe UI", 11, QFont.Weight.Bold)
+    # ── Self-loop badges (Off-White, right side of box) ──
+    loop_font = QFont("Segoe UI", 10, QFont.Weight.Bold)
     for name, tms in SELF_LOOPS.items():
         rect = rect_of(name)
+        # Place self-loop chip to the right of the box, vertically centered
+        lx = rect.right() + 6
+        ly = rect.center().y()
+        chip = QRectF(lx, ly - 8, 28, 16)
+        p.setPen(QPen(tms_chip_bdr, 0.6))
+        p.setBrush(tms_chip_bg)
+        p.drawRoundedRect(chip, 3, 3)
         p.setFont(loop_font)
         p.setPen(loop_c)
-        p.drawText(QPointF(rect.right() - 24, rect.top() - 5),
-                   f"\u21bb{tms}")
+        p.drawText(chip, Qt.AlignmentFlag.AlignCenter, f"\u21bb{tms}")
 
     # ── Footer ──
-    p.setFont(QFont("Segoe UI", 11, QFont.Weight.DemiBold))
+    p.setFont(QFont("Segoe UI", 10, QFont.Weight.DemiBold))
     p.setPen(title_c)
-    p.drawText(QRectF(0, H - 20, W, 16),
+    p.drawText(QRectF(0, H - 18, W, 16),
                Qt.AlignmentFlag.AlignCenter,
                "IEEE 1149.1 TAP Controller State Machine")
 

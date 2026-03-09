@@ -1,5 +1,5 @@
 """
-JTAG Sequencer Right Panel \u2014 TAP State Diagram + TDO Logger + Mapping.
+JTAG Sequencer Right Panel \u2014 TAP State Diagram + Pin Status + TDO Logger + Mapping.
 
 JTAG \ubaa8\ub4dc \uc120\ud0dd \uc2dc \ud540\uc544\uc6c3 \uc704\uce58\uc5d0 \ud45c\uc2dc\ub418\ub294 \uc6b0\uce21 \ud328\ub110.
 """
@@ -8,20 +8,70 @@ from __future__ import annotations
 from typing import Optional
 
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QFont
+from PySide6.QtGui import QFont, QColor
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QSplitter,
     QGroupBox, QLabel, QPushButton, QTableWidget,
     QTableWidgetItem, QHeaderView, QAbstractItemView,
-    QTextEdit,
+    QTextEdit, QSizePolicy, QFrame,
 )
 
 from core.theme_manager import ThemeManager
 from modules.ftdi_verifier.jtag_tap_diagram import TapStateDiagram
 
 
+class _PinLed(QLabel):
+    """Compact pin status LED indicator."""
+
+    def __init__(self, name: str, parent: Optional[QWidget] = None) -> None:
+        super().__init__(parent)
+        self._name = name
+        self._state = False
+        self.setFixedSize(14, 14)
+        self.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._update_style()
+
+    @property
+    def state(self) -> bool:
+        return self._state
+
+    def set_state(self, high: bool) -> None:
+        if self._state != high:
+            self._state = high
+            self._update_style()
+
+    def _update_style(self) -> None:
+        tm = ThemeManager.instance()
+        if self._state:
+            bg = "#4A90E2"
+        else:
+            bg = tm.color("jtag_tap_state") if tm.is_dark else "#D0D4DC"
+        self.setStyleSheet(
+            f"background: {bg}; border-radius: 7px; border: 1px solid #3A3F50;"
+        )
+
+
+def _make_section_header(title: str) -> QWidget:
+    """Create a compact section header: title label + horizontal line."""
+    w = QWidget()
+    w.setFixedHeight(20)
+    lay = QHBoxLayout(w)
+    lay.setContentsMargins(4, 0, 4, 0)
+    lay.setSpacing(6)
+    lbl = QLabel(title)
+    lbl.setFont(QFont("Segoe UI", 10, QFont.Weight.Bold))
+    lbl.setProperty("_section_title", True)
+    lay.addWidget(lbl)
+    line = QFrame()
+    line.setFrameShape(QFrame.Shape.HLine)
+    line.setFixedHeight(1)
+    line.setProperty("_section_line", True)
+    lay.addWidget(line, 1)
+    return w
+
+
 class JtagSequencerPanel(QWidget):
-    """JTAG \ubaa8\ub4dc \uc6b0\uce21 \ud328\ub110 \u2014 TAP Diagram + TDO Logger + \ub9e4\ud551."""
+    """JTAG \ubaa8\ub4dc \uc6b0\uce21 \ud328\ub110 \u2014 TAP Diagram + Pin Status + TDO Logger + \ub9e4\ud551."""
 
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
@@ -40,46 +90,98 @@ class JtagSequencerPanel(QWidget):
 
         splitter = QSplitter(Qt.Orientation.Vertical)
 
-        # \u2500\u2500 TOP: TAP State Machine (zero padding, fill width) \u2500\u2500
-        tap_group = QGroupBox("TAP State Machine")
-        tap_group.setContentsMargins(0, 0, 0, 0)
-        tap_layout = QVBoxLayout(tap_group)
-        tap_layout.setContentsMargins(0, 0, 0, 0)
-        tap_layout.setSpacing(0)
+        # \u2500\u2500 TOP: TAP State Machine + Pin Status \u2500\u2500
+        tap_container = QWidget()
+        tap_main = QVBoxLayout(tap_container)
+        tap_main.setContentsMargins(0, 0, 0, 0)
+        tap_main.setSpacing(0)
+
+        self._tap_header = _make_section_header("TAP State Machine")
+        tap_main.addWidget(self._tap_header)
+
+        tap_body = QHBoxLayout()
+        tap_body.setContentsMargins(2, 2, 2, 2)
+        tap_body.setSpacing(4)
+
+        # Diagram (fills area)
         self._tap_diagram = TapStateDiagram()
-        tap_layout.addWidget(self._tap_diagram)
+        self._tap_diagram.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding
+        )
+        tap_body.addWidget(self._tap_diagram, 1)
 
-        # \u2500\u2500 MIDDLE: TDO Data Logger \u2500\u2500
-        tdo_group = QGroupBox("TDO Data Logger")
-        tdo_layout = QVBoxLayout(tdo_group)
-        tdo_layout.setContentsMargins(2, 2, 2, 2)
-        tdo_layout.setSpacing(2)
+        # Pin Status indicator (right sidebar, fixed width)
+        pin_panel = QWidget()
+        pin_panel.setFixedWidth(110)
+        pin_layout = QVBoxLayout(pin_panel)
+        pin_layout.setContentsMargins(4, 0, 4, 4)
+        pin_layout.setSpacing(6)
 
-        tdo_header = QHBoxLayout()
-        self._tdo_clear_btn = QPushButton("Clear")
-        self._tdo_clear_btn.setFixedHeight(24)
-        self._tdo_clear_btn.clicked.connect(self._on_tdo_clear)
-        self._tdo_export_btn = QPushButton("Export")
-        self._tdo_export_btn.setFixedHeight(24)
-        tdo_header.addStretch()
-        tdo_header.addWidget(self._tdo_clear_btn)
-        tdo_header.addWidget(self._tdo_export_btn)
-        tdo_layout.addLayout(tdo_header)
+        pin_title = QLabel("Pin Status")
+        pin_title.setFont(QFont("Segoe UI", 9, QFont.Weight.Bold))
+        pin_title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        pin_layout.addWidget(pin_title)
 
-        self._tdo_log = QTextEdit()
-        self._tdo_log.setReadOnly(True)
-        self._tdo_log.setFont(QFont("Consolas", 10))
-        self._tdo_log.setPlaceholderText("TDO raw data will appear here...")
-        tdo_layout.addWidget(self._tdo_log, 1)
+        sep = QFrame()
+        sep.setFrameShape(QFrame.Shape.HLine)
+        sep.setFixedHeight(1)
+        pin_layout.addWidget(sep)
 
-        # \u2500\u2500 BOTTOM: Mapping Management \u2500\u2500
-        mapping_group = QGroupBox("Mapping Management")
-        mapping_layout = QVBoxLayout(mapping_group)
-        mapping_layout.setContentsMargins(2, 2, 2, 2)
-        mapping_layout.setSpacing(4)
+        self._pin_leds = {}
+        for pin_name in ("TCK", "TMS", "TDI", "TDO", "RST"):
+            row = QHBoxLayout()
+            row.setSpacing(6)
+            led = _PinLed(pin_name)
+            lbl = QLabel(pin_name)
+            lbl.setFont(QFont("Consolas", 10, QFont.Weight.Bold))
+            lbl.setFixedWidth(36)
+            state_lbl = QLabel("LOW")
+            state_lbl.setFont(QFont("Consolas", 9))
+            state_lbl.setAlignment(Qt.AlignmentFlag.AlignRight)
+            row.addWidget(led)
+            row.addWidget(lbl)
+            row.addWidget(state_lbl, 1)
+            pin_layout.addLayout(row)
+            self._pin_leds[pin_name] = (led, lbl, state_lbl)
+
+        pin_layout.addStretch()
+
+        # TAP state display
+        state_title = QLabel("Current State")
+        state_title.setFont(QFont("Segoe UI", 8))
+        state_title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        pin_layout.addWidget(state_title)
+
+        self._state_label = QLabel("TLR")
+        self._state_label.setFont(QFont("Consolas", 10, QFont.Weight.Bold))
+        self._state_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._state_label.setFixedHeight(24)
+        pin_layout.addWidget(self._state_label)
+
+        self._pin_panel = pin_panel
+        self._pin_sep = sep
+        self._pin_title = pin_title
+        self._state_title = state_title
+        tap_body.addWidget(pin_panel)
+
+        tap_main.addLayout(tap_body, 1)
+
+        # \u2500\u2500 MIDDLE: Mapping Management \u2500\u2500
+        mapping_container = QWidget()
+        mapping_main = QVBoxLayout(mapping_container)
+        mapping_main.setContentsMargins(0, 0, 0, 0)
+        mapping_main.setSpacing(0)
+
+        self._mapping_header = _make_section_header("Mapping Management")
+        mapping_main.addWidget(self._mapping_header)
+
+        mapping_body = QVBoxLayout()
+        mapping_body.setContentsMargins(2, 4, 2, 2)
+        mapping_body.setSpacing(4)
 
         header_row = QHBoxLayout()
-        header_row.addWidget(QLabel("Target File:"))
+        self._target_file_lbl = QLabel("Target File:")
+        header_row.addWidget(self._target_file_lbl)
         self._mapping_file_label = QLabel("-")
         self._mapping_file_label.setFont(QFont("Consolas", 9))
         header_row.addWidget(self._mapping_file_label, 1)
@@ -89,7 +191,7 @@ class JtagSequencerPanel(QWidget):
         self._mapping_export_btn.setFixedHeight(24)
         header_row.addWidget(self._mapping_import_btn)
         header_row.addWidget(self._mapping_export_btn)
-        mapping_layout.addLayout(header_row)
+        mapping_body.addLayout(header_row)
 
         self._mapping_table = QTableWidget(0, 5)
         self._mapping_table.setHorizontalHeaderLabels(
@@ -110,26 +212,61 @@ class JtagSequencerPanel(QWidget):
         self._mapping_table.setEditTriggers(
             QAbstractItemView.EditTrigger.NoEditTriggers
         )
-        mapping_layout.addWidget(self._mapping_table, 1)
+        mapping_body.addWidget(self._mapping_table, 1)
 
         self._mapping_status = QLabel("Mapping Status: -")
         self._mapping_status.setFont(QFont("Segoe UI", 8))
-        mapping_layout.addWidget(self._mapping_status)
+        mapping_body.addWidget(self._mapping_status)
 
-        splitter.addWidget(tap_group)
-        splitter.addWidget(mapping_group)
-        splitter.addWidget(tdo_group)
-        splitter.setStretchFactor(0, 1)
-        splitter.setStretchFactor(1, 2)
-        splitter.setStretchFactor(2, 1)
-        splitter.setSizes([300, 370, 220])
+        mapping_main.addLayout(mapping_body, 1)
+
+        # \u2500\u2500 BOTTOM: TDO Data Logger \u2500\u2500
+        tdo_container = QWidget()
+        tdo_main = QVBoxLayout(tdo_container)
+        tdo_main.setContentsMargins(0, 0, 0, 0)
+        tdo_main.setSpacing(0)
+
+        self._tdo_header = _make_section_header("TDO Data Logger")
+        tdo_main.addWidget(self._tdo_header)
+
+        tdo_body = QVBoxLayout()
+        tdo_body.setContentsMargins(2, 4, 2, 2)
+        tdo_body.setSpacing(2)
+
+        tdo_btn_row = QHBoxLayout()
+        self._tdo_clear_btn = QPushButton("Clear")
+        self._tdo_clear_btn.setFixedHeight(24)
+        self._tdo_clear_btn.clicked.connect(self._on_tdo_clear)
+        self._tdo_export_btn = QPushButton("Export")
+        self._tdo_export_btn.setFixedHeight(24)
+        tdo_btn_row.addStretch()
+        tdo_btn_row.addWidget(self._tdo_clear_btn)
+        tdo_btn_row.addWidget(self._tdo_export_btn)
+        tdo_body.addLayout(tdo_btn_row)
+
+        self._tdo_log = QTextEdit()
+        self._tdo_log.setReadOnly(True)
+        self._tdo_log.setFont(QFont("Consolas", 10))
+        self._tdo_log.setPlaceholderText("TDO raw data will appear here...")
+        tdo_body.addWidget(self._tdo_log, 1)
+
+        tdo_main.addLayout(tdo_body, 1)
+
+        # 3.5 : 4.5 : 2 ratio — TAP 35%, Mapping 45%, TDO 20%
+        splitter.addWidget(tap_container)
+        splitter.addWidget(mapping_container)
+        splitter.addWidget(tdo_container)
+        splitter.setStretchFactor(0, 35)
+        splitter.setStretchFactor(1, 45)
+        splitter.setStretchFactor(2, 20)
+        splitter.setSizes([350, 420, 130])
         splitter.setChildrenCollapsible(False)
 
         layout.addWidget(splitter)
 
-        self._tap_group = tap_group
-        self._tdo_group = tdo_group
-        self._mapping_group = mapping_group
+        self._tap_container = tap_container
+        self._mapping_container = mapping_container
+        self._tdo_container = tdo_container
 
     # \u2500\u2500 public API \u2500\u2500
 
@@ -143,6 +280,18 @@ class JtagSequencerPanel(QWidget):
 
     def set_current_state(self, state: str) -> None:
         self._tap_diagram.set_current_state(state)
+        short = state.replace("Test-Logic-Reset", "TLR") \
+                     .replace("Run-Test/Idle", "RTI") \
+                     .replace("Select-DR-Scan", "Sel-DR") \
+                     .replace("Select-IR-Scan", "Sel-IR")
+        self._state_label.setText(short)
+
+    def set_pin_state(self, pin: str, high: bool) -> None:
+        """Update a JTAG pin LED. pin: 'TCK'|'TMS'|'TDI'|'TDO'."""
+        if pin in self._pin_leds:
+            led, lbl, state_lbl = self._pin_leds[pin]
+            led.set_state(high)
+            state_lbl.setText("HIGH" if high else "LOW")
 
     def append_tdo_data(self, data: str) -> None:
         self._tdo_log.append(data)
@@ -163,30 +312,29 @@ class JtagSequencerPanel(QWidget):
         mapping_bg = tm.color("jtag_mapping_bg")
         text = tm.color("jtag_tap_text")
         border = tm.color("jtag_btn_border")
+        surface = tm.color("jtag_tap_state")
+        highlight = tm.color("jtag_tap_state_active")
+        panel_bg = tm.color("jtag_tap_bg")
 
-        # TAP group: enforce clear title/content breathing room
-        self._tap_group.setStyleSheet(
-            f"QGroupBox {{ color: {text}; border: 1px solid #333333; "
-            f"border-radius: 0px; margin-top: 8px; padding: 0; padding-top: 22px; }}"
-            f"QGroupBox::title {{ subcontrol-origin: margin; left: 6px; "
-            f"padding: 0 4px; color: {text}; font-size: 10pt; "
-            f"font-weight: bold; }}"
+        # Section headers: title label + horizontal line
+        header_style = (
+            f"QLabel[_section_title=\"true\"] {{ color: {text}; }}"
+            f"QFrame[_section_line=\"true\"] {{ background: {border}; }}"
         )
-        # TDO & Mapping: same title/content breathing room
-        data_style = (
-            f"QGroupBox {{ color: {text}; border: 1px solid {border}; "
-            f"border-radius: 0px; margin-top: 8px; padding-top: 22px; }}"
-            f"QGroupBox::title {{ subcontrol-origin: margin; left: 4px; "
-            f"padding: 0 2px; color: {text}; }}"
+        self._tap_header.setStyleSheet(header_style)
+        self._mapping_header.setStyleSheet(header_style)
+        self._tdo_header.setStyleSheet(header_style)
+
+        # Container backgrounds
+        container_bg = f"background: {panel_bg};"
+        self._tap_container.setStyleSheet(
+            f"QWidget {{ {container_bg} }}"
         )
-        self._tdo_group.setStyleSheet(data_style)
-        self._mapping_group.setStyleSheet(data_style)
 
         self._mapping_table.setStyleSheet(
             f"QTableWidget {{ background: {mapping_bg}; color: {text}; "
             f"gridline-color: {border}; border: 1px solid {border}; }}"
-            f"QTableWidget::item {{ border-bottom: 1px solid {tm.color('border_subtle')}; }}"
-            f"QHeaderView::section {{ background: {tm.color('jtag_tap_state')}; "
+            f"QHeaderView::section {{ background: {surface}; "
             f"color: {text}; border: 1px solid {border}; padding: 2px; }}"
         )
 
@@ -208,6 +356,20 @@ class JtagSequencerPanel(QWidget):
         )
 
         self._mapping_file_label.setStyleSheet(f"color: {text};")
+        self._target_file_lbl.setStyleSheet(f"color: {text};")
         self._mapping_status.setStyleSheet(
             f"color: {tm.color('jtag_status_text')};"
         )
+
+        # Pin status panel styling
+        self._pin_title.setStyleSheet(f"color: {text};")
+        self._state_title.setStyleSheet(f"color: {tm.color('jtag_status_text')};")
+        self._state_label.setStyleSheet(
+            f"color: {highlight}; background: {surface}; "
+            f"border: 1px solid {border}; border-radius: 3px;"
+        )
+        self._pin_sep.setStyleSheet(f"background: {border};")
+        for pin_name, (led, lbl, state_lbl) in self._pin_leds.items():
+            lbl.setStyleSheet(f"color: {text};")
+            state_lbl.setStyleSheet(f"color: {tm.color('jtag_status_text')};")
+            led._update_style()
