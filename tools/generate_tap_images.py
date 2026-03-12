@@ -321,7 +321,7 @@ def generate(dark, out):
         loop_c   = QColor("#E0E0E0")     # Off-White self-loop labels
         rgn_fill = QColor(74, 144, 226, 10)
         rgn_bdr  = QColor(74, 144, 226, 50)
-        title_c  = QColor("#6A7080")
+        title_c  = QColor("#8A92A4")
         rgn_title = QColor("#FFFFFF")
         label_bg = QColor(43, 43, 59, 200)
         tms_chip_bg  = QColor(30, 30, 46, 210)
@@ -336,7 +336,7 @@ def generate(dark, out):
         loop_c   = QColor("#2A4060")
         rgn_fill = QColor(74, 144, 226, 8)
         rgn_bdr  = QColor(74, 144, 226, 30)
-        title_c  = QColor("#8890A0")
+        title_c  = QColor("#6A7080")
         rgn_title = QColor("#2A3040")
         label_bg = QColor(230, 232, 236, 200)
         tms_chip_bg  = QColor(240, 242, 245, 210)

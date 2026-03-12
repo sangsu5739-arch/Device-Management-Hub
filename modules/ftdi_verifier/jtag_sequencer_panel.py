@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from typing import Optional
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QFont, QColor
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QSplitter,
@@ -70,8 +70,21 @@ def _make_section_header(title: str) -> QWidget:
     return w
 
 
+def _make_hsep() -> QFrame:
+    """Thin horizontal separator line."""
+    sep = QFrame()
+    sep.setFrameShape(QFrame.Shape.HLine)
+    sep.setFixedHeight(1)
+    return sep
+
+
 class JtagSequencerPanel(QWidget):
     """JTAG \ubaa8\ub4dc \uc6b0\uce21 \ud328\ub110 \u2014 TAP Diagram + Pin Status + TDO Logger + \ub9e4\ud551."""
+
+    # Quick operation button signals (connected by parent module)
+    read_idcode_clicked = Signal()
+    reset_tap_clicked = Signal()
+    bypass_test_clicked = Signal()
 
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
@@ -90,7 +103,7 @@ class JtagSequencerPanel(QWidget):
 
         splitter = QSplitter(Qt.Orientation.Vertical)
 
-        # \u2500\u2500 TOP: TAP State Machine + Pin Status \u2500\u2500
+        # \u2500\u2500 TOP: [Device Chain] | [TAP Diagram] | [Pin Status + Exec] \u2500\u2500
         tap_container = QWidget()
         tap_main = QVBoxLayout(tap_container)
         tap_main.setContentsMargins(0, 0, 0, 0)
@@ -103,66 +116,160 @@ class JtagSequencerPanel(QWidget):
         tap_body.setContentsMargins(2, 2, 2, 2)
         tap_body.setSpacing(4)
 
-        # Diagram (fills area)
+        # \u2500\u2500 LEFT column: Device Chain Info + Quick Ops \u2500\u2500
+        left_panel = QWidget()
+        left_panel.setFixedWidth(130)
+        left_lay = QVBoxLayout(left_panel)
+        left_lay.setContentsMargins(4, 0, 4, 4)
+        left_lay.setSpacing(4)
+
+        chain_title = QLabel("Device Chain")
+        chain_title.setFont(QFont("Segoe UI", 9, QFont.Weight.Bold))
+        chain_title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        left_lay.addWidget(chain_title)
+
+        self._chain_sep = _make_hsep()
+        left_lay.addWidget(self._chain_sep)
+
+        # Chain info labels
+        info_font = QFont("Consolas", 8)
+        self._chain_labels = {}
+        for key, default in [
+            ("Devices", "- "),
+            ("IDCODE", "- "),
+            ("Mfr", "- "),
+            ("Part", "- "),
+            ("IR Len", "- "),
+        ]:
+            row = QHBoxLayout()
+            row.setSpacing(2)
+            k_lbl = QLabel(f"{key}:")
+            k_lbl.setFont(QFont("Segoe UI", 8))
+            k_lbl.setFixedWidth(42)
+            v_lbl = QLabel(default)
+            v_lbl.setFont(info_font)
+            v_lbl.setAlignment(Qt.AlignmentFlag.AlignRight)
+            row.addWidget(k_lbl)
+            row.addWidget(v_lbl, 1)
+            left_lay.addLayout(row)
+            self._chain_labels[key] = (k_lbl, v_lbl)
+
+        left_lay.addStretch()
+
+        # Quick Operations
+        ops_title = QLabel("Quick Ops")
+        ops_title.setFont(QFont("Segoe UI", 9, QFont.Weight.Bold))
+        ops_title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        left_lay.addWidget(ops_title)
+
+        self._ops_sep = _make_hsep()
+        left_lay.addWidget(self._ops_sep)
+
+        self._btn_read_idcode = QPushButton("Read IDCODE")
+        self._btn_read_idcode.setFixedHeight(26)
+        self._btn_read_idcode.clicked.connect(self.read_idcode_clicked)
+        left_lay.addWidget(self._btn_read_idcode)
+
+        self._btn_reset_tap = QPushButton("Reset TAP")
+        self._btn_reset_tap.setFixedHeight(26)
+        self._btn_reset_tap.clicked.connect(self.reset_tap_clicked)
+        left_lay.addWidget(self._btn_reset_tap)
+
+        self._btn_bypass_test = QPushButton("Bypass Test")
+        self._btn_bypass_test.setFixedHeight(26)
+        self._btn_bypass_test.clicked.connect(self.bypass_test_clicked)
+        left_lay.addWidget(self._btn_bypass_test)
+
+        self._left_panel = left_panel
+        self._chain_title = chain_title
+        self._ops_title = ops_title
+        tap_body.addWidget(left_panel)
+
+        # \u2500\u2500 CENTER: TAP Diagram \u2500\u2500
         self._tap_diagram = TapStateDiagram()
         self._tap_diagram.setSizePolicy(
             QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding
         )
         tap_body.addWidget(self._tap_diagram, 1)
 
-        # Pin Status indicator (right sidebar, fixed width)
-        pin_panel = QWidget()
-        pin_panel.setFixedWidth(110)
-        pin_layout = QVBoxLayout(pin_panel)
-        pin_layout.setContentsMargins(4, 0, 4, 4)
-        pin_layout.setSpacing(6)
+        # \u2500\u2500 RIGHT column: Pin Status + Execution Counters \u2500\u2500
+        right_panel = QWidget()
+        right_panel.setFixedWidth(120)
+        right_lay = QVBoxLayout(right_panel)
+        right_lay.setContentsMargins(4, 0, 4, 4)
+        right_lay.setSpacing(4)
 
         pin_title = QLabel("Pin Status")
         pin_title.setFont(QFont("Segoe UI", 9, QFont.Weight.Bold))
         pin_title.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        pin_layout.addWidget(pin_title)
+        right_lay.addWidget(pin_title)
 
-        sep = QFrame()
-        sep.setFrameShape(QFrame.Shape.HLine)
-        sep.setFixedHeight(1)
-        pin_layout.addWidget(sep)
+        self._pin_sep = _make_hsep()
+        right_lay.addWidget(self._pin_sep)
 
         self._pin_leds = {}
         for pin_name in ("TCK", "TMS", "TDI", "TDO", "RST"):
             row = QHBoxLayout()
-            row.setSpacing(6)
+            row.setSpacing(4)
             led = _PinLed(pin_name)
             lbl = QLabel(pin_name)
-            lbl.setFont(QFont("Consolas", 10, QFont.Weight.Bold))
-            lbl.setFixedWidth(36)
+            lbl.setFont(QFont("Consolas", 9, QFont.Weight.Bold))
+            lbl.setFixedWidth(32)
             state_lbl = QLabel("LOW")
-            state_lbl.setFont(QFont("Consolas", 9))
+            state_lbl.setFont(QFont("Consolas", 8))
             state_lbl.setAlignment(Qt.AlignmentFlag.AlignRight)
             row.addWidget(led)
             row.addWidget(lbl)
             row.addWidget(state_lbl, 1)
-            pin_layout.addLayout(row)
+            right_lay.addLayout(row)
             self._pin_leds[pin_name] = (led, lbl, state_lbl)
 
-        pin_layout.addStretch()
-
         # TAP state display
+        self._state_sep = _make_hsep()
+        right_lay.addWidget(self._state_sep)
+
         state_title = QLabel("Current State")
         state_title.setFont(QFont("Segoe UI", 8))
         state_title.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        pin_layout.addWidget(state_title)
+        right_lay.addWidget(state_title)
 
         self._state_label = QLabel("TLR")
         self._state_label.setFont(QFont("Consolas", 10, QFont.Weight.Bold))
         self._state_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._state_label.setFixedHeight(24)
-        pin_layout.addWidget(self._state_label)
+        right_lay.addWidget(self._state_label)
 
-        self._pin_panel = pin_panel
-        self._pin_sep = sep
+        # Execution counters
+        self._exec_sep = _make_hsep()
+        right_lay.addWidget(self._exec_sep)
+
+        exec_title = QLabel("Execution")
+        exec_title.setFont(QFont("Segoe UI", 8))
+        exec_title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        right_lay.addWidget(exec_title)
+
+        counter_font = QFont("Consolas", 9)
+        self._exec_labels = {}
+        for key, default in [("Cycles", "0 / 0"), ("Pass", "0"), ("Fail", "0")]:
+            row = QHBoxLayout()
+            row.setSpacing(2)
+            k_lbl = QLabel(f"{key}:")
+            k_lbl.setFont(QFont("Segoe UI", 8))
+            v_lbl = QLabel(default)
+            v_lbl.setFont(counter_font)
+            v_lbl.setAlignment(Qt.AlignmentFlag.AlignRight)
+            row.addWidget(k_lbl)
+            row.addWidget(v_lbl, 1)
+            right_lay.addLayout(row)
+            self._exec_labels[key] = (k_lbl, v_lbl)
+
+        right_lay.addStretch()
+
+        self._right_panel = right_panel
         self._pin_title = pin_title
         self._state_title = state_title
-        tap_body.addWidget(pin_panel)
+        self._exec_title = exec_title
+        tap_body.addWidget(right_panel)
 
         tap_main.addLayout(tap_body, 1)
 
@@ -252,7 +359,7 @@ class JtagSequencerPanel(QWidget):
 
         tdo_main.addLayout(tdo_body, 1)
 
-        # 3.5 : 4.5 : 2 ratio — TAP 35%, Mapping 45%, TDO 20%
+        # 3.5 : 4.5 : 2 ratio \u2014 TAP 35%, Mapping 45%, TDO 20%
         splitter.addWidget(tap_container)
         splitter.addWidget(mapping_container)
         splitter.addWidget(tdo_container)
@@ -292,6 +399,31 @@ class JtagSequencerPanel(QWidget):
             led, lbl, state_lbl = self._pin_leds[pin]
             led.set_state(high)
             state_lbl.setText("HIGH" if high else "LOW")
+
+    def set_chain_info(
+        self,
+        devices: str = "- ",
+        idcode: str = "- ",
+        mfr: str = "- ",
+        part: str = "- ",
+        ir_len: str = "- ",
+    ) -> None:
+        """Update Device Chain info labels."""
+        mapping = {
+            "Devices": devices, "IDCODE": idcode,
+            "Mfr": mfr, "Part": part, "IR Len": ir_len,
+        }
+        for key, val in mapping.items():
+            if key in self._chain_labels:
+                self._chain_labels[key][1].setText(val)
+
+    def set_exec_counters(
+        self, cycles: str = "0 / 0", passed: str = "0", failed: str = "0"
+    ) -> None:
+        """Update execution counter labels."""
+        self._exec_labels["Cycles"][1].setText(cycles)
+        self._exec_labels["Pass"][1].setText(passed)
+        self._exec_labels["Fail"][1].setText(failed)
 
     def append_tdo_data(self, data: str) -> None:
         self._tdo_log.append(data)
@@ -348,6 +480,9 @@ class JtagSequencerPanel(QWidget):
         self._mapping_export_btn.setStyleSheet(btn_style)
         self._tdo_clear_btn.setStyleSheet(btn_style)
         self._tdo_export_btn.setStyleSheet(btn_style)
+        self._btn_read_idcode.setStyleSheet(btn_style)
+        self._btn_reset_tap.setStyleSheet(btn_style)
+        self._btn_bypass_test.setStyleSheet(btn_style)
 
         self._tdo_log.setStyleSheet(
             f"QTextEdit {{ background: {tm.color('jtag_preview_bg')}; "
@@ -361,7 +496,7 @@ class JtagSequencerPanel(QWidget):
             f"color: {tm.color('jtag_status_text')};"
         )
 
-        # Pin status panel styling
+        # Pin status panel (right)
         self._pin_title.setStyleSheet(f"color: {text};")
         self._state_title.setStyleSheet(f"color: {tm.color('jtag_status_text')};")
         self._state_label.setStyleSheet(
@@ -369,7 +504,24 @@ class JtagSequencerPanel(QWidget):
             f"border: 1px solid {border}; border-radius: 3px;"
         )
         self._pin_sep.setStyleSheet(f"background: {border};")
+        self._state_sep.setStyleSheet(f"background: {border};")
+        self._exec_sep.setStyleSheet(f"background: {border};")
+        self._exec_title.setStyleSheet(f"color: {tm.color('jtag_status_text')};")
         for pin_name, (led, lbl, state_lbl) in self._pin_leds.items():
             lbl.setStyleSheet(f"color: {text};")
             state_lbl.setStyleSheet(f"color: {tm.color('jtag_status_text')};")
             led._update_style()
+        for key, (k_lbl, v_lbl) in self._exec_labels.items():
+            k_lbl.setStyleSheet(f"color: {tm.color('jtag_status_text')};")
+            v_lbl.setStyleSheet(
+                f"color: {'#E74C3C' if key == 'Fail' else highlight};"
+            )
+
+        # Device Chain panel (left)
+        self._chain_title.setStyleSheet(f"color: {text};")
+        self._ops_title.setStyleSheet(f"color: {text};")
+        self._chain_sep.setStyleSheet(f"background: {border};")
+        self._ops_sep.setStyleSheet(f"background: {border};")
+        for key, (k_lbl, v_lbl) in self._chain_labels.items():
+            k_lbl.setStyleSheet(f"color: {tm.color('jtag_status_text')};")
+            v_lbl.setStyleSheet(f"color: {text};")
