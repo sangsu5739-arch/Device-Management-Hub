@@ -23,6 +23,7 @@ from PySide6.QtWidgets import (
 
 from core.ftdi_manager import FtdiManager
 from core.theme_manager import ThemeManager
+from core.data_recorder import DataRecorder
 from modules.base_module import BaseModule
 from modules.ina228.ina228_registers import (
     INA228Reg, REGISTER_SIZE, REGISTER_NAMES, REGISTER_DESCRIPTIONS,
@@ -71,6 +72,7 @@ class INA228Module(BaseModule):
         self._voltage_data: deque = deque(maxlen=self.MAX_DATA_POINTS)
         self._current_data: deque = deque(maxlen=self.MAX_DATA_POINTS)
         self._start_time: float = 0.0
+        self._recorder = DataRecorder()
         super().__init__(ftdi_manager, parent)
 
     # -- BaseModule abstract method implementations --
@@ -148,6 +150,15 @@ class INA228Module(BaseModule):
             w.setStyleSheet(f"background: {tm.color('bg_bar')}; border-radius: 4px;")
         for bar in self._hold_bars.values():
             bar.setStyleSheet(f"background: {tm.color('bg_bar_fill')}; border-radius: 3px;")
+        # Rec button (only style when not recording)
+        if not self._recorder.is_recording:
+            self._rec_btn.setStyleSheet(
+                f"QPushButton {{ font-weight: bold; font-size: 12px; padding: 6px 10px;"
+                f" border-radius: 6px; background: {tm.color('btn_auto_bg')};"
+                f" color: #cc3333; }}"
+                f"QPushButton:disabled {{ background: {tm.color('bg_disabled')};"
+                f" color: {tm.color('text_disabled')}; }}"
+            )
         # Auto range
         self._auto_range_btn.setStyleSheet(
             f"QPushButton {{ font-weight: bold; font-size: 12px; padding: 6px 10px;"
@@ -268,6 +279,7 @@ class INA228Module(BaseModule):
 
         self._start_btn.setEnabled(False)
         self._stop_btn.setEnabled(True)
+        self._rec_btn.setEnabled(True)
         self._adc_range_combo.setEnabled(False)
         self._avg_combo.setEnabled(False)
         self._vbusct_combo.setEnabled(False)
@@ -278,6 +290,14 @@ class INA228Module(BaseModule):
         """Stop worker thread (monitoring OFF)."""
         if not self._is_monitoring:
             return
+
+        # Stop recording if active
+        if self._recorder.is_recording:
+            filepath, count = self._recorder.stop()
+            self._rec_btn.setText("\u2b24 REC")
+            self._rec_btn.setStyleSheet("")
+            self._apply_theme()
+            self._append_log(f"[INFO] Recording auto-stopped: {count} samples \u2192 {filepath}")
 
         # Disconnect FTDI log signal
         try:
@@ -302,6 +322,7 @@ class INA228Module(BaseModule):
         if hasattr(self, "_start_btn"):
             self._start_btn.setEnabled(True)
             self._stop_btn.setEnabled(False)
+            self._rec_btn.setEnabled(False)
             self._adc_range_combo.setEnabled(True)
             self._avg_combo.setEnabled(True)
             self._vbusct_combo.setEnabled(True)
@@ -575,6 +596,14 @@ class INA228Module(BaseModule):
         btn_row.addWidget(self._stop_btn)
         layout.addLayout(btn_row)
 
+        # Record button
+        self._rec_btn = QPushButton("\u2b24 REC")
+        self._rec_btn.setObjectName("recBtn")
+        self._rec_btn.setMinimumHeight(32)
+        self._rec_btn.setEnabled(False)
+        self._rec_btn.clicked.connect(self._on_rec_clicked)
+        layout.addWidget(self._rec_btn)
+
         # Register map refresh button
         self._refresh_reg_btn = QPushButton("Refresh Register Map")
         self._refresh_reg_btn.clicked.connect(self._refresh_register_map)
@@ -768,6 +797,37 @@ class INA228Module(BaseModule):
         self._current_label.setText(f"{m.current_ma:.4f} mA")
         self._power_label.setText(f"{m.power_mw:.4f} mW")
         self._temp_label.setText(f"{m.die_temp_c:.2f} C")
+
+        # Recording
+        if self._recorder.is_recording:
+            self._recorder.add_row(m.timestamp, [
+                f"{m.vbus_v:.6f}", f"{m.vshunt_mv:.6f}", f"{m.current_ma:.6f}",
+                f"{m.power_mw:.6f}", f"{m.die_temp_c:.3f}",
+            ])
+            cnt = self._recorder.sample_count
+            el = self._recorder.elapsed_seconds
+            mins, secs = divmod(int(el), 60)
+            self._rec_btn.setText(f"\u25a0 STOP ({mins:02d}:{secs:02d}, {cnt})")
+
+    @Slot()
+    def _on_rec_clicked(self) -> None:
+        if self._recorder.is_recording:
+            filepath, count = self._recorder.stop()
+            self._rec_btn.setText("\u2b24 REC")
+            self._rec_btn.setStyleSheet("")
+            self._apply_theme()
+            self._append_log(f"[INFO] Recording stopped: {count} samples \u2192 {filepath}")
+        else:
+            if not self._is_monitoring:
+                return
+            headers = ["Vbus_V", "Vshunt_mV", "Current_mA", "Power_mW", "DieTemp_C"]
+            filepath = self._recorder.start("INA228", headers)
+            self._rec_btn.setText("\u25a0 STOP")
+            self._rec_btn.setStyleSheet(
+                "QPushButton { background: #cc2222; color: #ffffff; font-weight: bold;"
+                " border-radius: 6px; border: 1px solid #cc3333; }"
+            )
+            self._append_log(f"[INFO] Recording started \u2192 {filepath}")
 
     @Slot(int)
     def _on_window_seconds_changed(self, value: int) -> None:

@@ -23,6 +23,7 @@ from PySide6.QtGui import QColor, QFont
 
 from core.ftdi_manager import FtdiManager
 from core.theme_manager import ThemeManager
+from core.data_recorder import DataRecorder
 from modules.base_module import BaseModule
 from modules.ads1018.ads1018_driver import (
     PGA, DataRate, ChannelMode, ChannelConfig, ADS1018Config,
@@ -54,6 +55,7 @@ class ADS1018Module(BaseModule):
         self._ch_current_frames: list = []
         self._ch_value_labels: list = []
         self._ch_unit_labels: list = []
+        self._recorder = DataRecorder()
         super().__init__(ftdi_manager, parent)
 
     def init_ui(self) -> None:
@@ -112,6 +114,16 @@ class ADS1018Module(BaseModule):
                 f" color: {tm.color('btn_hold_checked_text')};"
                 f" border: 1px solid {tm.color('btn_hold_checked_border')}; }}"
             )
+        # Rec button (only when not recording)
+        if not self._recorder.is_recording:
+            for w in self.findChildren(QPushButton, "recBtn"):
+                w.setStyleSheet(
+                    f"QPushButton {{ font-weight: bold; font-size: 12px; padding: 6px 10px;"
+                    f" border-radius: 6px; background: {tm.color('btn_auto_bg')};"
+                    f" color: #cc3333; }}"
+                    f"QPushButton:disabled {{ background: {tm.color('bg_disabled')};"
+                    f" color: {tm.color('text_disabled')}; }}"
+                )
         # Auto range
         for w in self.findChildren(QPushButton, "autoRangeBtn"):
             w.setStyleSheet(
@@ -394,6 +406,14 @@ class ADS1018Module(BaseModule):
         btn_row.addWidget(self._stop_btn)
         layout.addLayout(btn_row)
 
+        # Record button
+        self._rec_btn = QPushButton("\u2b24 REC")
+        self._rec_btn.setObjectName("recBtn")
+        self._rec_btn.setMinimumHeight(32)
+        self._rec_btn.setEnabled(False)
+        self._rec_btn.clicked.connect(self._on_rec_clicked)
+        layout.addWidget(self._rec_btn)
+
         # Register map refresh button
         self._refresh_reg_btn = QPushButton("Refresh Register Map")
         self._refresh_reg_btn.clicked.connect(self._refresh_register_map)
@@ -480,16 +500,6 @@ class ADS1018Module(BaseModule):
         
         reg_layout.addWidget(self._reg_table)
         tabs.addTab(reg_tab, "Register Map")
-
-        # Config Summary tab
-        summary_tab = QWidget()
-        summary_layout = QVBoxLayout(summary_tab)
-        summary_layout.setContentsMargins(6, 6, 6, 6)
-        self._config_summary = QTextEdit()
-        self._config_summary.setReadOnly(True)
-        self._config_summary.setObjectName("themedConsole")
-        summary_layout.addWidget(self._config_summary)
-        tabs.addTab(summary_tab, "Config Summary")
 
         # SPI Log tab
         log_tab = QWidget()
@@ -636,6 +646,7 @@ class ADS1018Module(BaseModule):
 
         self._start_btn.setEnabled(False)
         self._stop_btn.setEnabled(True)
+        self._rec_btn.setEnabled(True)
         self._pga_combo.setEnabled(False)
         self._rate_combo.setEnabled(False)
         self._cs_combo.setEnabled(False)
@@ -648,27 +659,18 @@ class ADS1018Module(BaseModule):
 
         self._append_log("[INFO] Monitoring started.")
 
-        # Update Config Summary tab
-        summary = f"PGA: {self._pga_combo.currentText()}\n"
-        summary += f"Data Rate: {self._rate_combo.currentText()}\n"
-        summary += f"Op. Mode: {self._op_mode_combo.currentText()}\n"
-        summary += f"Sensor: {self._ts_mode_combo.currentText()}\n"
-        summary += f"Pull-up: {'Enabled' if self._config.pullup_enable else 'Disabled'}\n"
-        summary += f"CS Pin: {self._cs_combo.currentText()}\n\n"
-        for i, ch in enumerate(channels):
-            if ch.mode == ChannelMode.VOLTAGE:
-                mode_str = "VOLTAGE"
-                ch_conf = ""
-            else:
-                mode_str = "CURRENT"
-                ch_conf = f" | R={ch.shunt_resistor}Ω, G={ch.gain}"
-            summary += f"CH{i}: {mode_str}{ch_conf}\n"
-        if hasattr(self, '_config_summary'):
-            self._config_summary.setText(summary)
-
     def stop_communication(self) -> None:
         if not self._running:
             return
+
+        # Stop recording if active
+        if self._recorder.is_recording:
+            filepath, count = self._recorder.stop()
+            self._rec_btn.setText("\u2b24 REC")
+            self._rec_btn.setStyleSheet("")
+            self._apply_theme()
+            self._append_log(f"[INFO] Recording auto-stopped: {count} samples \u2192 {filepath}")
+
         self._running = False
 
         if self._worker:
@@ -681,6 +683,7 @@ class ADS1018Module(BaseModule):
 
         self._start_btn.setEnabled(True)
         self._stop_btn.setEnabled(False)
+        self._rec_btn.setEnabled(False)
         self._pga_combo.setEnabled(True)
         self._rate_combo.setEnabled(True)
         self._cs_combo.setEnabled(True)
@@ -717,6 +720,41 @@ class ADS1018Module(BaseModule):
                 self._ch_value_labels[i].setText(f"{val:.3f} {unit}")
             else:
                 self._ch_value_labels[i].setText("---")
+
+        # Recording
+        if self._recorder.is_recording:
+            row = []
+            for i in range(4):
+                val = m.values[i]
+                row.append(f"{val:.6f}" if val is not None else "")
+                row.append(m.units[i] if m.units[i] else "")
+            self._recorder.add_row(m.timestamp, row)
+            cnt = self._recorder.sample_count
+            el = self._recorder.elapsed_seconds
+            mins, secs = divmod(int(el), 60)
+            self._rec_btn.setText(f"\u25a0 STOP ({mins:02d}:{secs:02d}, {cnt})")
+
+    @Slot()
+    def _on_rec_clicked(self) -> None:
+        if self._recorder.is_recording:
+            filepath, count = self._recorder.stop()
+            self._rec_btn.setText("\u2b24 REC")
+            self._rec_btn.setStyleSheet("")
+            self._apply_theme()
+            self._append_log(f"[INFO] Recording stopped: {count} samples \u2192 {filepath}")
+        else:
+            if not self._running:
+                return
+            headers = []
+            for i in range(4):
+                headers.extend([f"CH{i}_Value", f"CH{i}_Unit"])
+            filepath = self._recorder.start("ADS1018", headers)
+            self._rec_btn.setText("\u25a0 STOP")
+            self._rec_btn.setStyleSheet(
+                "QPushButton { background: #cc2222; color: #ffffff; font-weight: bold;"
+                " border-radius: 6px; border: 1px solid #cc3333; }"
+            )
+            self._append_log(f"[INFO] Recording started \u2192 {filepath}")
 
     @Slot(str)
     def _on_worker_error(self, msg: str) -> None:
