@@ -48,6 +48,7 @@ class PowerVisualizer3CH(QWidget):
         self._voltage_plot.setLabel("left", "Voltage", units="V", color=self.COLOR_TEXT)
         self._voltage_plot.setLabel("bottom", "Time", units="s", color=self.COLOR_TEXT)
         self._voltage_plot.showGrid(x=True, y=True, alpha=0.3)
+        self._voltage_plot.getAxis("left").setWidth(50)
         self._voltage_plot.addLegend(offset=(10, 10))
         
         title_style = {"color": self.COLOR_TEXT, "size": "12pt", "bold": True}
@@ -64,6 +65,7 @@ class PowerVisualizer3CH(QWidget):
         self._current_plot.setLabel("left", "Current", units="mA", color=self.COLOR_TEXT)
         self._current_plot.setLabel("bottom", "Time", units="s", color=self.COLOR_TEXT)
         self._current_plot.showGrid(x=True, y=True, alpha=0.3)
+        self._current_plot.getAxis("left").setWidth(50)
         self._current_plot.addLegend(offset=(10, 10))
 
         self._current_plot.setTitle("Current", **title_style)

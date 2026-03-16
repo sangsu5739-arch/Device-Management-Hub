@@ -61,6 +61,7 @@ class PowerVisualizer(QWidget):
         self._voltage_plot.setLabel("bottom", "Time", units="s", color=self.COLOR_TEXT)
         self._voltage_plot.showGrid(x=True, y=True, alpha=0.3)
         self._voltage_plot.getAxis("left").setPen(pg.mkPen(self.COLOR_TEXT))
+        self._voltage_plot.getAxis("left").setWidth(50)
         self._voltage_plot.getAxis("bottom").setPen(pg.mkPen(self.COLOR_TEXT))
 
         title_style = {"color": self.COLOR_VOLTAGE, "size": "12pt", "bold": True}
@@ -78,6 +79,7 @@ class PowerVisualizer(QWidget):
         self._current_plot.setLabel("bottom", "Time", units="s", color=self.COLOR_TEXT)
         self._current_plot.showGrid(x=True, y=True, alpha=0.3)
         self._current_plot.getAxis("left").setPen(pg.mkPen(self.COLOR_TEXT))
+        self._current_plot.getAxis("left").setWidth(50)
         self._current_plot.getAxis("bottom").setPen(pg.mkPen(self.COLOR_TEXT))
 
         title_style_c = {"color": self.COLOR_CURRENT, "size": "12pt", "bold": True}

@@ -86,7 +86,6 @@ class FtdiVerifierModule(BaseModule):
         self._i2c_test_thread: Optional[QThread] = None
         self._i2c_scan_thread: Optional[QThread] = None
         self._spi_probe_running: bool = False
-        self._spi_probe_interval_ms: int = 500
         self._pinmap = PinmapController(self)
         self._gpio = GpioController(self)
         super().__init__(ftdi_manager, parent)
@@ -152,8 +151,8 @@ class FtdiVerifierModule(BaseModule):
             return
         self._i2c_scan_btn.setEnabled(True)
         self._i2c_test_btn.setEnabled(True)
-        self._spi_probe_btn.setEnabled(True)
         self._spi_id_btn.setEnabled(True)
+        self._spi_raw_btn.setEnabled(True)
         self._set_bitbang_controls_enabled(True)
         self._apply_bitbang_mask(self._bitbang_mask, push=True)
         self._gpio_poll_btn.setEnabled(True)
@@ -174,8 +173,8 @@ class FtdiVerifierModule(BaseModule):
         self.stop_communication()
         self._i2c_scan_btn.setEnabled(False)
         self._i2c_test_btn.setEnabled(False)
-        self._spi_probe_btn.setEnabled(False)
         self._spi_id_btn.setEnabled(False)
+        self._spi_raw_btn.setEnabled(False)
         self._set_bitbang_controls_enabled(False)
         self._gpio_poll_btn.setEnabled(False)
         if hasattr(self, "_chip_label"):
@@ -408,36 +407,43 @@ class FtdiVerifierModule(BaseModule):
 
         spi_layout.addWidget(cfg_panel)
 
-        # -- SPI Probe --
+        # -- SPI Transfer (full-duplex) --
+        xfer_group = QGroupBox("SPI Transfer")
+        xfer_layout = QVBoxLayout(xfer_group)
+        xfer_layout.setSpacing(6)
+        xfer_layout.setContentsMargins(8, 8, 8, 8)
 
-        lb_group = QGroupBox("SPI Probe")
-        lb_layout = QVBoxLayout(lb_group)
-        lb_layout.setSpacing(6)
-        lb_layout.setContentsMargins(8, 8, 8, 8)
-        lb_row = QHBoxLayout()
-        lb_row.setSpacing(8)
-        self._spi_probe_btn = QPushButton("\u25b6  SPI Probe")
-        self._spi_probe_btn.setEnabled(False)
-        self._spi_probe_btn.setMinimumHeight(30)
-        self._spi_probe_btn.setToolTip("CS\ub97c \ud65c\uc131\ud654\ud558\uace0 \ub370\uc774\ud130\ub97c \uc804\uc1a1\ud558\uc5ec \ub514\ubc14\uc774\uc2a4 \uc751\ub2f5 \uc5ec\ubd80\ub97c \ud655\uc778\ud569\ub2c8\ub2e4.")
-        self._spi_probe_btn.clicked.connect(self._on_spi_probe)
-        lb_row.addWidget(self._spi_probe_btn)
-        self._spi_probe_result = QLabel("  Idle")
-        self._spi_probe_result.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._spi_probe_result.setFixedHeight(30)
-        lb_row.addWidget(self._spi_probe_result, 1)
-        lb_layout.addLayout(lb_row)
-        spi_layout.addWidget(lb_group)
+        txrx_row = QHBoxLayout()
+        txrx_row.setSpacing(6)
+        txrx_row.addWidget(QLabel("TX:"))
+        self._spi_raw_tx = QLineEdit()
+        self._spi_raw_tx.setPlaceholderText("e.g. 01 83 01 83")
+        self._spi_raw_tx.setMinimumHeight(28)
+        txrx_row.addWidget(self._spi_raw_tx, 1)
+        txrx_row.addWidget(QLabel("RX:"))
+        self._spi_raw_rx = QLineEdit()
+        self._spi_raw_rx.setReadOnly(True)
+        self._spi_raw_rx.setMinimumHeight(28)
+        self._spi_raw_rx.setPlaceholderText("response")
+        txrx_row.addWidget(self._spi_raw_rx, 1)
+        xfer_layout.addLayout(txrx_row)
 
-        # -- Device ID Verification --
-        id_group = QGroupBox("Device ID Verification")
+        self._spi_raw_btn = QPushButton("\u25b6  Transfer")
+        self._spi_raw_btn.setEnabled(False)
+        self._spi_raw_btn.setMinimumHeight(30)
+        self._spi_raw_btn.clicked.connect(self._on_spi_raw_transfer)
+        xfer_layout.addWidget(self._spi_raw_btn)
+        spi_layout.addWidget(xfer_group)
+
+        # -- Device ID Verification (half-duplex: cmd + read) --
+        id_group = QGroupBox("Device ID Read")
         id_layout = QVBoxLayout(id_group)
         id_layout.setSpacing(6)
         id_layout.setContentsMargins(8, 8, 8, 8)
 
         id_cfg_row = QHBoxLayout()
         id_cfg_row.setSpacing(6)
-        id_cfg_row.addWidget(QLabel("Register:"))
+        id_cfg_row.addWidget(QLabel("CMD:"))
         self._spi_id_addr = QLineEdit()
         self._spi_id_addr.setText("0x9F")
         self._spi_id_addr.setPlaceholderText("e.g. 0x9F")
@@ -1136,8 +1142,8 @@ class FtdiVerifierModule(BaseModule):
         ch_match = (not connected) or (self._ftdi.channel == self._current_channel)
         self._i2c_scan_btn.setEnabled(has_mpsse and connected)
         self._i2c_test_btn.setEnabled(has_mpsse and connected)
-        self._spi_probe_btn.setEnabled(has_mpsse and connected)
         self._spi_id_btn.setEnabled(has_mpsse and connected)
+        self._spi_raw_btn.setEnabled(has_mpsse and connected)
         if not (has_mpsse and connected and ch_match):
             self._pin_name_label.setText("Unavailable")
             self._pin_func_label.setText("MPSSE not supported on this channel")
@@ -1431,73 +1437,6 @@ class FtdiVerifierModule(BaseModule):
     # -- SPI --
 
     @Slot()
-    def _on_spi_probe(self) -> None:
-        """SPI probe test via VerifierWorker (continuous until stopped)."""
-        if not self._ftdi.is_connected:
-            return
-
-        if self._spi_probe_running:
-            self._append_log("[SPI] Probe test stop requested.")
-            self._spi_probe_running = False
-            if self._spi_test_thread is not None and self._spi_test_thread.isRunning():
-                try:
-                    self._spi_test_thread.quit()
-                    self._spi_test_thread.wait(2000)
-                except Exception:
-                    pass
-            self._on_spi_probe_finished()
-            self._spi_probe_result.setText("  Stopped")
-            return
-
-        self._spi_probe_running = True
-        self._append_log("[SPI] Probe test started.")
-        self._start_spi_probe_cycle()
-
-    def _get_spi_probe_tx_data(self) -> bytes:
-        """Get TX data for SPI probe from user input or default dummy bytes."""
-        if hasattr(self, "_spi_id_addr"):
-            text = self._spi_id_addr.text().strip()
-            if text:
-                try:
-                    raw = text.replace("0x", "").replace("0X", "").replace(",", " ").replace(";", " ")
-                    return bytes(int(b, 16) for b in raw.split() if b)
-                except (ValueError, TypeError):
-                    pass
-        return b'\x00\x00\x00\x00'
-
-    def _start_spi_probe_cycle(self) -> None:
-        if not self._spi_probe_running:
-            return
-        if not self._ftdi.is_connected:
-            self._spi_probe_running = False
-            self._on_spi_probe_finished()
-            return
-        if self._spi_test_thread is not None and self._spi_test_thread.isRunning():
-            return
-
-        self._spi_probe_btn.setText("\u25a0  Stop Probe")
-        self._spi_probe_result.setText("  Probing...")
-        tm = ThemeManager.instance()
-        self._spi_probe_result.setStyleSheet(
-            f"background: {tm.color('spi_result_pending_bg')}; color: {tm.color('spi_result_pending_text')}; border-radius: 8px; padding: 4px 10px;"
-            f"font-weight: 800; letter-spacing: 0.5px; border: 1px solid {tm.color('spi_result_pending_border')};"
-        )
-        # Ensure SPI mode is configured before test
-        self._apply_spi_config()
-
-        tx_data = self._get_spi_probe_tx_data()
-        worker = VerifierWorker(self._ftdi)
-        worker.protocol_test_done.connect(self._on_protocol_result)
-        worker.log_message.connect(self._append_log)
-
-        self._spi_test_thread = QThread()
-        worker.moveToThread(self._spi_test_thread)
-        self._spi_test_thread.started.connect(lambda: worker.test_spi_probe(tx_data))
-        worker.protocol_test_done.connect(self._spi_test_thread.quit)
-        worker.protocol_test_done.connect(worker.deleteLater)
-        self._spi_test_thread.finished.connect(self._spi_test_thread.deleteLater)
-        self._spi_test_thread.finished.connect(self._on_spi_probe_finished)
-        self._spi_test_thread.start()
     @Slot()
     def _on_spi_read_id(self) -> None:
         """SPI device ID read via VerifierWorker."""
@@ -1558,21 +1497,53 @@ class FtdiVerifierModule(BaseModule):
         self._spi_id_thread.start()
 
     @Slot()
-    def _on_spi_probe_finished(self) -> None:
-        self._spi_test_thread = None
-        if self._spi_probe_running and self._ftdi.is_connected:
-            QTimer.singleShot(self._spi_probe_interval_ms, self._start_spi_probe_cycle)
-            return
-        self._spi_probe_running = False
-        has_mpsse = self._ftdi.supports_mpsse(self._current_channel)
-        self._spi_probe_btn.setText("\u25b6  SPI Probe")
-        self._spi_probe_btn.setEnabled(self._ftdi.is_connected and has_mpsse)
-
-    @Slot()
     def _on_spi_id_finished(self) -> None:
         self._spi_id_thread = None
         has_mpsse = self._ftdi.supports_mpsse(self._current_channel)
         self._spi_id_btn.setEnabled(self._ftdi.is_connected and has_mpsse)
+
+    @Slot()
+    def _on_spi_raw_transfer(self) -> None:
+        """Full-duplex SPI raw transfer."""
+        if not self._ftdi.is_connected:
+            return
+        tm = ThemeManager.instance()
+        # Parse TX hex bytes
+        raw_text = self._spi_raw_tx.text().strip()
+        if not raw_text:
+            self._append_log("[SPI] TX data is empty.")
+            return
+        try:
+            # Support "01 83 01 83" or "0x01 0x83" or "01830183"
+            cleaned = raw_text.replace("0x", "").replace("0X", "").replace(",", " ")
+            if " " in cleaned:
+                tx_bytes = bytes(int(b, 16) for b in cleaned.split())
+            else:
+                # Continuous hex string
+                if len(cleaned) % 2 != 0:
+                    cleaned = "0" + cleaned
+                tx_bytes = bytes.fromhex(cleaned)
+        except (ValueError, IndexError):
+            self._append_log(f"[SPI] Invalid TX hex: {raw_text}")
+            self._spi_raw_rx.setText("Invalid TX data")
+            return
+
+        self._apply_spi_config()
+        tx_hex = " ".join(f"0x{b:02X}" for b in tx_bytes)
+        self._append_log(f"[SPI] TX: {tx_hex} ({len(tx_bytes)} bytes)")
+
+        try:
+            rx_data = self._ftdi.spi_transfer(tx_bytes)
+            if rx_data is None:
+                self._spi_raw_rx.setText("Transfer failed")
+                return
+
+            rx_hex = " ".join(f"0x{b:02X}" for b in rx_data)
+            self._spi_raw_rx.setText(rx_hex)
+            self._append_log(f'<span style="color:{tm.color("status_connected")};">[SPI] RX: {rx_hex}</span>')
+        except Exception as e:
+            self._spi_raw_rx.setText(f"Error: {e}")
+            self._append_log(f"[SPI] Transfer error: {e}")
 
     @Slot(object)
     def _on_protocol_result(self, result: ProtocolTestResult) -> None:
@@ -1595,11 +1566,7 @@ class FtdiVerifierModule(BaseModule):
                     f"font-weight: 800; letter-spacing: 0.5px; border: 1px solid {tm.color('i2c_ack_led_nack_border')};"
                 )
         if result.protocol == "SPI":
-            # Determine which result badge to update based on message content
-            if "probe" in result.message.lower():
-                target = self._spi_probe_result
-            else:
-                target = self._spi_id_result
+            target = self._spi_id_result
             if result.success:
                 target.setText(f"  {result.message}")
                 target.setStyleSheet(
@@ -2390,17 +2357,15 @@ class FtdiVerifierModule(BaseModule):
             f"QPushButton:hover {{ background: {tm.color('spi_btn_hover')}; }}"
             f"QPushButton:disabled {{ background: {tm.color('bg_disabled')}; color: {tm.color('text_disabled')}; border: 1px solid {tm.color('border_subtle')}; }}"
         )
-        if hasattr(self, "_spi_probe_btn"):
-            self._spi_probe_btn.setStyleSheet(spi_btn_style)
         if hasattr(self, "_spi_id_btn"):
             self._spi_id_btn.setStyleSheet(spi_btn_style)
+        if hasattr(self, "_spi_raw_btn"):
+            self._spi_raw_btn.setStyleSheet(spi_btn_style)
 
         spi_idle = (
             f"background: {tm.color('spi_result_idle_bg')}; color: {tm.color('spi_result_idle_text')}; border-radius: 8px;"
             f" padding: 4px 10px; font-weight: 800; border: 1px solid {tm.color('spi_result_idle_border')};"
         )
-        if hasattr(self, "_spi_probe_result") and "Idle" in self._spi_probe_result.text():
-            self._spi_probe_result.setStyleSheet(spi_idle)
         if hasattr(self, "_spi_id_result") and "Idle" in self._spi_id_result.text():
             self._spi_id_result.setStyleSheet(spi_idle)
 

@@ -74,7 +74,7 @@ class ADCVisualizer(QWidget):
             
             # Use smaller font for left axis to save space
             left_axis = plot.getAxis("left")
-            left_axis.setWidth(45)
+            left_axis.setWidth(65)
             plot.setLabel("left", CH_LABELS[i], units=self._ch_units[i])
 
             # Axis pens set in _apply_theme()

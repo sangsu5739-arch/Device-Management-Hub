@@ -652,7 +652,14 @@ class MainWindow(QMainWindow):
             self._set_status("Select a channel", "warn")
             return
 
+        # Show status and force UI repaint before blocking call
+        self._connect_btn.setEnabled(False)
+        self._set_status("Connecting...", "info")
+        QApplication.processEvents()
+
         success = self._ftdi.open_device(serial, channel)
+
+        self._connect_btn.setEnabled(True)
         if success:
             self._set_status(f"Connected: {serial}  CH-{channel}", "ok")
             self._active_channel_ui = channel
