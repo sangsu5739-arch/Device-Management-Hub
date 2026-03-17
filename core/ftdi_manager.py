@@ -143,6 +143,11 @@ class FtdiManager(QObject):
                 return False
             if ch not in self._available_channels:
                 return False
+            if self._is_ft2232_device():
+                err = f"Pre-opened handle missing: CH={ch}"
+                self._log(f"[ERROR] {err}")
+                self.comm_error.emit(err)
+                return False
             if not self._open_channel_handle(ch):
                 err = f"Channel open failed: CH={ch}"
                 self._log(f"[ERROR] {err}")
@@ -152,6 +157,7 @@ class FtdiManager(QObject):
         self._channel = ch
         self._ft = self._ft_handles.get(ch)
         self.active_channel_changed.emit(ch)
+        self._emit_current_device_info()
         return True
 
     def set_protocol_mode(self, mode: str) -> None:
@@ -353,6 +359,27 @@ class FtdiManager(QObject):
             info["channel"] = self._channel
             info["connected"] = self._is_connected
         return info
+
+    def _device_type_upper(self) -> str:
+        return str(self.get_device_info(self._serial_number).get("device_type") or "").upper()
+
+    def _is_ft2232_device(self) -> bool:
+        return "2232" in self._device_type_upper()
+
+    def _emit_current_device_info(self) -> None:
+        if not self._serial_number:
+            return
+        cached = FtdiManager._device_cache.get(self._serial_number, {})
+        self.device_info_changed.emit(
+            {
+                "serial": self._serial_number,
+                "channel": self._active_channel,
+                "desc": cached.get("desc", ""),
+                "channels": list(self._available_channels),
+                "device_type": cached.get("device_type", ""),
+                "connected": self._is_connected,
+            }
+        )
 
     # Device enumeration
 
@@ -686,6 +713,7 @@ class FtdiManager(QObject):
         try:
             cached = FtdiManager._device_cache.get(self._serial_number, {})
             channels = cached.get("channels") or [self._active_channel]
+            device_type = str(cached.get("device_type") or "").upper()
             self._available_channels = list(channels)
             if self._active_channel not in channels:
                 raise RuntimeError(
@@ -701,10 +729,16 @@ class FtdiManager(QObject):
                 raise RuntimeError(
                     f"Requested channel index was not resolved. SN={serial_number}, CH={self._active_channel}"
                 )
-            if not self._open_channel_handle(self._active_channel):
-                raise RuntimeError(
-                    f"Requested channel open failed. SN={serial_number}, CH={self._active_channel}"
+            preopen_channels = list(channels) if "2232" in device_type else [self._active_channel]
+            if len(preopen_channels) > 1:
+                self._log(
+                    f"[INFO] Pre-opening channels: SN={serial_number}, CH={','.join(preopen_channels)}"
                 )
+            for ch in preopen_channels:
+                if not self._open_channel_handle(ch):
+                    raise RuntimeError(
+                        f"Channel open failed during connect. SN={serial_number}, CH={ch}"
+                    )
 
             self._ft = self._ft_handles[self._active_channel]
             self._channel = self._active_channel
@@ -713,16 +747,7 @@ class FtdiManager(QObject):
             info = f"Connected: SN={serial_number}, CH={self._active_channel}"
             self._log(info)
             self.device_connected.emit(info)
-            self.device_info_changed.emit(
-                {
-                    "serial": self._serial_number,
-                    "channel": self._active_channel,
-                    "desc": cached.get("desc", ""),
-                    "channels": channels,
-                    "device_type": cached.get("device_type", ""),
-                    "connected": True,
-                }
-            )
+            self._emit_current_device_info()
             return True
         except ImportError:
             err = "ftd2xx library is not installed."

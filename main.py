@@ -740,13 +740,6 @@ class MainWindow(QMainWindow):
         if self._ftdi.set_active_channel(new_channel):
             active_channel = self._ftdi.channel
             self._active_channel_ui = active_channel
-            visible = [ch for ch, btn in self._channel_buttons.items() if btn.isVisible()]
-            self._sync_channel_buttons(visible, active_channel)
-            for module in self._modules:
-                try:
-                    module.on_channel_changed(active_channel)
-                except Exception:
-                    pass
             self._log_channel_switch(current, active_channel)
         else:
             visible = [ch for ch, btn in self._channel_buttons.items() if btn.isVisible()]
@@ -963,6 +956,9 @@ class MainWindow(QMainWindow):
         channel = info.get("channel", "")
         if not channel:
             return
+        if info.get("connected") and info.get("serial"):
+            conn_info = f"Connected: SN={info['serial']}, CH={channel}"
+            self._apply_conn_status("connected", conn_info)
         for module in self._modules:
             try:
                 module.on_channel_changed(channel)
