@@ -9,6 +9,7 @@ Reference: C:/log/sample/ADS1018.py
 
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass, field
 from typing import Optional, TYPE_CHECKING
 
@@ -105,6 +106,15 @@ class ADS1018Driver:
     """
 
     ADC_FULL_SCALE = 0x7FF0
+    DATA_RATE_SPS = {
+        DataRate.SPS128: 128,
+        DataRate.SPS250: 250,
+        DataRate.SPS490: 490,
+        DataRate.SPS920: 920,
+        DataRate.SPS1600: 1600,
+        DataRate.SPS2400: 2400,
+        DataRate.SPS3300: 3300,
+    }
 
     def __init__(self, ftdi: FtdiManager, config: Optional[ADS1018Config] = None) -> None:
         self._ftdi = ftdi
@@ -155,6 +165,19 @@ class ADS1018Driver:
     def _start_conversion(self) -> None:
         self._config_reg |= (1 << 15)
 
+    def _build_tx_frame(self) -> bytes:
+        cfg_hi = (self._config_reg >> 8) & 0xFF
+        cfg_lo = self._config_reg & 0xFF
+        return bytes([cfg_hi, cfg_lo, cfg_hi, cfg_lo])
+
+    def _conversion_delay_s(self) -> float:
+        sps = self.DATA_RATE_SPS.get(self.config.data_rate, 1600)
+        return max(0.001, (1.0 / float(sps)) * 1.25 + 0.0002)
+
+    @property
+    def conversion_delay_ms(self) -> float:
+        return self._conversion_delay_s() * 1000.0
+
     def update_settings(self, pga: int, data_rate: int, pullup: bool, continuous: bool = False, ts_mode: bool = False) -> None:
         """Update device settings (call before read_channel)."""
         self._apply_pga(pga)
@@ -170,7 +193,7 @@ class ADS1018Driver:
 
         Performs two SPI transfers:
         1. Write config to select channel and start conversion
-        2. Read back the conversion result
+        2. Read back the conversion result after conversion time
 
         Returns:
             12-bit raw ADC value (right-shifted), or None on error.
@@ -179,15 +202,15 @@ class ADS1018Driver:
         self._set_channel(mux)
         self._start_conversion()
 
-        # Build 4-byte SPI frame (config written twice per ADS1018 protocol)
-        cfg_hi = (self._config_reg >> 8) & 0xFF
-        cfg_lo = self._config_reg & 0xFF
-        tx_data = bytes([cfg_hi, cfg_lo, cfg_hi, cfg_lo])
-
+        tx_data = self._build_tx_frame()
         cs = self.config.cs_pin
 
         # First transfer: write config (result is stale)
-        self._ftdi.spi_transfer(tx_data, cs)
+        if self._ftdi.spi_transfer(tx_data, cs) is None:
+            return None
+
+        if not self.config.continuous:
+            time.sleep(self._conversion_delay_s())
 
         # Second transfer: read back converted result
         rx = self._ftdi.spi_transfer(tx_data, cs)

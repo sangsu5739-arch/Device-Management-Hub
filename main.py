@@ -661,14 +661,17 @@ class MainWindow(QMainWindow):
 
         self._connect_btn.setEnabled(True)
         if success:
-            self._set_status(f"Connected: {serial}  CH-{channel}", "ok")
-            self._active_channel_ui = channel
+            active_channel = self._ftdi.channel
+            self._set_status(f"Connected: {serial}  CH-{active_channel}", "ok")
+            self._active_channel_ui = active_channel
+            self._sync_channel_buttons(channels or [active_channel], active_channel)
         else:
             self._connect_btn.blockSignals(True)
             self._connect_btn.setChecked(False)
             self._connect_btn.setText("Connect")
             self._connect_btn.blockSignals(False)
             self._apply_connect_btn_style(connected=False)
+            self._set_status(f"Failed to connect: {serial}  CH-{channel}", "error")
 
     @Slot(int)
     def _on_device_selected(self, index: int) -> None:
@@ -705,8 +708,11 @@ class MainWindow(QMainWindow):
                     logger.error(f"Module on_channel_changed error: {e}")
             return
 
-        current = getattr(self, "_active_channel_ui", self._ftdi.channel)
+        current = self._ftdi.channel
         if new_channel == current:
+            visible = [ch for ch, btn in self._channel_buttons.items() if btn.isVisible()]
+            self._active_channel_ui = current
+            self._sync_channel_buttons(visible, current)
             return
 
         # Stop running communications before switching
@@ -732,17 +738,21 @@ class MainWindow(QMainWindow):
             return
 
         if self._ftdi.set_active_channel(new_channel):
-            self._active_channel_ui = new_channel
+            active_channel = self._ftdi.channel
+            self._active_channel_ui = active_channel
             visible = [ch for ch, btn in self._channel_buttons.items() if btn.isVisible()]
-            self._sync_channel_buttons(visible, new_channel)
+            self._sync_channel_buttons(visible, active_channel)
             for module in self._modules:
                 try:
-                    module.on_channel_changed(new_channel)
+                    module.on_channel_changed(active_channel)
                 except Exception:
                     pass
-            self._log_channel_switch(current, new_channel)
+            self._log_channel_switch(current, active_channel)
         else:
-            self._set_status("Failed to change channel", "error")
+            visible = [ch for ch, btn in self._channel_buttons.items() if btn.isVisible()]
+            self._active_channel_ui = current
+            self._sync_channel_buttons(visible, current)
+            self._set_status(f"Failed to change channel: CH-{new_channel}", "error")
 
     @Slot()
     def _on_disconnect(self) -> None:
@@ -830,6 +840,9 @@ class MainWindow(QMainWindow):
         # Sync active channel
         try:
             active_ch = self._ftdi.channel
+            visible = [ch for ch, btn in self._channel_buttons.items() if btn.isVisible()]
+            self._active_channel_ui = active_ch
+            self._sync_channel_buttons(visible, active_ch)
             for module in self._modules:
                 try:
                     module.on_channel_changed(active_ch)

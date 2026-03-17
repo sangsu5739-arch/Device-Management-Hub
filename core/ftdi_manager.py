@@ -61,6 +61,7 @@ class FtdiManager(QObject):
         super().__init__(parent)
         self._ft = None
         self._ft_handles: dict[str, object] = {}
+        self._channel_index_map: dict[str, int] = {}
         self._available_channels: list[str] = []
         self._active_channel: str = "A"
         self._is_connected: bool = False
@@ -138,7 +139,15 @@ class FtdiManager(QObject):
     def set_active_channel(self, channel: str) -> bool:
         ch = channel.upper()
         if ch not in self._ft_handles:
-            return False
+            if not self._is_connected:
+                return False
+            if ch not in self._available_channels:
+                return False
+            if not self._open_channel_handle(ch):
+                err = f"Channel open failed: CH={ch}"
+                self._log(f"[ERROR] {err}")
+                self.comm_error.emit(err)
+                return False
         self._active_channel = ch
         self._channel = ch
         self._ft = self._ft_handles.get(ch)
@@ -427,14 +436,16 @@ class FtdiManager(QObject):
                         continue
 
                 entry = devices_map.setdefault(
-                    base_serial, {"desc": desc, "channels": set()}
+                    base_serial, {"desc": desc, "channels": set(), "index_map": {}}
                 )
                 if desc and not entry["desc"]:
                     entry["desc"] = desc
                 if channel:
                     entry["channels"].add(channel)
+                    entry["index_map"][channel] = i
                 else:
                     entry["channels"].add("A")
+                    entry["index_map"].setdefault("A", i)
 
         except ImportError:
             logger.warning("ftd2xx library is not installed.")
@@ -453,6 +464,7 @@ class FtdiManager(QObject):
                 "desc": desc,
                 "channels": channels,
                 "device_type": device_type,
+                "index_map": dict(meta.get("index_map") or {}),
             }
         return devices
 
@@ -560,6 +572,69 @@ class FtdiManager(QObject):
 
         return result
 
+    def _resolve_device_index_map(
+        self, serial_number: str, channels: List[str]
+    ) -> dict[str, int]:
+        cached = FtdiManager._device_cache.get(serial_number, {})
+        cached_map = dict(cached.get("index_map") or {})
+        if all(ch in cached_map for ch in channels):
+            return {ch: int(cached_map[ch]) for ch in channels}
+
+        rebuilt = self._build_device_index_map(serial_number, channels)
+        merged = {**cached_map, **rebuilt}
+        if serial_number in FtdiManager._device_cache:
+            FtdiManager._device_cache[serial_number]["index_map"] = dict(merged)
+        return {ch: int(merged[ch]) for ch in channels if ch in merged}
+
+    def _open_channel_handle(self, channel: str) -> bool:
+        ch = channel.upper()
+        if ch in self._ft_handles:
+            return True
+
+        index = self._channel_index_map.get(ch)
+        if index is None:
+            self._log(f"[ERROR] No cached device index for CH={ch}")
+            return False
+
+        try:
+            import ftd2xx
+
+            prev_ft = self._ft
+            prev_channel = self._channel
+            ft = ftd2xx.open(index)
+            self._ft_handles[ch] = ft
+            self._ft = ft
+            self._channel = ch
+            self._log(
+                f"[INFO] Opened requested channel: SN={self._serial_number}, CH={ch}, IDX={index}"
+            )
+            if self.supports_mpsse(ch):
+                self._configure_mpsse()
+                self._channel_modes[ch] = "mpsse"
+            else:
+                self._channel_modes[ch] = "uart"
+
+            if self._active_channel != ch and prev_ft is not None:
+                self._ft = prev_ft
+                self._channel = prev_channel
+            return True
+        except Exception as e:
+            self._log(
+                f"[ERROR] Channel open/init failed: SN={self._serial_number}, CH={ch}, IDX={index}, ERR={e}"
+            )
+            ft = self._ft_handles.pop(ch, None)
+            if ft is not None:
+                try:
+                    ft.close()
+                except Exception:
+                    pass
+            if self._active_channel in self._ft_handles:
+                self._ft = self._ft_handles[self._active_channel]
+                self._channel = self._active_channel
+            else:
+                self._ft = None
+            return False
+
     def _set_lines(self, scl_high: bool, sda_high: bool) -> None:
         """Configure SCL/SDA GPIO lines."""
         self._i2c.set_lines(scl_high=scl_high, sda_high=sda_high)
@@ -604,44 +679,35 @@ class FtdiManager(QObject):
         self._active_channel = channel.upper()
         self._channel = self._active_channel
         self._ft_handles = {}
+        self._channel_index_map = {}
         self._available_channels = []
+        self._channel_modes = {}
 
         try:
-            import ftd2xx
-
             cached = FtdiManager._device_cache.get(self._serial_number, {})
             channels = cached.get("channels") or [self._active_channel]
             self._available_channels = list(channels)
-
-            # Build device index map once (avoid re-enumeration per channel)
-            index_map = self._build_device_index_map(serial_number, channels)
-
-            for ch in channels:
-                index = index_map.get(ch)
-                if index is None:
-                    continue
-                self._log(f"[INFO] Opened: SN={serial_number}, CH={ch}, IDX={index}")
-                ft = ftd2xx.open(index)
-                self._ft_handles[ch] = ft
-                # Configure MPSSE only on supported channels
-                self._ft = ft
-                self._channel = ch
-                if self.supports_mpsse(ch):
-                    self._configure_mpsse()
-                    self._channel_modes[ch] = "mpsse"
-                else:
-                    self._channel_modes[ch] = "uart"
-
-            if self._active_channel not in self._ft_handles and self._ft_handles:
-                self._active_channel = sorted(self._ft_handles.keys())[0]
-            if self._active_channel in self._ft_handles:
-                self._ft = self._ft_handles[self._active_channel]
-                self._channel = self._active_channel
-
-            if not self._ft_handles:
+            if self._active_channel not in channels:
                 raise RuntimeError(
-                    f"Open failed. SN={serial_number}"
+                    f"Requested channel is not available. SN={serial_number}, CH={self._active_channel}"
                 )
+
+            self._channel_index_map = self._resolve_device_index_map(serial_number, channels)
+            self._log(
+                f"[INFO] Connect request: SN={serial_number}, requested={self._active_channel}, "
+                f"available={','.join(channels)}, cached={sorted(self._channel_index_map.keys())}"
+            )
+            if self._active_channel not in self._channel_index_map:
+                raise RuntimeError(
+                    f"Requested channel index was not resolved. SN={serial_number}, CH={self._active_channel}"
+                )
+            if not self._open_channel_handle(self._active_channel):
+                raise RuntimeError(
+                    f"Requested channel open failed. SN={serial_number}, CH={self._active_channel}"
+                )
+
+            self._ft = self._ft_handles[self._active_channel]
+            self._channel = self._active_channel
 
             self._is_connected = True
             info = f"Connected: SN={serial_number}, CH={self._active_channel}"
@@ -678,6 +744,12 @@ class FtdiManager(QObject):
             self._ft_handles = {}
             self._ft = None
             self._is_connected = False
+            self._available_channels = []
+            self._channel_modes = {}
+            self._channel_index_map = {}
+            self._serial_number = ""
+            self._active_channel = "A"
+            self._channel = "A"
             return False
 
     def close_device(self) -> None:
@@ -707,9 +779,12 @@ class FtdiManager(QObject):
         finally:
             self._ft = None
             self._ft_handles = {}
+            self._channel_index_map = {}
             self._available_channels = []
             self._is_connected = False
             self._serial_number = ""
+            self._active_channel = "A"
+            self._channel = "A"
             self._channel_modes = {}
             self._gpio_high_out_value = 0x00
             self._gpio_high_direction = 0x00
