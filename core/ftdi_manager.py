@@ -384,6 +384,24 @@ class FtdiManager(QObject):
     # Device enumeration
 
     @staticmethod
+    def _clean_ftdi_text(value: object) -> str:
+        if isinstance(value, (bytes, bytearray)):
+            text = value.decode(errors="ignore")
+        else:
+            text = str(value or "")
+        return text.replace("\x00", "").strip()
+
+    @staticmethod
+    def _detect_channel(serial: str, desc: str) -> Optional[str]:
+        if serial and serial[-1].upper() in ("A", "B", "C", "D"):
+            return serial[-1].upper()
+        desc_upper = desc.upper()
+        for ch in ("A", "B", "C", "D"):
+            if desc_upper.endswith(f" {ch}"):
+                return ch
+        return None
+
+    @staticmethod
     def _normalize_serial(serial_raw: str) -> str:
         """Strip trailing channel letter to get base serial."""
         serial = serial_raw.strip()
@@ -427,30 +445,12 @@ class FtdiManager(QObject):
             count = ftd2xx.createDeviceInfoList()
             for i in range(count):
                 info = ftd2xx.getDeviceInfoDetail(i)
-                serial_raw = info.get("serial", b"")
-                desc_raw = info.get("description", b"")
-                serial = (
-                    serial_raw.decode(errors="ignore")
-                    if isinstance(serial_raw, (bytes, bytearray))
-                    else str(serial_raw)
-                )
-                desc = (
-                    desc_raw.decode(errors="ignore")
-                    if isinstance(desc_raw, (bytes, bytearray))
-                    else str(desc_raw)
-                )
+                serial = FtdiManager._clean_ftdi_text(info.get("serial", b""))
+                desc = FtdiManager._clean_ftdi_text(info.get("description", b""))
                 base_serial = FtdiManager._normalize_serial(serial)
 
-                # Detect channel from serial suffix or description suffix
-                channel = None
-                if serial and serial[-1].upper() in ("A", "B", "C", "D"):
-                    channel = serial[-1].upper()
-                else:
-                    desc_upper = desc.upper()
-                    for ch in ("A", "B", "C", "D"):
-                        if desc_upper.endswith(f" {ch}"):
-                            channel = ch
-                            break
+                # Detect channel from serial suffix or description suffix.
+                channel = FtdiManager._detect_channel(serial, desc)
 
                 # When serial is just a channel letter (e.g. "A", "B"),
                 # derive group key from description base
@@ -463,16 +463,14 @@ class FtdiManager(QObject):
                         continue
 
                 entry = devices_map.setdefault(
-                    base_serial, {"desc": desc, "channels": set(), "index_map": {}}
+                    base_serial, {"desc": desc, "channels": set(), "index_map": {}, "entries": []}
                 )
                 if desc and not entry["desc"]:
                     entry["desc"] = desc
+                entry["entries"].append({"index": i, "channel": channel})
                 if channel:
                     entry["channels"].add(channel)
                     entry["index_map"][channel] = i
-                else:
-                    entry["channels"].add("A")
-                    entry["index_map"].setdefault("A", i)
 
         except ImportError:
             logger.warning("ftd2xx library is not installed.")
@@ -483,7 +481,23 @@ class FtdiManager(QObject):
         FtdiManager._device_cache = {}
         for serial, meta in devices_map.items():
             desc = str(meta.get("desc") or "")
-            channels = sorted(meta.get("channels") or ["A"])
+            index_map = dict(meta.get("index_map") or {})
+            entries = sorted(meta.get("entries") or [], key=lambda item: int(item["index"]))
+            entry_count = len(entries)
+            expected_count = 1
+            desc_upper = desc.upper()
+            if "4232" in desc_upper or entry_count >= 4:
+                expected_count = 4
+            elif "2232" in desc_upper or "DUAL" in desc_upper or entry_count >= 2:
+                expected_count = 2
+            remaining_channels = [
+                ch for ch in ("A", "B", "C", "D")[:expected_count] if ch not in index_map
+            ]
+            for entry_info in entries:
+                if entry_info.get("channel") or not remaining_channels:
+                    continue
+                index_map.setdefault(remaining_channels.pop(0), int(entry_info["index"]))
+            channels = sorted(index_map.keys() or ["A"])
             device_type = FtdiManager._infer_device_type(desc, channels)
             devices.append((serial, desc, channels, device_type))
             FtdiManager._device_cache[serial] = {
@@ -491,7 +505,7 @@ class FtdiManager(QObject):
                 "desc": desc,
                 "channels": channels,
                 "device_type": device_type,
-                "index_map": dict(meta.get("index_map") or {}),
+                "index_map": index_map,
             }
         return devices
 
@@ -556,22 +570,13 @@ class FtdiManager(QObject):
 
         target_base = self._normalize_serial(serial_number)
         result: dict = {}
+        unknown_indexes: list[int] = []
         count = ftd2xx.createDeviceInfoList()
 
         for i in range(count):
             info = ftd2xx.getDeviceInfoDetail(i)
-            serial_raw = info.get("serial", b"")
-            desc_raw = info.get("description", b"")
-            serial = (
-                serial_raw.decode(errors="ignore")
-                if isinstance(serial_raw, (bytes, bytearray))
-                else str(serial_raw)
-            )
-            desc = (
-                desc_raw.decode(errors="ignore")
-                if isinstance(desc_raw, (bytes, bytearray))
-                else str(desc_raw)
-            )
+            serial = self._clean_ftdi_text(info.get("serial", b""))
+            desc = self._clean_ftdi_text(info.get("description", b""))
 
             base_serial = self._normalize_serial(serial)
             match = False
@@ -588,14 +593,15 @@ class FtdiManager(QObject):
             if not match:
                 continue
 
-            serial_ch = serial[-1].upper() if serial else ""
-            desc_upper = desc.upper()
-            for ch in channels:
-                if ch in result:
-                    continue
-                if serial_ch == ch or desc_upper.endswith(f" {ch}"):
-                    result[ch] = i
-                    break
+            channel = self._detect_channel(serial, desc)
+            if channel and channel in channels and channel not in result:
+                result[channel] = i
+                continue
+            unknown_indexes.append(i)
+
+        remaining_channels = [ch for ch in channels if ch not in result]
+        for idx, ch in zip(unknown_indexes, remaining_channels):
+            result[ch] = idx
 
         return result
 
