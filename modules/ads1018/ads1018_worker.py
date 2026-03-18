@@ -95,10 +95,10 @@ class ADS1018Worker(QObject):
                 f"CS=0x{self._config.cs_pin:02X}"
             )
             if self._config.continuous:
-                self._log("ADS1018 timing: SPI mode=1, continuous conversion")
+                self._log("ADS1018 timing: CPOL=1 CPHA=0, continuous conversion")
             else:
                 self._log(
-                    f"ADS1018 timing: SPI mode=1, single-shot wait={self._driver.conversion_delay_ms:.2f} ms"
+                    f"ADS1018 timing: CPOL=1 CPHA=0, single-shot wait={self._driver.conversion_delay_ms:.2f} ms"
                 )
         except Exception as e:
             self.error_occurred.emit(f"ADS1018 init error: {e}")

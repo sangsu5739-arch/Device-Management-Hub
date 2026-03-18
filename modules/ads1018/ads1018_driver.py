@@ -171,8 +171,7 @@ class ADS1018Driver:
         return bytes([cfg_hi, cfg_lo, cfg_hi, cfg_lo])
 
     def _conversion_delay_s(self) -> float:
-        sps = self.DATA_RATE_SPS.get(self.config.data_rate, 1600)
-        return max(0.001, (1.0 / float(sps)) * 1.25 + 0.0002)
+        return 0.05  # 50ms — matches C++ reference (Sleep(50))
 
     @property
     def conversion_delay_ms(self) -> float:

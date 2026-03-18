@@ -122,13 +122,13 @@ class SpiController(MpsseBaseController):
         self._cpha = cpha
 
         # 60 MHz base clock, adaptive off, loopback off.
-        # CPHA=1 (Mode 1/3) can require 3-phase clocking on FTDI MPSSE
-        # to avoid a one-bit sampling skew.
-        phase_cmd = self._MPSSE_ENABLE_3_PHASE if cpha else self._MPSSE_DISABLE_3_PHASE
+        # 3-phase clocking is always disabled — matches C++ FTDI reference
+        # (DISABLE_3_PHASE = 0x8D) and avoids timing issues with devices
+        # like ADS1018 that are sensitive to the extra half-clock edge.
         self.write(bytes([
             self._MPSSE_DIV_BY_5_DISABLE,
             self._MPSSE_DISABLE_ADAPTIVE,
-            phase_cmd,
+            self._MPSSE_DISABLE_3_PHASE,
             self._MPSSE_DISABLE_LOOPBACK,
         ]))
 
@@ -172,6 +172,10 @@ class SpiController(MpsseBaseController):
     def transfer(self, tx_data: bytes, cs_pin: int = MpsseBaseController.PIN_ADBUS3) -> bytes:
         """Full-duplex SPI transfer with automatic CS handling.
 
+        Matches Ansari ADS1018.py tx_packet + rx_packet pattern:
+        entire transaction (CS assert → CLK idle → data → cleanup → CS deassert)
+        is sent as one MPSSE buffer, then SEND_IMMEDIATE separately.
+
         Args:
             tx_data: Bytes to transmit.
             cs_pin:  CS pin mask (default ADBUS3=0x08).
@@ -187,40 +191,42 @@ class SpiController(MpsseBaseController):
         len_lo = (length - 1) & 0xFF
         len_hi = ((length - 1) >> 8) & 0xFF
 
-        if self._cpha == 1:
-            # CPHA=1 path: separate CS assert and data phase to preserve setup/hold.
-            self._assert_cs(cs_pin)
-            time.sleep(0.001)
-
-            cmd = bytearray([duplex_op, len_lo, len_hi])
-            cmd.extend(tx_data)
-            cmd.append(self._MPSSE_SEND_IMMEDIATE)
-            self.write(bytes(cmd))
-
-            time.sleep(0.002)
-            rx = self.read_with_wait(length)
-            time.sleep(0.001)
-            self._deassert_cs(cs_pin)
-            return rx
-
         cmd = bytearray()
 
-        # Assert CS
+        # 1. Assert CS (5× for timing margin — Ansari pattern)
         cs_val = self._gpio_value & ~cs_pin
-        for _ in range(3):  # repeat for timing margin
+        self._gpio_direction |= cs_pin
+        for _ in range(5):
             cmd.extend([self._MPSSE_SET_BITS_LOW, cs_val & 0xFF, self._gpio_direction & 0xFF])
 
-        # Clock data in/out
+        # 2. Set CLK to idle state before data (explicit — Ansari sets CLK HIGH here)
+        idle_clk = self.PIN_ADBUS0 if self._cpol else 0
+        pre_data_val = (cs_val & ~self.PIN_ADBUS0) | idle_clk
+        cmd.extend([self._MPSSE_SET_BITS_LOW, pre_data_val & 0xFF, self._gpio_direction & 0xFF])
+
+        # 3. Clock data in/out
         cmd.append(duplex_op)
         cmd.append(len_lo)
         cmd.append(len_hi)
         cmd.extend(tx_data)
-        cmd.append(self._MPSSE_SEND_IMMEDIATE)
 
+        # 4. Post-transfer cleanup: CLK LOW, MOSI LOW (5×)
+        cleanup_val = cs_val & ~self.PIN_ADBUS0 & ~self.PIN_ADBUS1
+        for _ in range(5):
+            cmd.extend([self._MPSSE_SET_BITS_LOW, cleanup_val & 0xFF, self._gpio_direction & 0xFF])
+
+        # 5. Deassert CS (5×)
+        cs_high_val = cleanup_val | cs_pin
+        for _ in range(5):
+            cmd.extend([self._MPSSE_SET_BITS_LOW, cs_high_val & 0xFF, self._gpio_direction & 0xFF])
+
+        # Write entire transaction as one buffer
         self.write(bytes(cmd))
-        time.sleep(0.001)
+
+        # Send SEND_IMMEDIATE separately (Ansari rx_packet pattern)
+        self.write(bytes([self._MPSSE_SEND_IMMEDIATE]))
+        time.sleep(0.01)  # 10ms — matches Ansari
         rx = self.read_with_wait(length)
-        self._deassert_cs(cs_pin)
         return rx
 
     def write_only(self, tx_data: bytes, cs_pin: int = MpsseBaseController.PIN_ADBUS3) -> None:
@@ -238,31 +244,36 @@ class SpiController(MpsseBaseController):
         len_lo = (length - 1) & 0xFF
         len_hi = ((length - 1) >> 8) & 0xFF
 
-        if self._cpha == 1:
-            self._assert_cs(cs_pin)
-            time.sleep(0.001)
-            cmd = bytearray([write_op, len_lo, len_hi])
-            cmd.extend(tx_data)
-            self.write(bytes(cmd))
-            time.sleep(0.001)
-            self._deassert_cs(cs_pin)
-            return
-
         cmd = bytearray()
 
-        # Assert CS
+        # 1. Assert CS (5×)
         cs_val = self._gpio_value & ~cs_pin
-        for _ in range(3):
+        self._gpio_direction |= cs_pin
+        for _ in range(5):
             cmd.extend([self._MPSSE_SET_BITS_LOW, cs_val & 0xFF, self._gpio_direction & 0xFF])
 
-        # Clock data out
+        # 2. CLK idle state
+        idle_clk = self.PIN_ADBUS0 if self._cpol else 0
+        pre_data_val = (cs_val & ~self.PIN_ADBUS0) | idle_clk
+        cmd.extend([self._MPSSE_SET_BITS_LOW, pre_data_val & 0xFF, self._gpio_direction & 0xFF])
+
+        # 3. Clock data out
         cmd.append(write_op)
         cmd.append(len_lo)
         cmd.append(len_hi)
         cmd.extend(tx_data)
 
+        # 4. Post-transfer cleanup: CLK LOW, MOSI LOW (5×)
+        cleanup_val = cs_val & ~self.PIN_ADBUS0 & ~self.PIN_ADBUS1
+        for _ in range(5):
+            cmd.extend([self._MPSSE_SET_BITS_LOW, cleanup_val & 0xFF, self._gpio_direction & 0xFF])
+
+        # 5. Deassert CS (5×)
+        cs_high_val = cleanup_val | cs_pin
+        for _ in range(5):
+            cmd.extend([self._MPSSE_SET_BITS_LOW, cs_high_val & 0xFF, self._gpio_direction & 0xFF])
+
         self.write(bytes(cmd))
-        self._deassert_cs(cs_pin)
 
     def write_then_read(
         self,
@@ -354,14 +365,15 @@ class SpiController(MpsseBaseController):
 
     def _assert_cs(self, cs_pin: int) -> None:
         cs_val = self._gpio_value & ~cs_pin
+        self._gpio_direction |= cs_pin
         cmd = bytearray()
-        for _ in range(3):
+        for _ in range(5):
             cmd.extend([self._MPSSE_SET_BITS_LOW, cs_val & 0xFF, self._gpio_direction & 0xFF])
         self.write(bytes(cmd))
 
     def _deassert_cs(self, cs_pin: int) -> None:
         cs_val_high = self._gpio_value | cs_pin
         cmd = bytearray()
-        for _ in range(3):
+        for _ in range(5):
             cmd.extend([self._MPSSE_SET_BITS_LOW, cs_val_high & 0xFF, self._gpio_direction & 0xFF])
         self.write(bytes(cmd))

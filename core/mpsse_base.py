@@ -84,17 +84,15 @@ class MpsseBaseController:
         ft = self._o._ft
         ft.resetDevice()
         time.sleep(0.02)
-        ft.purge(self._PURGE_RXTX)
-        ft.setUSBParameters(65536, 65536)
-        ft.setLatencyTimer(2)
-        ft.setTimeouts(3000, 3000)
+        ft.getQueueStatus()  # read out old data
+        ft.setUSBParameters(65536, 65535)
+        ft.setChars(0, 0, 0, 0)  # disable event/error characters
+        ft.setTimeouts(0, 5000)  # read=immediate return, write=5s
+        ft.setLatencyTimer(1)  # 1ms latency
 
-        # Reset bitmode then set to MPSSE mode
-        ft.setBitMode(0x00, 0x00)
-        time.sleep(0.02)
+        # Set MPSSE mode (matches Ansari ftdi_control_mother pattern)
         ft.setBitMode(0x00, 0x02)  # 0x02 = MPSSE
         time.sleep(0.02)
-        ft.purge(self._PURGE_RXTX)
 
         self.sync_mpsse()
 

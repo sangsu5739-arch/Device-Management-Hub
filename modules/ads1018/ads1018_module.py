@@ -606,8 +606,8 @@ class ADS1018Module(BaseModule):
         self._config.cs_pin = self._cs_combo.currentData()
 
         self._ftdi.set_protocol_mode("SPI")
-        self._ftdi.spi_configure(clock_hz=1_000_000, cpol=0, cpha=1)
-        self._append_log("[INFO] SPI configured: mode=1, clock=1000000 Hz")
+        self._ftdi.spi_configure(clock_hz=4_000_000, cpol=1, cpha=0)
+        self._append_log("[INFO] SPI configured: CPOL=1 CPHA=0, clock=4000000 Hz")
 
         channels = []
         for i in range(4):
