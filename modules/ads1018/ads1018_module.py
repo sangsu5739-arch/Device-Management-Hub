@@ -8,10 +8,9 @@ and dynamic control panel.
 
 from __future__ import annotations
 
-import time
 from typing import Optional
 
-from PySide6.QtCore import Qt, QThread, Slot
+from PySide6.QtCore import Qt, Slot
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QGridLayout,
     QLabel, QPushButton, QComboBox, QCheckBox,
@@ -44,7 +43,7 @@ class ADS1018Module(BaseModule):
     def __init__(self, ftdi_manager: FtdiManager,
                  parent: Optional[QWidget] = None) -> None:
         self._worker: Optional[ADS1018Worker] = None
-        self._worker_thread: Optional[QThread] = None
+        self._worker_thread = None  # no longer used (threading.Thread is inside worker)
         self._running = False
         self._config = ADS1018Config()
 
@@ -52,6 +51,7 @@ class ADS1018Module(BaseModule):
         self._ch_radio_groups: list = []
         self._ch_shunt_edits: list = []
         self._ch_gain_edits: list = []
+        self._ch_vdiv_combos: list = []
         self._ch_current_frames: list = []
         self._ch_value_labels: list = []
         self._ch_unit_labels: list = []
@@ -178,6 +178,16 @@ class ADS1018Module(BaseModule):
                 btn_v.setStyleSheet(vi_base + v_checked)
             if btn_i:
                 btn_i.setStyleSheet(vi_base + i_checked)
+        # Voltage divider combos — match V/I button style
+        vdiv_style = (
+            f"QComboBox {{ font-size: 10px; font-weight: bold; border-radius: 4px;"
+            f" background: {tm.color('ads_vi_btn_bg')}; color: {tm.color('ads_vi_v_checked_text')};"
+            f" border: 1px solid {tm.color('ads_vi_btn_border')}; padding: 1px 2px; }}"
+            f"QComboBox::drop-down {{ border: none; width: 14px; }}"
+            f"QComboBox::down-arrow {{ image: none; border: none; }}"
+        )
+        for w in self.findChildren(QComboBox, "vdivCombo"):
+            w.setStyleSheet(vdiv_style)
         # Console views
         for w in self.findChildren(QTextEdit, "themedConsole"):
             w.setStyleSheet(
@@ -288,7 +298,7 @@ class ADS1018Module(BaseModule):
         self._window_spinbox.setSingleStep(10)
         self._window_spinbox.valueChanged.connect(lambda v: self._visualizer.set_window_seconds(v))
         grid.addWidget(self._window_spinbox, 6, 1)
-        
+
         # Row 7: Auto Range
         grid.addWidget(QLabel("Auto Range:"), 7, 0)
         self._auto_range_btn = QPushButton("AUTO RANGE: ON")
@@ -334,6 +344,7 @@ class ADS1018Module(BaseModule):
             ch_layout.setSpacing(4)
             
             top_h = QHBoxLayout()
+            top_h.setSpacing(3)
             ch_lbl = QLabel(f"CH{i}")
             ch_lbl.setStyleSheet(f"color: {CH_COLORS[i]}; font-weight: bold; font-size: 11px; border: none;")  # data color
             top_h.addWidget(ch_lbl)
@@ -355,6 +366,19 @@ class ADS1018Module(BaseModule):
             
             top_h.addWidget(btn_v)
             top_h.addWidget(btn_i)
+
+            vdiv_combo = QComboBox()
+            vdiv_combo.addItem("\u00d71", 1)
+            vdiv_combo.addItem("\u00d72", 2)
+            vdiv_combo.addItem("\u00d73", 3)
+            vdiv_combo.addItem("\u00d74", 4)
+            vdiv_combo.setMaximumWidth(42)
+            vdiv_combo.setFixedHeight(20)
+            vdiv_combo.setObjectName("vdivCombo")
+            vdiv_combo.setToolTip("Voltage divider ratio")
+            self._ch_vdiv_combos.append(vdiv_combo)
+
+            top_h.addWidget(vdiv_combo)
             top_h.addStretch()
             ch_layout.addLayout(top_h)
 
@@ -620,8 +644,10 @@ class ADS1018Module(BaseModule):
                 gain = float(self._ch_gain_edits[i].text())
             except ValueError:
                 gain = 100.0
+            vdiv = self._ch_vdiv_combos[i].currentData()
             channels.append(ChannelConfig(
-                mode=mode, shunt_resistor=shunt, gain=gain, enabled=True,
+                mode=mode, shunt_resistor=shunt, gain=gain,
+                voltage_divider=vdiv, enabled=True,
             ))
         self._config.channels = channels
 
@@ -637,14 +663,11 @@ class ADS1018Module(BaseModule):
             channel_configs=channels,
         )
 
-        self._worker_thread = QThread()
-        self._worker.moveToThread(self._worker_thread)
-        self._worker_thread.started.connect(self._worker.run)
         self._worker.measurement.connect(self._on_measurement)
         self._worker.error_occurred.connect(self._on_worker_error)
         self._worker.log_message.connect(self._append_log)
 
-        self._worker_thread.start()
+        self._worker.start()
         self._running = True
         self._visualizer.clear()
 
@@ -657,6 +680,7 @@ class ADS1018Module(BaseModule):
         self._pullup_cb.setEnabled(False)
         for edit in self._ch_shunt_edits: edit.setEnabled(False)
         for edit in self._ch_gain_edits: edit.setEnabled(False)
+        for combo in self._ch_vdiv_combos: combo.setEnabled(False)
         for group in self._ch_radio_groups:
             for btn in group.buttons():
                 btn.setEnabled(False)
@@ -679,10 +703,7 @@ class ADS1018Module(BaseModule):
 
         if self._worker:
             self._worker.stop()
-        if self._worker_thread:
-            self._worker_thread.quit()
-            self._worker_thread.wait(2000)
-            self._worker_thread = None
+            self._worker.wait(2000)
         self._worker = None
 
         self._start_btn.setEnabled(True)
@@ -694,6 +715,7 @@ class ADS1018Module(BaseModule):
         self._pullup_cb.setEnabled(True)
         for edit in self._ch_shunt_edits: edit.setEnabled(True)
         for edit in self._ch_gain_edits: edit.setEnabled(True)
+        for combo in self._ch_vdiv_combos: combo.setEnabled(True)
         for group in self._ch_radio_groups:
             for btn in group.buttons():
                 btn.setEnabled(True)
@@ -781,9 +803,10 @@ class ADS1018Module(BaseModule):
                     self._visualizer.set_channel_unit(idx, unit)
 
     def _on_mode_changed(self, ch_idx: int, mode_id: int) -> None:
-        """Show/hide current-mode fields and update plot axis."""
+        """Show/hide current-mode fields and divider combo based on V/I mode."""
         show_current = (mode_id == ChannelMode.CURRENT)
         self._ch_current_frames[ch_idx].setVisible(show_current)
+        self._ch_vdiv_combos[ch_idx].setVisible(not show_current)
         self._update_units_display()
 
     def _on_io_hold_toggled(self, bit: int, checked: bool) -> None:

@@ -77,6 +77,7 @@ class ChannelConfig:
     mode: int = ChannelMode.VOLTAGE
     shunt_resistor: float = 0.02   # Ohm
     gain: float = 100.0            # Op-amp gain
+    voltage_divider: int = 1       # 1=none, 2=2:1, 3=3:1, 4=4:1
     enabled: bool = True
 
 
@@ -190,9 +191,10 @@ class ADS1018Driver:
     def read_channel(self, channel: int) -> Optional[int]:
         """Read raw ADC value from a channel (0-3, single-ended).
 
-        Performs two SPI transfers:
-        1. Write config to select channel and start conversion
-        2. Read back the conversion result after conversion time
+        Matches C++ AdcRead() pattern:
+        1. TxPacket_Adc (write-only, no read) — sets config & starts conversion
+        2. Sleep(50ms) — wait for conversion
+        3. spi_transfer (full-duplex) — read back result
 
         Returns:
             12-bit raw ADC value (right-shifted), or None on error.
@@ -204,20 +206,30 @@ class ADS1018Driver:
         tx_data = self._build_tx_frame()
         cs = self.config.cs_pin
 
-        # First transfer: write config (result is stale)
-        if self._ftdi.spi_transfer(tx_data, cs) is None:
+        # DEBUG: show config register and TX frame
+        print(f"[ADS1018] CH{channel} config=0x{self._config_reg:04X} TX={tx_data.hex(' ')}")
+
+        # 1st transfer: write config only (C++ TxPacket_Adc — no SEND_IMMEDIATE, no read)
+        ok = self._ftdi.spi_write(tx_data, cs)
+        if not ok:
+            print(f"[ADS1018] CH{channel} 1st write: FAIL")
             return None
 
-        if not self.config.continuous:
-            time.sleep(self._conversion_delay_s())
+        # Wait for conversion (C++ Sleep(50))
+        time.sleep(self._conversion_delay_s())
 
-        # Second transfer: read back converted result
+        # 2nd transfer: full-duplex read (C++ TxPacket_Adc + RxPacket)
         rx = self._ftdi.spi_transfer(tx_data, cs)
         if rx is None or len(rx) < 4:
+            print(f"[ADS1018] CH{channel} 2nd transfer: rx={rx.hex(' ') if rx else 'None'} len={len(rx) if rx else 0}")
             return None
 
+        # DEBUG: show raw RX bytes and parsed value
+        raw16 = (rx[0] << 8) | rx[1]
+        print(f"[ADS1018] CH{channel} RX={rx.hex(' ')} raw16=0x{raw16:04X}", end="")
+
         # ADC value is in the first two bytes
-        raw = (rx[0] << 8) | rx[1]
+        raw = raw16
         if self.config.ts_mode:
             raw = raw >> 2  # 14-bit result for temperature
             if raw & 0x2000:
@@ -226,14 +238,15 @@ class ADS1018Driver:
             raw = raw >> 4  # 12-bit result for voltage
             if raw & 0x0800:
                 raw -= 0x1000
+        print(f" -> raw12={raw}")
         return raw
 
     # ── Value Conversion ──────────────────────────────────────────────
 
-    def calculate_voltage(self, raw: int) -> float:
+    def calculate_voltage(self, raw: int, divider: int = 1) -> float:
         """Convert raw ADC value to voltage (V)."""
         lsb_mv = PGA.LSB_MV.get(self.config.pga, 1.0)
-        voltage_mv = raw * lsb_mv * 2  # ×2 for voltage divider
+        voltage_mv = raw * lsb_mv * divider
         return round(voltage_mv / 1000.0, 4)
 
     def calculate_current(self, raw: int, gain: float, shunt: float) -> float:
@@ -265,4 +278,4 @@ class ADS1018Driver:
         if ch_cfg.mode == ChannelMode.CURRENT:
             return self.calculate_current(raw, ch_cfg.gain, ch_cfg.shunt_resistor)
         else:
-            return self.calculate_voltage(raw)
+            return self.calculate_voltage(raw, ch_cfg.voltage_divider)

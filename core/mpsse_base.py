@@ -84,7 +84,10 @@ class MpsseBaseController:
         ft = self._o._ft
         ft.resetDevice()
         time.sleep(0.02)
-        ft.getQueueStatus()  # read out old data
+        # Flush any stale data from previous operations
+        stale = ft.getQueueStatus()
+        if stale > 0:
+            ft.read(stale)
         ft.setUSBParameters(65536, 65535)
         ft.setChars(0, 0, 0, 0)  # disable event/error characters
         ft.setTimeouts(0, 5000)  # read=immediate return, write=5s
@@ -95,6 +98,14 @@ class MpsseBaseController:
         time.sleep(0.02)
 
         self.sync_mpsse()
+
+        # Final flush: ensure RX queue is completely clean before first transfer
+        try:
+            leftover = ft.getQueueStatus()
+            if leftover > 0:
+                ft.read(leftover)
+        except Exception:
+            pass
 
     def sync_mpsse(self) -> None:
         """Send a bad opcode to verify the MPSSE engine is responsive."""

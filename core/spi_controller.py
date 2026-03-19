@@ -140,10 +140,14 @@ class SpiController(MpsseBaseController):
             (divisor >> 8) & 0xFF,
         ]))
 
-        # Set initial pin state: CLK, MOSI, CS as output; MISO as input
+        # Pin direction: all output except MISO(bit2) and LED(bit7) — matches Ansari 0x7B
+        # This ensures CS pins on ADBUS3-6 are driven HIGH (inactive) to prevent
+        # floating CS lines from accidentally selecting SPI slaves.
         idle_clk = self.PIN_ADBUS0 if cpol else 0
-        self._gpio_direction = self.PIN_ADBUS0 | self.PIN_ADBUS1 | self.PIN_ADBUS3 | self._extra_gpio_dir
-        self._gpio_value = idle_clk | self.PIN_ADBUS3 | self._extra_gpio_val  # CS high (inactive)
+        self._gpio_direction = 0x7B  # 0111_1011: all output except MISO, LED
+        # All CS pins (ADBUS3-6) HIGH, CLK to idle state
+        all_cs_high = self.PIN_ADBUS3 | self.PIN_ADBUS4 | self.PIN_ADBUS5 | self.PIN_ADBUS6
+        self._gpio_value = idle_clk | all_cs_high
         self._set_low_bits(self._gpio_value, self._gpio_direction)
 
     # ------------------------------------------------------------------
@@ -190,19 +194,21 @@ class SpiController(MpsseBaseController):
         length = len(tx_data)
         len_lo = (length - 1) & 0xFF
         len_hi = ((length - 1) >> 8) & 0xFF
+        direction = self._gpio_direction & 0xFF
+
+        # Base port_value: all CS pins HIGH (Ansari pattern)
+        all_cs_high = self.PIN_ADBUS3 | self.PIN_ADBUS4 | self.PIN_ADBUS5 | self.PIN_ADBUS6
+        port_value = all_cs_high & ~cs_pin  # target CS LOW, others HIGH
 
         cmd = bytearray()
 
         # 1. Assert CS (5× for timing margin — Ansari pattern)
-        cs_val = self._gpio_value & ~cs_pin
-        self._gpio_direction |= cs_pin
         for _ in range(5):
-            cmd.extend([self._MPSSE_SET_BITS_LOW, cs_val & 0xFF, self._gpio_direction & 0xFF])
+            cmd.extend([self._MPSSE_SET_BITS_LOW, port_value & 0xFF, direction])
 
-        # 2. Set CLK to idle state before data (explicit — Ansari sets CLK HIGH here)
-        idle_clk = self.PIN_ADBUS0 if self._cpol else 0
-        pre_data_val = (cs_val & ~self.PIN_ADBUS0) | idle_clk
-        cmd.extend([self._MPSSE_SET_BITS_LOW, pre_data_val & 0xFF, self._gpio_direction & 0xFF])
+        # 2. Set CLK HIGH before data (Ansari explicit step)
+        port_value |= self.PIN_ADBUS0
+        cmd.extend([self._MPSSE_SET_BITS_LOW, port_value & 0xFF, direction])
 
         # 3. Clock data in/out
         cmd.append(duplex_op)
@@ -210,24 +216,50 @@ class SpiController(MpsseBaseController):
         cmd.append(len_hi)
         cmd.extend(tx_data)
 
-        # 4. Post-transfer cleanup: CLK LOW, MOSI LOW (5×)
-        cleanup_val = cs_val & ~self.PIN_ADBUS0 & ~self.PIN_ADBUS1
+        # 4. Post-transfer cleanup: CLK LOW, MOSI LOW, MISO LOW (5×)
+        port_value &= ~self.PIN_ADBUS0  # CLK LOW
+        port_value &= ~self.PIN_ADBUS1  # MOSI LOW
+        port_value &= ~self.PIN_ADBUS2  # MISO LOW (input, no effect but matches Ansari)
         for _ in range(5):
-            cmd.extend([self._MPSSE_SET_BITS_LOW, cleanup_val & 0xFF, self._gpio_direction & 0xFF])
+            cmd.extend([self._MPSSE_SET_BITS_LOW, port_value & 0xFF, direction])
 
         # 5. Deassert CS (5×)
-        cs_high_val = cleanup_val | cs_pin
+        port_value |= cs_pin
         for _ in range(5):
-            cmd.extend([self._MPSSE_SET_BITS_LOW, cs_high_val & 0xFF, self._gpio_direction & 0xFF])
+            cmd.extend([self._MPSSE_SET_BITS_LOW, port_value & 0xFF, direction])
 
         # Write entire transaction as one buffer
         self.write(bytes(cmd))
 
-        # Send SEND_IMMEDIATE separately (Ansari rx_packet pattern)
+        # Send SEND_IMMEDIATE separately, then read all available (Ansari rx_packet)
         self.write(bytes([self._MPSSE_SEND_IMMEDIATE]))
         time.sleep(0.01)  # 10ms — matches Ansari
-        rx = self.read_with_wait(length)
-        return rx
+
+        # Read all available bytes (Ansari pattern), extract last N bytes
+        try:
+            queued = self._o._ft.getQueueStatus() if self._o._ft else 0
+        except Exception:
+            queued = 0
+        if queued <= 0:
+            # Retry once after short wait
+            time.sleep(0.005)
+            try:
+                queued = self._o._ft.getQueueStatus() if self._o._ft else 0
+            except Exception:
+                queued = 0
+
+        print(f"[SPI] queued={queued} expected={length}")
+
+        if queued > 0:
+            all_data = self.read(queued)
+            print(f"[SPI] read({queued})={all_data.hex(' ')}")
+            # Return last 'length' bytes (Ansari uses rx_buffer[rx_len-4], [rx_len-3])
+            if len(all_data) >= length:
+                return all_data[-length:]
+            return all_data
+
+        print("[SPI] WARNING: no data in queue, returning zeros")
+        return b"\x00" * length
 
     def write_only(self, tx_data: bytes, cs_pin: int = MpsseBaseController.PIN_ADBUS3) -> None:
         """Write-only SPI transfer with automatic CS handling.
