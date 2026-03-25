@@ -46,23 +46,31 @@ Required abstract methods:
 - `start_communication()` / `stop_communication()`
 - `update_data()`
 
-Optional hooks: `on_tab_activated()` / `on_tab_deactivated()`
+Optional hooks: `on_tab_activated()` / `on_tab_deactivated()` / `on_channel_changed(channel: str)`
+
+Class-level attributes for capability declaration:
+- `REQUIRED_MODE: Optional[str] = None` — protocol mode required by this module (e.g. `"SPI"`, `"I2C"`)
+- `REQUIRE_MPSSE: bool = False` — set `True` to disable the module on non-MPSSE channels (FT4232H C/D)
 
 ### FtdiManager (`core/ftdi_manager.py`)
 
-Singleton managing the shared FTDI MPSSE I2C session. All modules share one instance via `FtdiManager.instance()`.
+Singleton managing the shared FTDI session. All modules share one instance via `FtdiManager.instance()`. Acts as a **facade** coordinating protocol mode switching and channel management — protocol implementations are delegated to `core/i2c_controller.py`, `core/spi_controller.py`, and `core/ftdi_bitbang.py` (all inherit from `core/mpsse_base.py`).
 
 - **Thread safety**: `QMutex` serializes all I2C calls — safe to call from QThread workers
+- **Protocol mode**: `set_protocol_mode(mode)` switches between `"I2C"`, `"SPI"`, `"JTAG"`, `"GPIO"`, `"UART"`. A 300ms mode-switch guard prevents I2C operations immediately after switching.
 - **I2C API**: `i2c_write(addr, data)`, `i2c_read(addr, write_prefix, read_len)`, `i2c_scan(start, end)`
 - **SMBus API**: `smbus_block_write()`, `smbus_block_read()` for PI6CG18201 protocol
-- **GPIO API**: `read_gpio_low()` — reads ADBUS low byte in MPSSE mode, returns `Optional[int]`
+- **GPIO API (low byte / ADBUS)**: `read_gpio_low()` → `Optional[int]`, `set_gpio_low(bit, high)`, `set_gpio_masked(mask, value)`
+- **GPIO API (high byte / ACBUS)**: `read_gpio_high()` → `Optional[int]`, `set_gpio_high_masked(mask, value)` — accumulates direction & value across calls to preserve state
+- **I2C hold policy**: `set_i2c_hold(mask, value)` / `clear_i2c_hold()` — holds D4~D7 at specific values during MPSSE I2C transactions to avoid interference
 - **Slave addresses**: 7-bit; the manager performs the `<< 1` shift internally
 - **Device scan**: `scan_devices_with_channels()` returns `List[Tuple[str, str, List[str], str]]` — `(base_serial, description, channels, device_type)` 4-tuple
 - **Device cache**: `_device_cache` dict stores scan results keyed by serial; `get_device_info(serial?)` returns cached info merged with current connection state
 - **Device type inference**: `_infer_device_type(desc, channels)` deduces FT232H/FT2232H/FT4232H from description string and channel count
-- **Channel property**: `channel` property returns the currently connected channel letter (A/B/C/D)
-- **Signals**: `device_connected(str)`, `device_disconnected()`, `device_info_changed(object)`, `comm_error(str)`, `data_sent(str)`, `data_received(str)`, `log_message(str)`
+- **Channel property**: `channel` property returns the currently connected channel letter (A/B/C/D); `set_active_channel(channel)` switches between open channel handles
+- **Signals**: `device_connected(str)`, `device_disconnected()`, `device_info_changed(object)`, `active_channel_changed(str)`, `comm_error(str)`, `data_sent(str)`, `data_received(str)`, `log_message(str)`
   - `device_info_changed` emits a dict with `serial`, `channel`, `desc`, `channels`, `device_type`, `connected` on both connect and disconnect — modules use this for auto-configuration
+  - `active_channel_changed` emits the new channel letter when `set_active_channel()` succeeds
 
 ### QThread Worker Pattern
 
@@ -79,13 +87,19 @@ Module (UI thread)                Worker (worker thread)
 
 **GC pitfall**: Local `QWidget` objects created in helper functions may be garbage-collected if not stored as instance attributes. Store container widgets in a list (e.g., `self._metric_containers`) to prevent deletion.
 
-### NACK / Spike Filtering (INA228)
+### NACK / Spike Filtering (INA228, INA3221)
 
-`INA228Worker` filters invalid readings before emitting:
+Workers filter invalid readings before emitting:
 - If `i2c_read` returns `None` (NACK) → skip measurement
 - If raw value drops to 0 while previous valid reading was non-zero → skip (0-spike suppression)
+- Module `_on_measurement()` also validates with `math.isfinite()` before updating the chart.
 
-`INA228Module._on_measurement()` also validates with `math.isfinite()` before updating the chart.
+### Packaging
+
+`DeviceManagementHub.spec` is a PyInstaller config (windowed app, `res/logo.ico`). Build with:
+```bash
+pyinstaller DeviceManagementHub.spec
+```
 
 ### FTDI Verifier Module
 
@@ -128,34 +142,55 @@ CubeIDE-style interactive hardware verifier. Key design patterns:
 ## Module Structure
 
 ```
-Device Management Hub/
+device-management-hub/
 ├── main.py                           # MainWindow, dynamic module loader, FTDI connection panel
 ├── core/
-│   └── ftdi_manager.py               # Singleton FTDI MPSSE I2C manager
+│   ├── ftdi_manager.py               # Singleton FTDI facade (protocol mode + channel mgmt)
+│   ├── i2c_controller.py             # MPSSE I2C protocol implementation
+│   ├── spi_controller.py             # MPSSE SPI full-duplex + chip-select management
+│   ├── mpsse_base.py                 # MpsseBaseController base class (MPSSE sync, init)
+│   ├── ftdi_bitbang.py               # Bitbang GPIO controller
+│   └── data_recorder.py             # CSV measurement recorder → ~/Documents/DeviceHub/
 ├── modules/
 │   ├── base_module.py                # BaseModule(QWidget) abstract base
-│   ├── pi6cg18201/                   # Clock generator module
-│   │   ├── pi6cg_module.py           # PI6CGModule(BaseModule)
-│   │   ├── register_map.py           # Register definitions + BitField
-│   │   └── clock_visualizer.py       # pyqtgraph clock waveform
-│   ├── ina228/                       # Power monitor module
-│   │   ├── ina228_module.py          # INA228Module(BaseModule)
-│   │   ├── ina228_registers.py       # Register enums + conversion utils
-│   │   ├── ina228_worker.py          # QThread polling worker
-│   │   └── power_visualizer.py       # pyqtgraph dual-chart (V + A)
-│   └── ftdi_verifier/                # Hardware verifier module
-│       ├── ftdi_verifier_module.py   # FtdiVerifierModule(BaseModule)
-│       ├── ftdi_chip_specs.py        # Chip/Pin/Channel dataclasses + enums
-│       ├── pinout_widget.py          # QPainter interactive pinout (CubeIDE style)
-│       └── verifier_worker.py        # GPIO/I2C/SPI test worker
+│   ├── adc_group/                    # [ACTIVE] Composite tab: ADS1018 + INA228 + INA3221
+│   ├── clock_group/                  # [ACTIVE] Composite tab: PI6CG18201 + sidebar nav
+│   ├── ftdi_verifier/                # [ACTIVE] Hardware verifier module
+│   │   ├── ftdi_verifier_module.py   # FtdiVerifierModule(BaseModule)
+│   │   ├── ftdi_chip_specs.py        # Chip/Pin/Channel dataclasses + enums
+│   │   ├── pinout_widget.py          # QPainter interactive pinout (CubeIDE style)
+│   │   ├── pinmap_controller.py      # Pin mapping utilities
+│   │   ├── gpio_controller.py        # GPIO state tracking
+│   │   ├── jtag_sequencer_panel.py   # JTAG .csv sequence file import & execution
+│   │   ├── jtag_tap_diagram.py       # TAP state machine diagram visualization
+│   │   └── verifier_worker.py        # GPIO/I2C/SPI test worker
+│   ├── ads1018/                      # [DISABLED] 4-channel SPI ADC
+│   ├── ina228/                       # [DISABLED] Power monitor (now inside adc_group)
+│   ├── ina3221/                      # [DISABLED] 3-channel power monitor
+│   └── pi6cg18201/                   # [DISABLED] Clock generator (now inside clock_group)
 └── assets/
     └── dark_theme.qss                # Application-wide dark stylesheet
 ```
 
+**Disabled modules**: `ads1018`, `ina228`, `ina3221`, `pi6cg18201` have `MODULE_CLASS` commented out in their `__init__.py` — they are instantiated as children inside the composite group modules instead.
+
+### Composite Module (Group) Pattern
+
+`AdcGroupModule` and `ClockGroupModule` use a macOS-style sidebar navigation:
+- `QListWidget` sidebar drives a `QStackedWidget` content area
+- Sub-modules are instantiated as children; `on_tab_activated/deactivated()`, `on_device_connected/disconnected()`, and `on_channel_changed()` are forwarded to the currently active child (and all children for connect/disconnect events)
+- `_on_sidebar_row_changed(row)` deactivates the old module and activates the new one
+
+### DataRecorder (`core/data_recorder.py`)
+
+Saves timestamped CSV measurements to `~/Documents/DeviceHub/`:
+- Auto-naming: `{ModuleName}_{YYYYMMDD_HHMMSS}.csv`
+- Columns: `[Timestamp, Elapsed_s, ...headers]`; flushes every 100 samples
+
 ### MainWindow Signal Notes
 
-- `FtdiManager` does **not** have an `active_channel_changed` signal. Use `device_info_changed(object)` instead — it emits a dict containing `channel` on both connect and disconnect.
 - `_on_device_info_changed(info: dict)` in `main.py` extracts `info["channel"]` and forwards it to modules via `module.on_channel_changed(channel)`.
+- For multi-channel devices (FT2232H), both channel handles are pre-opened during `open_device()` to maintain persistent handles. `set_active_channel()` switches between them without re-enumeration.
 
 ## Language & UI
 
