@@ -8,6 +8,7 @@ and dynamic control panel.
 
 from __future__ import annotations
 
+import time
 from typing import Optional
 
 from PySide6.QtCore import Qt, Slot
@@ -601,10 +602,7 @@ class ADS1018Module(BaseModule):
         connected = self._ftdi.is_connected
         self._set_hold_controls_enabled(connected)
         if connected:
-            self._ftdi.set_protocol_mode("SPI")
-            self._append_log("[INFO] Protocol mode: SPI")
-            self._apply_io_hold()
-            self._refresh_hold_status(sync_buttons=True)
+            self._restore_spi_context(force=True, settle_ms=30, sync_hold_ui=True)
 
     def on_tab_deactivated(self) -> None:
         if self._running:
@@ -619,6 +617,9 @@ class ADS1018Module(BaseModule):
             return
         if not self._ftdi.is_connected:
             self._append_log("[WARN] FTDI not connected.")
+            return
+        if not self._ftdi.supports_mpsse(self._ftdi.channel):
+            self._append_log("[WARN] Current FTDI channel does not support SPI/MPSSE.")
             return
 
         # Gather config from UI
@@ -838,6 +839,27 @@ class ADS1018Module(BaseModule):
         # Delegate GPIO mapping to ftdi_manager using masked write
         self._ftdi.set_gpio_masked(self._io_hold_mask, self._io_hold_value)
         self._refresh_hold_status()
+
+    def _restore_spi_context(
+        self,
+        force: bool = False,
+        settle_ms: int = 20,
+        sync_hold_ui: bool = False,
+    ) -> bool:
+        if not self._ftdi.is_connected:
+            return False
+        if not self._ftdi.supports_mpsse(self._ftdi.channel):
+            return False
+        if not self._ftdi.set_protocol_mode("SPI", force=force):
+            self._append_log("[ERROR] Failed to restore ADS1018 SPI mode.")
+            return False
+        self._ftdi.spi_configure(clock_hz=4_000_000, cpol=1, cpha=0)
+        self._apply_io_hold()
+        if settle_ms > 0:
+            time.sleep(settle_ms / 1000.0)
+        self._refresh_hold_status(sync_buttons=sync_hold_ui)
+        self._append_log("[INFO] SPI configured: CPOL=1 CPHA=0, clock=4000000 Hz")
+        return True
 
     def _refresh_hold_status(self, sync_buttons: bool = False) -> None:
         """Refresh inline GPIO LEDs from actual hardware state."""

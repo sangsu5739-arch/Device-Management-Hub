@@ -17,6 +17,7 @@ class MpsseBaseController:
     """Base class for MPSSE-based protocol controllers."""
 
     _PURGE_RXTX = 3
+    _MAX_INIT_RETRIES = 3
 
     # Common MPSSE opcodes shared across protocols
     _MPSSE_SET_BITS_LOW = 0x80
@@ -77,39 +78,84 @@ class MpsseBaseController:
             return b""
 
     def init_mpsse(self) -> None:
-        """Initialize the FTDI chip into MPSSE mode and synchronize it."""
+        """Initialize the FTDI chip into MPSSE mode and synchronize it.
+
+        Retries the full sequence (purge + reset + MPSSE enable + sync)
+        up to ``_MAX_INIT_RETRIES`` times with progressive delays so that
+        the USB subsystem has enough time to recover — especially on
+        FT2232H with multiple open channel handles.
+
+        Raises ``RuntimeError`` if synchronization fails on all attempts.
+        """
         if self._o._ft is None:
             raise RuntimeError("FTDI handle is not open.")
 
         ft = self._o._ft
-        ft.resetDevice()
-        time.sleep(0.02)
-        # Flush any stale data from previous operations
-        stale = ft.getQueueStatus()
-        if stale > 0:
-            ft.read(stale)
-        ft.setUSBParameters(65536, 65535)
-        ft.setChars(0, 0, 0, 0)  # disable event/error characters
-        ft.setTimeouts(0, 5000)  # read=immediate return, write=5s
-        ft.setLatencyTimer(1)  # 1ms latency
 
-        # Set MPSSE mode (matches Ansari ftdi_control_mother pattern)
-        ft.setBitMode(0x00, 0x02)  # 0x02 = MPSSE
-        time.sleep(0.02)
+        for attempt in range(self._MAX_INIT_RETRIES):
+            # Progressive delay: 50ms, 100ms, 150ms
+            settle_ms = 0.05 * (attempt + 1)
 
-        self.sync_mpsse()
+            # 1. Purge stale data from previous mode
+            try:
+                ft.purge(self._PURGE_RXTX)
+            except Exception:
+                pass
 
-        # Final flush: ensure RX queue is completely clean before first transfer
-        try:
-            leftover = ft.getQueueStatus()
-            if leftover > 0:
-                ft.read(leftover)
-        except Exception:
-            pass
+            # 2. USB-level reset
+            ft.resetDevice()
+            time.sleep(settle_ms)
 
-    def sync_mpsse(self) -> None:
-        """Send a bad opcode to verify the MPSSE engine is responsive."""
-        synced = False
+            # 3. Flush any residual RX data
+            try:
+                stale = ft.getQueueStatus()
+                if stale > 0:
+                    ft.read(stale)
+            except Exception:
+                pass
+
+            # 4. Configure USB parameters
+            ft.setUSBParameters(65536, 65535)
+            ft.setChars(0, 0, 0, 0)  # disable event/error characters
+            ft.setTimeouts(0, 5000)  # read=immediate return, write=5s
+            ft.setLatencyTimer(1)  # 1ms latency
+
+            # 5. Enable MPSSE mode
+            ft.setBitMode(0x00, 0x02)  # 0x02 = MPSSE
+            time.sleep(settle_ms)
+
+            # 6. Verify MPSSE engine is responsive
+            if self.sync_mpsse():
+                # Final flush: ensure RX queue is clean before first transfer
+                try:
+                    leftover = ft.getQueueStatus()
+                    if leftover > 0:
+                        ft.read(leftover)
+                except Exception:
+                    pass
+                if attempt > 0:
+                    self._o._log(
+                        f"[INFO] MPSSE init succeeded on attempt {attempt + 1}"
+                    )
+                return  # Success
+
+            if attempt < self._MAX_INIT_RETRIES - 1:
+                self._o._log(
+                    f"[WARN] MPSSE init attempt {attempt + 1}/{self._MAX_INIT_RETRIES} "
+                    f"failed, retrying (next settle={int(settle_ms * 2000)}ms)..."
+                )
+
+        raise RuntimeError(
+            f"MPSSE sync failed after {self._MAX_INIT_RETRIES} full "
+            f"init attempts — device may need power cycle"
+        )
+
+    def sync_mpsse(self) -> bool:
+        """Send a bad opcode to verify the MPSSE engine is responsive.
+
+        Returns ``True`` if the expected error response (``0xFA 0xAA``)
+        was received, ``False`` otherwise.
+        """
         for _ in range(3):
             self.write(b"\xAA")  # 0xAA is an invalid opcode
             time.sleep(0.02)
@@ -121,9 +167,9 @@ class MpsseBaseController:
             if rxn > 0:
                 resp = self.read(rxn)
                 if b"\xFA\xAA" in resp:  # 0xFA = Bad Command, 0xAA = the command
-                    synced = True
-                    break
-                
+                    self._o._log("[INFO] MPSSE sync OK")
+                    return True
+
                 # Trim log to avoid huge spam
                 hex_str = resp.hex(" ")
                 if len(hex_str) > 200:
@@ -131,10 +177,11 @@ class MpsseBaseController:
                 self._o._log(f"[WARN] MPSSE sync mismatch: {hex_str}")
             else:
                 self._o._log("[WARN] MPSSE sync timeout (no response)")
-        
-        if not synced:
-            # Extra purge to avoid stale data in further ops
-            try:
-                self._o._ft.purge(self._PURGE_RXTX)
-            except Exception:
-                pass
+
+        self._o._log("[ERROR] MPSSE sync FAILED after 3 attempts")
+        # Extra purge to avoid stale data in further ops
+        try:
+            self._o._ft.purge(self._PURGE_RXTX)
+        except Exception:
+            pass
+        return False

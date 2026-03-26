@@ -295,6 +295,25 @@ class INA3221Module(BaseModule):
         self._ftdi.set_i2c_hold(self._io_hold_mask, self._io_hold_value)
         self._refresh_hold_status()
 
+    def _restore_i2c_context(
+        self,
+        force: bool = False,
+        settle_ms: int = 40,
+        sync_hold_ui: bool = False,
+    ) -> bool:
+        if not self._ftdi.is_connected:
+            return False
+        if not self._ftdi.supports_mpsse(self._ftdi.channel):
+            return False
+        if not self._ftdi.set_protocol_mode("I2C", force=force):
+            self._append_log("[ERROR] Failed to restore INA3221 I2C mode.")
+            return False
+        self._apply_io_hold()
+        if settle_ms > 0:
+            time.sleep(settle_ms / 1000.0)
+        self._refresh_hold_status(sync_buttons=sync_hold_ui)
+        return True
+
     def _refresh_hold_status(self, sync_buttons: bool = False) -> None:
         if not hasattr(self, "_hold_leds"):
             return
@@ -641,10 +660,8 @@ class INA3221Module(BaseModule):
     def on_tab_activated(self) -> None:
         super().on_tab_activated()
         if self._ftdi.is_connected:
-            self._ftdi.set_protocol_mode("I2C")
             self._set_hold_controls_enabled(True)
-            self._apply_io_hold()
-            self._refresh_hold_status(sync_buttons=True)
+            self._restore_i2c_context(force=True, settle_ms=40, sync_hold_ui=True)
 
     def on_channel_changed(self, channel: str) -> None:
         if not self._ftdi.supports_mpsse(channel):
@@ -769,7 +786,16 @@ class INA3221Module(BaseModule):
         self._scan_result_label.setText("Scanning...")
         self._addr_combo.clear()
 
+        if not self._restore_i2c_context(force=True, settle_ms=40):
+            self._scan_result_label.setText("I2C restore failed")
+            self._append_log("[ERROR] Address scan aborted: I2C restore failed.")
+            return
+
         found = self._ftdi.i2c_scan(self.INA3221_SCAN_START, self.INA3221_SCAN_END)
+        if not found:
+            self._append_log("[WARN] No INA3221 device found, retrying after I2C restore...")
+            if self._restore_i2c_context(force=True, settle_ms=80):
+                found = self._ftdi.i2c_scan(self.INA3221_SCAN_START, self.INA3221_SCAN_END)
 
         if not found:
             self._scan_result_label.setText("INA3221 device not found")

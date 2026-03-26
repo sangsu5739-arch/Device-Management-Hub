@@ -70,14 +70,20 @@ class I2cController(MpsseBaseController):
         if self._o._ft is None:
             return None
         self.write(bytes([self._MPSSE_READ_BITS_LOW, self._MPSSE_SEND_IMMEDIATE]))
-        resp = self.read_with_wait(1)
+        resp = self.read_with_wait(1, retries=20)
+        if not resp:
+            self._o._purge_pending_io()
+            return None
         return resp[0] if resp else None
 
     def read_gpio_high(self) -> Optional[int]:
         if self._o._ft is None:
             return None
         self.write(bytes([self._MPSSE_READ_BITS_HIGH, self._MPSSE_SEND_IMMEDIATE]))
-        resp = self.read_with_wait(1)
+        resp = self.read_with_wait(1, retries=20)
+        if not resp:
+            self._o._purge_pending_io()
+            return None
         return resp[0] if resp else None
 
     # -- I2C helpers --
@@ -98,6 +104,9 @@ class I2cController(MpsseBaseController):
         return value & 0xFF, direction & 0xFF
 
     def apply_gpio_out(self, value: int) -> None:
+        # SCL (D0) and SDA (D1) must be idle-high for I2C.
+        # Override any stale state left by GPIO/bitbang mode.
+        value |= self._PIN_SCL | self._PIN_SDA
         val, direction = self._merge_i2c_hold(value, self._I2C_DIR_SDA_OUT)
         self.set_bits_low(val, direction)
 

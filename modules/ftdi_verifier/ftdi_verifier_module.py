@@ -1,4 +1,4 @@
-﻿"""
+"""
 FTDI Hardware Verifier module - Universal Device Studio plugin
 
 Validates connected FTDI chip hardware resources,
@@ -39,6 +39,7 @@ from modules.ftdi_verifier.gpio_controller import GpioController
 from modules.ftdi_verifier.verifier_worker import (
     VerifierWorker, I2CScanResult, ProtocolTestResult,
 )
+from modules.ftdi_verifier.eeprom_prog_widget import EepromProgPanel
 
 
 class FtdiVerifierModule(BaseModule):
@@ -119,8 +120,8 @@ class FtdiVerifierModule(BaseModule):
         self._h_splitter.addWidget(control_panel)
         self._h_splitter.addWidget(self._right_stack)
         self._h_splitter.setStretchFactor(0, 2)
-        self._h_splitter.setStretchFactor(1, 5)
-        self._h_splitter.setSizes([260, 520])
+        self._h_splitter.setStretchFactor(1, 3)
+        self._h_splitter.setSizes([400, 520])
 
         v_splitter.addWidget(self._h_splitter)
         v_splitter.addWidget(self._create_log_panel())
@@ -131,7 +132,7 @@ class FtdiVerifierModule(BaseModule):
 
         # Load default chip
         self._apply_chip_and_channel("FT232H", "A")
-        QTimer.singleShot(0, lambda: self._h_splitter.setSizes([260, 520]))
+        QTimer.singleShot(0, lambda: self._h_splitter.setSizes([400, 520]))
         if self._uart_read_timer is None:
             self._uart_read_timer = QTimer(self)
             self._uart_read_timer.setInterval(50)
@@ -203,6 +204,9 @@ class FtdiVerifierModule(BaseModule):
         super().on_tab_deactivated()
         if hasattr(self, "_proto_mode_combo"):
             self._last_proto_mode = self._proto_mode_combo.currentText()
+        # Stop GPIO polling so the worker doesn't hold the FTDI bus
+        # while other modules (ADC, Clock Gen) need it.
+        self._force_stop_gpio_polling()
         # If UART is open, close and restore FTDI connection on tab leave.
         # _close_uart already calls set_vcp_mode(False), so no separate call needed.
         if self._uart_serial is not None:
@@ -271,7 +275,7 @@ class FtdiVerifierModule(BaseModule):
 
         self._proto_mode_combo = QComboBox()
         self._proto_mode_combo.setFont(QFont("Malgun Gothic", 10))
-        self._proto_mode_combo.addItems(["I2C", "SPI", "JTAG", "UART", "GPIO"])
+        self._proto_mode_combo.addItems(["I2C", "SPI", "JTAG", "UART", "GPIO", "PROG"])
         self._proto_mode_combo.currentTextChanged.connect(self._on_protocol_mode_changed)
         mode_layout.addWidget(self._proto_mode_combo)
 
@@ -733,6 +737,14 @@ class FtdiVerifierModule(BaseModule):
 
         self._proto_tabs.addTab(self._gpio_group, "GPIO")
 
+        # PROG Control
+        self._prog_group = QGroupBox("EEPROM Program")
+        prog_layout = QVBoxLayout(self._prog_group)
+        prog_layout.setContentsMargins(0, 0, 0, 0)
+        self._prog_panel = EepromProgPanel(self._ftdi, self._append_log)
+        prog_layout.addWidget(self._prog_panel)
+        self._proto_tabs.addTab(self._prog_group, "PROG")
+
         self._proto_tabs.currentChanged.connect(self._on_proto_tab_changed)
 
         main_layout.addWidget(self._proto_tabs)
@@ -1114,7 +1126,7 @@ class FtdiVerifierModule(BaseModule):
         current = self._proto_mode_combo.currentText()
         self._proto_mode_combo.blockSignals(True)
         self._proto_mode_combo.clear()
-        for name in ["I2C", "SPI", "JTAG", "UART", "GPIO"]:
+        for name in ["I2C", "SPI", "JTAG", "UART", "GPIO", "PROG"]:
             self._proto_mode_combo.addItem(name)
         self._proto_mode_combo.blockSignals(False)
 
@@ -1163,9 +1175,13 @@ class FtdiVerifierModule(BaseModule):
         self._gpio.refresh_controls()
 
     def _apply_protocol_mode(self, mode: str) -> None:
-        required = ("_i2c_group", "_spi_group", "_jtag_group", "_uart_group", "_gpio_group")
+        required = ("_i2c_group", "_spi_group", "_jtag_group", "_uart_group", "_gpio_group", "_prog_group")
         if not all(hasattr(self, name) for name in required):
             return
+
+        # Stop GPIO polling when leaving GPIO mode to release the FTDI bus
+        if mode != "GPIO":
+            self._force_stop_gpio_polling()
 
         # If UART VCP is open and user switches away, auto-close first.
         if self._uart_serial is not None and mode != "UART":
@@ -1179,11 +1195,15 @@ class FtdiVerifierModule(BaseModule):
             "JTAG": self._jtag_group,
             "UART": self._uart_group,
             "GPIO": self._gpio_group,
+            "PROG": self._prog_group,
         }
         ch_spec = self._current_chip.channels.get(self._current_channel) if self._current_chip else None
         supported = set(p.value for p in ch_spec.supported_protocols) if ch_spec else set()
         for name, grp in groups.items():
-            grp.setEnabled(name == mode and name in supported)
+            if name == "PROG":
+                grp.setEnabled(name == mode)
+            else:
+                grp.setEnabled(name == mode and name in supported)
         if hasattr(self, "_proto_tabs"):
             idx = list(groups.keys()).index(mode) if mode in groups else 0
             self._proto_tabs.setCurrentIndex(idx)
@@ -1202,7 +1222,9 @@ class FtdiVerifierModule(BaseModule):
         if mode != "UART":
             self._last_non_uart_mode = mode
         if self._ftdi.is_connected:
-            self._ftdi.set_protocol_mode(mode)
+            if not self._ftdi.set_protocol_mode(mode):
+                self._append_log(f"[ERROR] Failed to switch protocol to {mode}.")
+                return
             if mode == "GPIO":
                 self._gpio.set_all_low()
 
@@ -1219,10 +1241,10 @@ class FtdiVerifierModule(BaseModule):
 
     @Slot(int)
     def _on_proto_tab_changed(self, index: int) -> None:
-        required = ("_i2c_group", "_spi_group", "_jtag_group", "_uart_group", "_gpio_group")
+        required = ("_i2c_group", "_spi_group", "_jtag_group", "_uart_group", "_gpio_group", "_prog_group")
         if not all(hasattr(self, name) for name in required):
             return
-        names = ["I2C", "SPI", "JTAG", "UART", "GPIO"]
+        names = ["I2C", "SPI", "JTAG", "UART", "GPIO", "PROG"]
         if 0 <= index < len(names):
             self._proto_mode_combo.blockSignals(True)
             self._proto_mode_combo.setCurrentText(names[index])
@@ -1581,6 +1603,48 @@ class FtdiVerifierModule(BaseModule):
                 )
 
     # -- GPIO --
+
+    def _force_stop_gpio_polling(self) -> None:
+        """Stop GPIO polling, reset button state, and restore MPSSE mode.
+
+        Called when leaving GPIO mode or switching away from the Verifier
+        tab so the polling worker doesn't hold the FTDI bus.
+        """
+        if not hasattr(self, "_gpio_poll_btn"):
+            return
+        was_polling = self._gpio_poll_btn.isChecked()
+        if was_polling:
+            # Reset button without re-entering toggled handler
+            self._gpio_poll_btn.blockSignals(True)
+            self._gpio_poll_btn.setChecked(False)
+            self._gpio_poll_btn.blockSignals(False)
+            self._gpio_poll_btn.setText("Polling OFF")
+            self._stop_worker()
+            if hasattr(self, "_gpio_poll_interval"):
+                self._gpio_poll_interval.setEnabled(True)
+            if hasattr(self, "_gpio_poll_status"):
+                self._gpio_poll_status.setVisible(False)
+            if hasattr(self, "_pinout"):
+                self._pinout.set_polling_active(False)
+            if self._gpio_poll_blink is not None and self._gpio_poll_blink.isActive():
+                self._gpio_poll_blink.stop()
+            self._append_log("[GPIO] Polling auto-stopped (mode/tab change).")
+        # Always force a full MPSSE re-init for I2C, regardless of current mode.
+        # GPIO operations use MPSSE backend (set_gpio_backend("mpsse")) so
+        # _channel_modes will already be "mpsse" — but the MPSSE engine's
+        # internal state (buffers, pin directions) may be dirty from GPIO
+        # set_bits_low / read_bits_low commands.  A force re-init purges
+        # stale USB data and re-configures the MPSSE for clean I2C.
+        if self._ftdi.is_connected and self._ftdi.supports_mpsse(self._ftdi.channel):
+            self._append_log("[GPIO] Restoring I2C (force) ...")
+            if self._ftdi.set_protocol_mode("I2C", force=True):
+                self._append_log(
+                    f"[GPIO] I2C/MPSSE restored OK "
+                    f"(gpio_out=0x{self._ftdi._gpio_out_value:02X})"
+                )
+                self._set_gpio_backend_label("MPSSE")
+            else:
+                self._append_log("[GPIO] WARN: failed to restore I2C/MPSSE cleanly.")
 
     @Slot(bool)
     def _on_gpio_poll_toggled(self, checked: bool) -> None:
@@ -2178,6 +2242,20 @@ class FtdiVerifierModule(BaseModule):
         if self._worker_thread is not None:
             self._worker_thread.quit()
             self._worker_thread.wait(3000)
+            w = self._worker
+            if w is not None:
+                # Disconnect signals before cleanup to prevent stale deliveries
+                for sig_name in ("gpio_updated", "log_message", "error_occurred",
+                                 "i2c_scan_finished", "protocol_test_finished"):
+                    try:
+                        getattr(w, sig_name).disconnect()
+                    except (RuntimeError, TypeError, AttributeError):
+                        pass
+                try:
+                    w.moveToThread(self.thread())
+                    w.deleteLater()
+                except RuntimeError:
+                    pass
             self._worker_thread.deleteLater()
             self._worker_thread = None
         self._worker = None

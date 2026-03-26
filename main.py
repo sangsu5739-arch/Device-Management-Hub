@@ -147,7 +147,7 @@ class CustomTitleBar(QWidget):
         layout.addStretch()
 
         # ── Theme toggle button ──
-        self._theme_btn = QPushButton("\u263e")
+        self._theme_btn = QPushButton("\u25d0")
         self._theme_btn.setFixedSize(34, 34)
         self._theme_btn.setFont(QFont("Segoe UI Symbol", 14))
         self._theme_btn.setToolTip("Toggle dark/light theme")
@@ -176,7 +176,7 @@ class CustomTitleBar(QWidget):
     def _apply_theme(self) -> None:
         tm = ThemeManager.instance()
         is_dark = tm.is_dark()
-        self._theme_btn.setText("\u263e" if is_dark else "\u2600")
+        self._theme_btn.setText("\u25d0" if is_dark else "\u25d1")
 
         self.setStyleSheet(
             f"CustomTitleBar {{ background: {tm.color('bg_titlebar')}; border: none;"
@@ -204,13 +204,13 @@ class CustomTitleBar(QWidget):
         )
         self._theme_btn.setStyleSheet(
             f"QPushButton {{ background: transparent; color: {tm.color('title_winbtn')}; border: none;"
-            f" font-size: 14px; }}"
+            f" font-size: 14px; padding: 0; }}"
             f"QPushButton:hover {{ background: {tm.color('title_winbtn_bg_hover')};"
             f" color: {tm.color('title_winbtn_hover')}; }}"
         )
         winbtn_style = (
             f"QPushButton {{ background: transparent; color: {tm.color('title_winbtn')}; border: none;"
-            f" font-size: 11px; }}"
+            f" font-size: 11px; padding: 0; }}"
             f"QPushButton:hover {{ background: {tm.color('title_winbtn_bg_hover')};"
             f" color: {tm.color('title_winbtn_hover')}; }}"
         )
@@ -218,7 +218,7 @@ class CustomTitleBar(QWidget):
         self._max_btn.setStyleSheet(winbtn_style)
         self._close_btn.setStyleSheet(
             f"QPushButton {{ background: transparent; color: {tm.color('title_winbtn')}; border: none;"
-            f" font-size: 11px; }}"
+            f" font-size: 11px; padding: 0; }}"
             f"QPushButton:hover {{ background: #c42b1c; color: white; }}"
         )
 
@@ -299,8 +299,8 @@ class MainWindow(QMainWindow):
         self.setWindowFlags(
             Qt.WindowType.FramelessWindowHint | Qt.WindowType.Window
         )
-        self.setMinimumSize(1360, 950)
-        self.resize(1520, 1130)
+        self.setMinimumSize(800, 600)
+        # Actual resize done in main() after show() to bypass DPI clamping
 
         self._ftdi = FtdiManager.instance()
         self._modules: List[BaseModule] = []
@@ -468,21 +468,21 @@ class MainWindow(QMainWindow):
                 f"QPushButton {{ background: {tm.color('btn_ch_disabled_bg')};"
                 f" color: {tm.color('btn_ch_disabled_text')};"
                 f" border: 1px solid {tm.color('btn_ch_disabled_border')};"
-                f" border-radius: 5px; font-size: 11px; font-weight: 600; }}"
+                f" border-radius: 5px; font-size: 11px; font-weight: 600; padding: 0; }}"
             )
         if active:
             return (
                 f"QPushButton {{ background: {tm.color('btn_ch_active_bg')};"
                 f" color: {tm.color('btn_ch_active_text')};"
                 f" border: 1px solid {tm.color('btn_ch_active_border')};"
-                f" border-radius: 5px; font-size: 11px; font-weight: 700; }}"
+                f" border-radius: 5px; font-size: 11px; font-weight: 700; padding: 0; }}"
                 f"QPushButton:hover {{ background: {tm.color('btn_ch_active_bg')}; }}"
             )
         return (
             f"QPushButton {{ background: {tm.color('btn_ch_bg')};"
             f" color: {tm.color('btn_ch_text')};"
             f" border: 1px solid {tm.color('btn_ch_border')};"
-            f" border-radius: 5px; font-size: 11px; font-weight: 600; }}"
+            f" border-radius: 5px; font-size: 11px; font-weight: 600; padding: 0; }}"
             f"QPushButton:hover {{ background: {tm.color('bg_hover')};"
             f" color: {tm.color('text_primary')}; border-color: {tm.color('border_hover')}; }}"
             f"QPushButton:checked {{ background: {tm.color('btn_ch_active_bg')};"
@@ -501,7 +501,7 @@ class MainWindow(QMainWindow):
         self._scan_btn.setStyleSheet(
             f"QPushButton {{ background: {tm.color('btn_scan_bg')}; color: {tm.color('btn_scan_text')};"
             f" border: 1px solid {tm.color('btn_scan_border')};"
-            f" border-radius: 5px; font-size: 14px; }}"
+            f" border-radius: 5px; font-size: 14px; padding: 0; }}"
             f"QPushButton:hover {{ background: {tm.color('btn_scan_hover')}; }}"
             f"QPushButton:pressed {{ background: {tm.color('bg_bar')}; }}"
             f"QPushButton:disabled {{ color: {tm.color('text_disabled')};"
@@ -1196,6 +1196,16 @@ def main() -> None:
     window = MainWindow()
     window.setWindowIcon(app.windowIcon())
     window.show()
+
+    # Fixed pixel size (applied after show to bypass DPI clamping)
+    target_w = 1450
+    target_h = 1000
+    window.resize(target_w, target_h)
+    # Center on screen
+    screen_geo = window.screen().availableGeometry()
+    x = screen_geo.x() + (screen_geo.width() - target_w) // 2
+    y = screen_geo.y() + (screen_geo.height() - target_h) // 2
+    window.move(x, y)
 
     sys.exit(app.exec())
 

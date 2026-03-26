@@ -7,6 +7,7 @@ Connection panel is managed by MainWindow and is excluded here.
 
 from __future__ import annotations
 
+import time
 from datetime import datetime
 from typing import Optional
 
@@ -157,6 +158,14 @@ class PI6CGModule(BaseModule):
 
     def on_device_disconnected(self) -> None:
         self.stop_communication()
+
+    def on_tab_activated(self) -> None:
+        super().on_tab_activated()
+        if not self._ftdi.is_connected:
+            return
+        if not self._ftdi.supports_mpsse(self._ftdi.channel):
+            return
+        self._restore_i2c_context(force=True, settle_ms=40)
 
     def on_channel_changed(self, channel: str) -> None:
         if not self._ftdi.supports_mpsse(channel):
@@ -507,7 +516,7 @@ class PI6CGModule(BaseModule):
         self._reg_map.full_map_changed.emit()
 
         if self._live_mode and self._ftdi.is_connected:
-            self._ftdi.smbus_block_write(self._slave_address, 0x00, self._reg_map.get_all_bytes())
+            self._write_registers_to_device(force=False)
 
     @Slot(int)
     def _on_advanced_mode_changed(self, state: int) -> None:
@@ -565,9 +574,7 @@ class PI6CGModule(BaseModule):
         if not self._ftdi.supports_mpsse(self._ftdi.channel):
             self._show_mpsse_warning(self._ftdi.channel)
             return
-        self._ftdi.set_protocol_mode("I2C")
-        data = self._reg_map.get_all_bytes()
-        self._ftdi.smbus_block_write(self._slave_address, 0x00, data)
+        self._write_registers_to_device(force=True)
 
     @Slot()
     def _on_read_registers(self) -> None:
@@ -576,8 +583,7 @@ class PI6CGModule(BaseModule):
         if not self._ftdi.supports_mpsse(self._ftdi.channel):
             self._show_mpsse_warning(self._ftdi.channel)
             return
-        self._ftdi.set_protocol_mode("I2C")
-        data = self._ftdi.smbus_block_read(self._slave_address, 0x00, TOTAL_BYTES)
+        data = self._read_registers_from_device(force=True)
         if data:
             self._reg_map.set_all_bytes(data)
             self._sync_controls_from_regmap()
@@ -700,6 +706,52 @@ class PI6CGModule(BaseModule):
             oe_states=oe_states,
             q_slew_bits=q_slew_bits,
         )
+
+    def _restore_i2c_context(self, force: bool = False, settle_ms: int = 30) -> bool:
+        if not self._ftdi.is_connected:
+            return False
+        if not self._ftdi.supports_mpsse(self._ftdi.channel):
+            return False
+        if not self._ftdi.set_protocol_mode("I2C", force=force):
+            self._append_log("[ERROR] Failed to restore PI6CG I2C mode.")
+            return False
+        if settle_ms > 0:
+            time.sleep(settle_ms / 1000.0)
+        return True
+
+    def _write_registers_to_device(self, force: bool = False) -> bool:
+        if not self._restore_i2c_context(force=force, settle_ms=40 if force else 0):
+            return False
+        data = self._reg_map.get_all_bytes()
+        if self._ftdi.smbus_block_write(self._slave_address, 0x00, data):
+            return True
+        self._append_log("[WARN] Clock write failed, retrying after I2C restore...")
+        if not self._restore_i2c_context(force=True, settle_ms=60):
+            return False
+        if self._ftdi.smbus_block_write(self._slave_address, 0x00, data):
+            return True
+        self._append_log("[ERROR] Clock register write failed.")
+        return False
+
+    def _read_registers_from_device(self, force: bool = False) -> Optional[bytes]:
+        if not self._restore_i2c_context(force=force, settle_ms=40 if force else 0):
+            return None
+        data = self._ftdi.smbus_block_read(self._slave_address, 0x00, TOTAL_BYTES)
+        if data is not None:
+            return data
+        self._append_log("[WARN] Clock read failed, retrying after I2C restore...")
+        if not self._restore_i2c_context(force=True, settle_ms=60):
+            return None
+        data = self._ftdi.smbus_block_read(self._slave_address, 0x00, TOTAL_BYTES)
+        if data is None:
+            self._append_log("[ERROR] Clock register read failed.")
+        return data
+
+    def _append_log(self, message: str) -> None:
+        if not hasattr(self, "_log_text"):
+            return
+        ts = datetime.now().strftime("%H:%M:%S.%f")[:-3]
+        self._log_text.append(f"[{ts}] {message}")
 
     def _load_ui_settings(self) -> None:
         advanced = self._settings.value("pi6cg/advanced_mode", False, type=bool)

@@ -160,29 +160,60 @@ class FtdiManager(QObject):
         self._emit_current_device_info()
         return True
 
-    def set_protocol_mode(self, mode: str) -> None:
-        """Switch FTDI mode based on protocol selection."""
+    def set_protocol_mode(self, mode: str, force: bool = False) -> bool:
+        """Switch FTDI mode based on protocol selection.
+
+        Args:
+            mode: target protocol ("I2C", "SPI", "GPIO", "JTAG", "UART", "PROG")
+            force: if True, skip idempotency check and do a full re-init.
+                   Use this when returning from GPIO operations to ensure
+                   the MPSSE engine and USB buffers are in a clean state.
+        """
         if not self._is_connected or self._ft is None:
-            return
+            return False
 
         ch = self._active_channel
         mode = mode.upper()
+        locker = QMutexLocker(self._mutex)
+
+        # Skip redundant re-init when already in the correct mode.
+        # This prevents double ft.resetDevice() calls during tab switches
+        # (e.g. _force_stop_gpio_polling → I2C, then on_tab_activated → I2C).
+        if not force:
+            cur_mode = self._channel_modes.get(ch, "")
+            if mode in ("I2C", "JTAG") and cur_mode == "mpsse":
+                return True
+            if mode == "SPI" and cur_mode == "spi":
+                return True
+            if mode == "GPIO" and cur_mode == "bitbang":
+                return True
+            if mode == "PROG" and cur_mode == "prog":
+                return True
+
         self._mode_switch_ts = time.time()
         self._mode_switch_guard_warned = False
         try:
+            self._purge_pending_io()
             if mode == "GPIO":
                 self._bitbang.enable(self._bitbang_mask)
                 self._channel_modes[ch] = "bitbang"
+                self._active_protocol = "GPIO"
                 self._bitbang_i2c_warned = False
+                self._mode_switch_ts = 0
                 try:
                     self._ft.write(bytes([self._gpio_out_value & 0xFF]))
                 except Exception:
                     pass
-                return
+                return True
 
             # Leave bitbang when switching away from GPIO
             if self._channel_modes.get(ch) == "bitbang":
-                self._bitbang.disable()
+                try:
+                    self._bitbang.disable()
+                except Exception as e:
+                    self._log(f"[WARN] bitbang.disable() failed: {e}")
+                # Always clear bitbang state so I2C is not permanently blocked
+                self._channel_modes[ch] = ""
 
             if mode == "SPI":
                 if self.supports_mpsse(ch):
@@ -194,16 +225,21 @@ class FtdiManager(QObject):
                     self._log(f"[INFO] Protocol mode: SPI (CH={ch})")
                 else:
                     self._channel_modes[ch] = "uart"
+                    self._active_protocol = "UART"
                     self._bitbang_i2c_warned = False
-                return
+                    self._mode_switch_ts = 0
+                return True
 
             if mode in ("I2C", "JTAG"):
                 if self.supports_mpsse(ch):
                     self._i2c.configure()
                     self._channel_modes[ch] = "mpsse"
-                    self._active_protocol = "I2C"
+                    self._active_protocol = mode
                     self._bitbang_i2c_warned = False
                     self._mode_switch_ts = 0
+                    # Ensure SCL/SDA bits are high so apply_gpio_out
+                    # doesn't pull the I2C bus low after GPIO/bitbang mode.
+                    self._gpio_out_value |= 0x03
                     try:
                         self._i2c.apply_gpio_out(self._gpio_out_value)
                     except Exception:
@@ -217,30 +253,61 @@ class FtdiManager(QObject):
                             )
                         except Exception:
                             pass
-                    self._log(f"[INFO] Protocol mode: I2C (CH={ch})")
+                    self._log(f"[INFO] Protocol mode: {mode} (CH={ch})")
                 else:
                     self._channel_modes[ch] = "uart"
+                    self._active_protocol = "UART"
                     self._bitbang_i2c_warned = False
-                return
+                    self._mode_switch_ts = 0
+                return True
 
             if mode == "UART":
-                self._bitbang.disable()
+                try:
+                    self._bitbang.disable()
+                except Exception:
+                    pass
                 self._channel_modes[ch] = "uart"
+                self._active_protocol = "UART"
                 self._bitbang_i2c_warned = False
-        except Exception as e:
-            self._log(f"[ERROR] Operation failed: {e}")
+                self._mode_switch_ts = 0
+                return True
 
-    def set_gpio_backend(self, backend: str) -> bool:
+            if mode == "PROG":
+                # EEPROM operations use D2XX API directly;
+                # reset bit mode to ensure clean D2XX state for eeRead/eeProgram.
+                try:
+                    self._ft.setBitMode(0x00, 0x00)
+                except Exception:
+                    pass
+                self._channel_modes[ch] = "prog"
+                self._active_protocol = "PROG"
+                self._bitbang_i2c_warned = False
+                self._mode_switch_ts = 0
+                self._log(f"[INFO] Protocol mode: PROG (CH={ch})")
+                return True
+            self._log(f"[WARN] Unsupported protocol mode requested: {mode}")
+        except Exception as e:
+            self._channel_modes[ch] = ""
+            self._mode_switch_ts = 0
+            self._log(f"[ERROR] Operation failed: {e}")
+            return False
+        return False
+
+    def set_gpio_backend(self, backend: str, force: bool = False) -> bool:
         """Force GPIO backend without changing protocol selection (GPIO tab use)."""
         if not self._is_connected or self._ft is None:
             return False
         ch = self._active_channel
         backend = backend.lower()
+        locker = QMutexLocker(self._mutex)
         try:
+            self._purge_pending_io()
             if backend == "bitbang":
                 self._bitbang.enable(self._bitbang_mask)
                 self._channel_modes[ch] = "bitbang"
+                self._active_protocol = "GPIO"
                 self._bitbang_i2c_warned = False
+                self._mode_switch_ts = 0
                 try:
                     self._ft.write(bytes([self._gpio_out_value & 0xFF]))
                 except Exception:
@@ -251,13 +318,18 @@ class FtdiManager(QObject):
                     return False
                 cur_mode = self._channel_modes.get(ch, "?")
                 self._log(f"[GPIO-BACKEND] mpsse requested, current mode={cur_mode}")
+                if cur_mode == "mpsse" and force:
+                    cur_mode = ""
                 if cur_mode == "mpsse":
                     return True  # Already in MPSSE — skip re-init
                 if self._channel_modes.get(ch) == "bitbang":
                     self._bitbang.disable()
                 self._i2c.configure()
                 self._channel_modes[ch] = "mpsse"
+                self._active_protocol = "I2C"
                 self._bitbang_i2c_warned = False
+                self._mode_switch_ts = 0
+                self._gpio_out_value |= 0x03
                 try:
                     self._i2c.apply_gpio_out(self._gpio_out_value)
                 except Exception:
@@ -273,6 +345,8 @@ class FtdiManager(QObject):
                         pass
                 return True
         except Exception as e:
+            self._channel_modes[ch] = ""
+            self._mode_switch_ts = 0
             self._log(f"[ERROR] GPIO backend switch failed: {e}")
         return False
 
@@ -291,6 +365,7 @@ class FtdiManager(QObject):
         if not self._is_connected or self._ft is None:
             return
         if self._channel_modes.get(self._active_channel) == "bitbang":
+            locker = QMutexLocker(self._mutex)
             try:
                 self._bitbang.enable(self._bitbang_mask)
             except Exception as e:
@@ -300,21 +375,29 @@ class FtdiManager(QObject):
         """Set a single ADBUS GPIO bit high/low in current mode."""
         if bit < 0 or bit > 7:
             return
+        locker = QMutexLocker(self._mutex)
         if high:
             self._gpio_out_value |= (1 << bit)
         else:
             self._gpio_out_value &= ~(1 << bit)
-        self._apply_gpio_out()
+        self._apply_gpio_out_locked()
 
     def set_gpio_masked(self, mask: int, value: int) -> None:
         """Set GPIO outputs with mask."""
+        locker = QMutexLocker(self._mutex)
         self._gpio_out_value = (self._gpio_out_value & ~mask) | (value & mask)
-        self._apply_gpio_out()
+        self._apply_gpio_out_locked()
 
     def _apply_gpio_out(self) -> None:
         if not self._is_connected or self._ft is None:
             return
-        mode = self._channel_modes.get(self._active_channel, "mpsse")
+        locker = QMutexLocker(self._mutex)
+        self._apply_gpio_out_locked()
+
+    def _apply_gpio_out_locked(self) -> None:
+        if not self._is_connected or self._ft is None:
+            return
+        mode = self._channel_modes.get(self._active_channel, "")
         try:
             if mode == "bitbang":
                 self._ft.write(bytes([self._gpio_out_value & 0xFF]))
@@ -336,7 +419,8 @@ class FtdiManager(QObject):
         """
         if not self._is_connected or self._ft is None:
             return
-        mode = self._channel_modes.get(self._active_channel, "mpsse")
+        locker = QMutexLocker(self._mutex)
+        mode = self._channel_modes.get(self._active_channel, "")
         if mode != "mpsse":
             return
         try:
@@ -393,23 +477,44 @@ class FtdiManager(QObject):
 
     @staticmethod
     def _detect_channel(serial: str, desc: str) -> Optional[str]:
+        """Detect channel letter only when both serial and description agree.
+
+        Multi-channel FTDI devices (FT2232H, FT4232H) have the channel
+        letter appended to BOTH serial and description by the D2XX driver.
+        Single-channel devices (FT232H) do not.  Requiring agreement
+        prevents false detection when a single-channel device's serial or
+        description happens to end with A-D (e.g. serial 'FTBEQDX' with
+        desc ending in ' D').
+        """
+        serial_ch = None
         if serial and serial[-1].upper() in ("A", "B", "C", "D"):
-            return serial[-1].upper()
+            serial_ch = serial[-1].upper()
+
+        desc_ch = None
         desc_upper = desc.upper()
         for ch in ("A", "B", "C", "D"):
             if desc_upper.endswith(f" {ch}"):
-                return ch
+                desc_ch = ch
+                break
+
+        if serial_ch and desc_ch and serial_ch == desc_ch:
+            return serial_ch
         return None
 
     @staticmethod
-    def _normalize_serial(serial_raw: str) -> str:
-        """Strip trailing channel letter to get base serial."""
+    def _normalize_serial(serial_raw: str, detected_channel: Optional[str] = None) -> str:
+        """Strip trailing channel letter to get base serial.
+
+        Only strips the last character when *detected_channel* confirms it
+        is actually a channel suffix.  This prevents mis-stripping from
+        single-channel devices whose serial happens to end with A-D.
+        """
         serial = serial_raw.strip()
-        if len(serial) >= 2 and serial[-1] in ("A", "B", "C", "D"):
-            return serial[:-1]
-        # Single-char serial that is just a channel letter (e.g. "A", "B")
-        if len(serial) == 1 and serial in ("A", "B", "C", "D"):
-            return ""
+        if detected_channel:
+            if len(serial) >= 2 and serial[-1].upper() == detected_channel:
+                return serial[:-1]
+            if len(serial) == 1 and serial.upper() == detected_channel:
+                return ""
         return serial
 
     @staticmethod
@@ -447,10 +552,11 @@ class FtdiManager(QObject):
                 info = ftd2xx.getDeviceInfoDetail(i)
                 serial = FtdiManager._clean_ftdi_text(info.get("serial", b""))
                 desc = FtdiManager._clean_ftdi_text(info.get("description", b""))
-                base_serial = FtdiManager._normalize_serial(serial)
 
-                # Detect channel from serial suffix or description suffix.
+                # Detect channel first so _normalize_serial knows whether
+                # the trailing letter is actually a channel suffix.
                 channel = FtdiManager._detect_channel(serial, desc)
+                base_serial = FtdiManager._normalize_serial(serial, channel)
 
                 # When serial is just a channel letter (e.g. "A", "B"),
                 # derive group key from description base
@@ -513,49 +619,36 @@ class FtdiManager(QObject):
         """Find the device index for a serial/channel pair."""
         import ftd2xx
 
-        target_base = self._normalize_serial(serial_number)
+        # Normalize target serial using target channel context
         target_ch = channel.upper()
+        target_base = self._normalize_serial(serial_number, target_ch)
         count = ftd2xx.createDeviceInfoList()
         fallback_index: Optional[int] = None
 
         for i in range(count):
             info = ftd2xx.getDeviceInfoDetail(i)
-            serial_raw = info.get("serial", b"")
-            desc_raw = info.get("description", b"")
-            serial = (
-                serial_raw.decode(errors="ignore")
-                if isinstance(serial_raw, (bytes, bytearray))
-                else str(serial_raw)
-            )
-            desc = (
-                desc_raw.decode(errors="ignore")
-                if isinstance(desc_raw, (bytes, bytearray))
-                else str(desc_raw)
-            )
+            serial = self._clean_ftdi_text(info.get("serial", b""))
+            desc = self._clean_ftdi_text(info.get("description", b""))
+
+            detected_ch = self._detect_channel(serial, desc)
+            base_serial = self._normalize_serial(serial, detected_ch)
 
             # Match by normalized serial or by description base
-            base_serial = self._normalize_serial(serial)
             match = False
             if target_base and base_serial == target_base:
                 match = True
             elif not base_serial:
                 # Serial is a single channel letter — match via description
                 desc_base = desc.strip()
-                ch_from_desc = None
-                for ch in ("A", "B", "C", "D"):
-                    if desc_base.upper().endswith(f" {ch}"):
-                        ch_from_desc = ch
-                        desc_base = desc_base[:-2].strip()
-                        break
+                if detected_ch and desc_base.upper().endswith(f" {detected_ch}"):
+                    desc_base = desc_base[:-2].strip()
                 if desc_base == target_base:
                     match = True
 
             if not match:
                 continue
 
-            serial_ch = serial[-1].upper() if serial else ""
-            desc_upper = desc.upper()
-            if serial_ch == target_ch or desc_upper.endswith(f" {target_ch}"):
+            if detected_ch == target_ch:
                 return i
 
             if fallback_index is None:
@@ -568,7 +661,9 @@ class FtdiManager(QObject):
         """Enumerate devices once and return {channel: index} map."""
         import ftd2xx
 
-        target_base = self._normalize_serial(serial_number)
+        # Use first channel letter as context for normalizing target serial
+        ch_ctx = channels[0] if channels else None
+        target_base = self._normalize_serial(serial_number, ch_ctx)
         result: dict = {}
         unknown_indexes: list[int] = []
         count = ftd2xx.createDeviceInfoList()
@@ -578,22 +673,19 @@ class FtdiManager(QObject):
             serial = self._clean_ftdi_text(info.get("serial", b""))
             desc = self._clean_ftdi_text(info.get("description", b""))
 
-            base_serial = self._normalize_serial(serial)
+            channel = self._detect_channel(serial, desc)
+            base_serial = self._normalize_serial(serial, channel)
             match = False
             if target_base and base_serial == target_base:
                 match = True
             elif not base_serial:
                 desc_base = desc.strip()
-                for ch in ("A", "B", "C", "D"):
-                    if desc_base.upper().endswith(f" {ch}"):
-                        desc_base = desc_base[:-2].strip()
-                        break
+                if channel and desc_base.upper().endswith(f" {channel}"):
+                    desc_base = desc_base[:-2].strip()
                 if desc_base == target_base:
                     match = True
             if not match:
                 continue
-
-            channel = self._detect_channel(serial, desc)
             if channel and channel in channels and channel not in result:
                 result[channel] = i
                 continue
@@ -672,6 +764,24 @@ class FtdiManager(QObject):
         """Configure SCL/SDA GPIO lines."""
         self._i2c.set_lines(scl_high=scl_high, sda_high=sda_high)
 
+    def _purge_pending_io(self) -> None:
+        """Best-effort purge of stale USB/MPSSE data on the active handle."""
+        if self._ft is None:
+            return
+        try:
+            self._ft.purge(3)
+        except Exception:
+            pass
+        try:
+            queued = self._ft.getQueueStatus()
+        except Exception:
+            queued = 0
+        if queued > 0:
+            try:
+                self._ft.read(queued)
+            except Exception:
+                pass
+
     def set_i2c_hold(self, mask: int, value: int) -> None:
         """Hold GPIO states on ADBUS while in MPSSE I2C (bits 4-7 recommended)."""
         self._i2c_hold_mask = mask & 0xFF
@@ -680,6 +790,7 @@ class FtdiManager(QObject):
             return
         if not self.supports_mpsse(self._active_channel):
             return
+        locker = QMutexLocker(self._mutex)
         try:
             self._i2c.apply_i2c_hold()
         except Exception as e:
@@ -785,43 +896,46 @@ class FtdiManager(QObject):
 
     def close_device(self) -> None:
         """Close FTDI device and release all handles."""
-        try:
-            for ch, ft in list(self._ft_handles.items()):
-                if ft is None:
-                    continue
-                try:
-                    self._ft = ft
-                    if self.supports_mpsse(ch):
-                        try:
-                            self._set_lines(scl_high=True, sda_high=True)
-                        except Exception:
-                            pass
-                        ft.setBitMode(0x00, 0x00)
-                    else:
-                        try:
+        # Close handles under mutex to prevent worker race conditions
+        with QMutexLocker(self._mutex):
+            try:
+                for ch, ft in list(self._ft_handles.items()):
+                    if ft is None:
+                        continue
+                    try:
+                        self._ft = ft
+                        if self.supports_mpsse(ch):
+                            try:
+                                self._set_lines(scl_high=True, sda_high=True)
+                            except Exception:
+                                pass
                             ft.setBitMode(0x00, 0x00)
-                        except Exception:
-                            pass
-                    ft.close()
-                except Exception:
-                    pass
-        except Exception as e:
-            logger.warning(f"Device close warning: {e}")
-        finally:
-            self._ft = None
-            self._ft_handles = {}
-            self._channel_index_map = {}
-            self._available_channels = []
-            self._is_connected = False
-            self._serial_number = ""
-            self._active_channel = "A"
-            self._channel = "A"
-            self._channel_modes = {}
-            self._gpio_high_out_value = 0x00
-            self._gpio_high_direction = 0x00
-            self._log("Disconnected.")
-            self.device_disconnected.emit()
-            self.device_info_changed.emit(
+                        else:
+                            try:
+                                ft.setBitMode(0x00, 0x00)
+                            except Exception:
+                                pass
+                        ft.close()
+                    except Exception:
+                        pass
+            except Exception as e:
+                logger.warning(f"Device close warning: {e}")
+            finally:
+                self._ft = None
+                self._ft_handles = {}
+                self._channel_index_map = {}
+                self._available_channels = []
+                self._is_connected = False
+                self._serial_number = ""
+                self._active_channel = "A"
+                self._channel = "A"
+                self._channel_modes = {}
+                self._gpio_high_out_value = 0x00
+                self._gpio_high_direction = 0x00
+        # Emit signals AFTER releasing mutex to avoid deadlock
+        self._log("Disconnected.")
+        self.device_disconnected.emit()
+        self.device_info_changed.emit(
                 {
                     "serial": "",
                     "channel": "",
@@ -854,6 +968,10 @@ class FtdiManager(QObject):
         if not self.supports_mpsse(self._active_channel):
             self.comm_error.emit("MPSSE is required for I2C.")
             return False
+        if self._channel_modes.get(self._active_channel, "") != "mpsse":
+            if not self.set_protocol_mode("I2C"):
+                self.comm_error.emit("I2C backend is not ready.")
+                return False
 
         locker = QMutexLocker(self._mutex)
         return self._i2c.i2c_write(slave_addr, data)
@@ -876,6 +994,10 @@ class FtdiManager(QObject):
         if not self.supports_mpsse(self._active_channel):
             self.comm_error.emit("MPSSE is required for I2C.")
             return None
+        if self._channel_modes.get(self._active_channel, "") != "mpsse":
+            if not self.set_protocol_mode("I2C"):
+                self.comm_error.emit("I2C backend is not ready.")
+                return None
         locker = QMutexLocker(self._mutex)
         return self._i2c.i2c_read(slave_addr, write_prefix, read_len)
 
@@ -904,6 +1026,10 @@ class FtdiManager(QObject):
         if not self.supports_mpsse(self._active_channel):
             self.comm_error.emit("MPSSE is required for I2C.")
             return []
+        if self._channel_modes.get(self._active_channel, "") != "mpsse":
+            if not self.set_protocol_mode("I2C"):
+                self.comm_error.emit("I2C backend is not ready.")
+                return []
 
         locker = QMutexLocker(self._mutex)
         return self._i2c.i2c_scan(addr_start, addr_end)
@@ -916,7 +1042,8 @@ class FtdiManager(QObject):
         if not self._is_connected or self._ft is None:
             return
         if self._channel_modes.get(self._active_channel) != "spi":
-            self.set_protocol_mode("SPI")
+            if not self.set_protocol_mode("SPI"):
+                return
         locker = QMutexLocker(self._mutex)
         self._spi.reconfigure(clock_hz=clock_hz, cpol=cpol, cpha=cpha)
 
@@ -938,7 +1065,8 @@ class FtdiManager(QObject):
             self.comm_error.emit("MPSSE is required for SPI.")
             return None
         if self._channel_modes.get(self._active_channel) != "spi":
-            self.set_protocol_mode("SPI")
+            if not self.set_protocol_mode("SPI"):
+                return None
         locker = QMutexLocker(self._mutex)
         try:
             return self._spi.transfer(tx_data, cs_pin)
@@ -958,7 +1086,8 @@ class FtdiManager(QObject):
             self.comm_error.emit("MPSSE is required for SPI.")
             return False
         if self._channel_modes.get(self._active_channel) != "spi":
-            self.set_protocol_mode("SPI")
+            if not self.set_protocol_mode("SPI"):
+                return False
         locker = QMutexLocker(self._mutex)
         try:
             self._spi.write_only(tx_data, cs_pin)
@@ -979,7 +1108,8 @@ class FtdiManager(QObject):
             self.comm_error.emit("MPSSE is required for SPI.")
             return None
         if self._channel_modes.get(self._active_channel) != "spi":
-            self.set_protocol_mode("SPI")
+            if not self.set_protocol_mode("SPI"):
+                return None
         locker = QMutexLocker(self._mutex)
         try:
             return self._spi.write_then_read(write_data, read_len, cs_pin)
@@ -1006,13 +1136,15 @@ class FtdiManager(QObject):
             return None
         locker = QMutexLocker(self._mutex)
         try:
-            mode = self._channel_modes.get(self._active_channel, "mpsse")
+            mode = self._channel_modes.get(self._active_channel, "")
             if mode == "bitbang":
                 value = self._bitbang.read_pins()
                 return value if value is not None else None
             if mode == "spi":
                 return self._spi.read_gpio_low()
-            return self._i2c.read_gpio_low()
+            if mode == "mpsse":
+                return self._i2c.read_gpio_low()
+            return None
         except Exception as e:
             self._log(f"[ERROR] GPIO read failed: {e}")
             return None
@@ -1023,7 +1155,7 @@ class FtdiManager(QObject):
             return None
         locker = QMutexLocker(self._mutex)
         try:
-            mode = self._channel_modes.get(self._active_channel, "mpsse")
+            mode = self._channel_modes.get(self._active_channel, "")
             if mode != "mpsse":
                 return None
             return self._i2c.read_gpio_high()

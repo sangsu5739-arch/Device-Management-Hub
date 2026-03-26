@@ -208,10 +208,7 @@ class INA228Module(BaseModule):
         connected = self._ftdi.is_connected
         self._set_hold_controls_enabled(connected)
         if connected:
-            self._ftdi.set_protocol_mode("I2C")
-            self._apply_io_hold()
-            if self._ftdi.supports_mpsse(self._ftdi.channel):
-                self._refresh_hold_status(sync_buttons=True)
+            self._restore_i2c_context(force=True, settle_ms=40, sync_hold_ui=True)
 
     def on_channel_changed(self, channel: str) -> None:
         if not self._ftdi.supports_mpsse(channel):
@@ -439,6 +436,25 @@ class INA228Module(BaseModule):
             self._saved_hold = self._ftdi.get_i2c_hold()
         self._ftdi.set_i2c_hold(self._io_hold_mask, self._io_hold_value)
         self._refresh_hold_status()
+
+    def _restore_i2c_context(
+        self,
+        force: bool = False,
+        settle_ms: int = 40,
+        sync_hold_ui: bool = False,
+    ) -> bool:
+        if not self._ftdi.is_connected:
+            return False
+        if not self._ftdi.supports_mpsse(self._ftdi.channel):
+            return False
+        if not self._ftdi.set_protocol_mode("I2C", force=force):
+            self._append_log("[ERROR] Failed to restore INA228 I2C mode.")
+            return False
+        self._apply_io_hold()
+        if settle_ms > 0:
+            time.sleep(settle_ms / 1000.0)
+        self._refresh_hold_status(sync_buttons=sync_hold_ui)
+        return True
 
     def _refresh_hold_status(self, sync_buttons: bool = False) -> None:
         """Refresh GPIO Hold LED/bar from actual hardware state.
@@ -745,7 +761,17 @@ class INA228Module(BaseModule):
         self._scan_result_label.setText("Scanning...")
         self._addr_combo.clear()
 
+        if not self._restore_i2c_context(force=True, settle_ms=40):
+            self._scan_result_label.setText("I2C restore failed")
+            self._append_log("[ERROR] Address scan aborted: I2C restore failed.")
+            self._start_btn.setEnabled(False)
+            return
+
         found = self._ftdi.i2c_scan(self.INA228_SCAN_START, self.INA228_SCAN_END)
+        if not found:
+            self._append_log("[WARN] No INA228 device found, retrying after I2C restore...")
+            if self._restore_i2c_context(force=True, settle_ms=80):
+                found = self._ftdi.i2c_scan(self.INA228_SCAN_START, self.INA228_SCAN_END)
 
         if not found:
             self._scan_result_label.setText("INA228 device not found")
@@ -881,11 +907,16 @@ class INA228Module(BaseModule):
         """Refresh register map table (direct read in UI thread when idle)."""
         if not self._ftdi.is_connected:
             return
+        if not self._restore_i2c_context(force=False, settle_ms=0):
+            return
 
         self._reg_table.blockSignals(True)
         for row, reg in enumerate(DISPLAY_REGISTERS):
             size = REGISTER_SIZE.get(reg, 2)
             raw = self._ftdi.i2c_read(self._slave_addr, bytes([reg.value]), size)
+            if raw is None or len(raw) < size:
+                if self._restore_i2c_context(force=True, settle_ms=60):
+                    raw = self._ftdi.i2c_read(self._slave_addr, bytes([reg.value]), size)
             if raw is not None and len(raw) >= size:
                 if size >= 3:
                     val = ((raw[0] << 16) | (raw[1] << 8) | raw[2]) >> 4
@@ -921,6 +952,16 @@ class INA228Module(BaseModule):
 
             reg = DISPLAY_REGISTERS[row]
             data = bytes([reg.value, (value >> 8) & 0xFF, value & 0xFF])
-            self._ftdi.i2c_write(self._slave_addr, data)
+            if not self._restore_i2c_context(force=False, settle_ms=0):
+                self._append_log("[ERROR] Register write aborted: I2C restore failed.")
+                self._refresh_register_map()
+                return
+            if not self._ftdi.i2c_write(self._slave_addr, data):
+                self._append_log("[WARN] Register write failed, retrying after I2C restore...")
+                if (not self._restore_i2c_context(force=True, settle_ms=60)
+                        or not self._ftdi.i2c_write(self._slave_addr, data)):
+                    self._append_log("[ERROR] Register write failed.")
+                    self._refresh_register_map()
+                    return
         except ValueError:
             self._refresh_register_map()
