@@ -65,6 +65,10 @@ class VerifierWorker(QObject):
         self._gpio_polling = False
         self._poll_interval_ms: int = 200
         self._mutex = QMutex()
+        self._gpio_blink_enabled: bool = False
+        self._gpio_blink_low_mask: int = 0x00
+        self._gpio_blink_high_mask: int = 0x00
+        self._gpio_blink_state: bool = False
 
     # -- GPIO polling --
 
@@ -76,6 +80,25 @@ class VerifierWorker(QObject):
     def stop_gpio_polling(self) -> None:
         self._gpio_polling = False
 
+    def configure_gpio_blink(
+        self,
+        low_mask: int = 0x00,
+        high_mask: int = 0x00,
+        enabled: bool = True,
+    ) -> None:
+        with QMutexLocker(self._mutex):
+            self._gpio_blink_low_mask = low_mask & 0xFF
+            self._gpio_blink_high_mask = high_mask & 0xFF
+            self._gpio_blink_enabled = enabled and bool(low_mask or high_mask)
+            self._gpio_blink_state = False
+
+    def clear_gpio_blink(self) -> None:
+        with QMutexLocker(self._mutex):
+            self._gpio_blink_enabled = False
+            self._gpio_blink_low_mask = 0x00
+            self._gpio_blink_high_mask = 0x00
+            self._gpio_blink_state = False
+
     def run(self) -> None:
         """Main loop - runs in QThread."""
         self._running = True
@@ -84,6 +107,7 @@ class VerifierWorker(QObject):
         while self._running:
             if self._gpio_polling and self._ftdi.is_connected:
                 try:
+                    self._apply_gpio_blink()
                     self._poll_gpio()
                 except Exception as e:
                     self.error_occurred.emit(f"GPIO polling error: {e}")
@@ -104,6 +128,26 @@ class VerifierWorker(QObject):
             for bit in range(8):
                 state.pin_states[bit] = bool(raw & (1 << bit))
         self.gpio_updated.emit(state)
+
+    def _apply_gpio_blink(self) -> None:
+        with QMutexLocker(self._mutex):
+            enabled = self._gpio_blink_enabled
+            low_mask = self._gpio_blink_low_mask
+            high_mask = self._gpio_blink_high_mask
+            self._gpio_blink_state = not self._gpio_blink_state
+            high = self._gpio_blink_state
+
+        if not enabled:
+            return
+
+        low_value = low_mask if high else 0x00
+        high_value = high_mask if high else 0x00
+        # Use MPSSE set_bits_low for low-byte GPIO — avoids switching to
+        # bitbang mode which causes unreliable MPSSE recovery on tab switch.
+        if low_mask:
+            self._ftdi.mpsse_set_gpio_low(low_mask, low_value)
+        if high_mask:
+            self._ftdi.set_gpio_high_masked(high_mask, high_value)
 
     # -- I2C scan --
 

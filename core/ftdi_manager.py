@@ -10,15 +10,111 @@ from __future__ import annotations
 import logging
 import time
 from datetime import datetime
-from typing import List, Optional, Tuple
+from dataclasses import dataclass
+from typing import Any, Callable, List, Optional, Tuple
 
-from PySide6.QtCore import QObject, Signal, QMutex, QMutexLocker
+from PySide6.QtCore import QObject, Signal, QMutex, QMutexLocker, QThread, Slot
 
 from core.i2c_controller import I2cController
 from core.spi_controller import SpiController
 from core.ftdi_bitbang import BitbangController
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class FtdiTaskResult:
+    """Result payload for async FTDI protocol tasks."""
+
+    success: bool
+    payload: Any = None
+    error: str = ""
+    stage: str = ""
+
+
+class _FtdiProtocolTaskWorker(QObject):
+    """Run a short FTDI restore + task sequence off the UI thread."""
+
+    finished = Signal(object)
+
+    def __init__(
+        self,
+        ftdi: "FtdiManager",
+        protocol: Optional[str],
+        force: bool,
+        settle_ms: int,
+        prepare: Optional[Callable[[], Any]],
+        task: Optional[Callable[[], Any]],
+    ) -> None:
+        super().__init__()
+        self._ftdi = ftdi
+        self._protocol = protocol.upper() if protocol else None
+        self._force = force
+        self._settle_ms = max(0, int(settle_ms))
+        self._prepare = prepare
+        self._task = task
+
+    @Slot()
+    def run(self) -> None:
+        self.finished.emit(self._execute())
+
+    def _normalize_result(self, value: Any, stage: str) -> FtdiTaskResult:
+        if isinstance(value, FtdiTaskResult):
+            if not value.stage:
+                value.stage = stage
+            return value
+        if value is False:
+            return FtdiTaskResult(False, error=f"{stage} failed.", stage=stage)
+        return FtdiTaskResult(True, payload=value, stage=stage)
+
+    def _execute(self) -> FtdiTaskResult:
+        if not self._ftdi.is_connected:
+            return FtdiTaskResult(False, error="FTDI device is not connected.", stage="connect")
+
+        try:
+            if self._protocol:
+                if not self._ftdi.set_protocol_mode(self._protocol, force=self._force):
+                    return FtdiTaskResult(
+                        False,
+                        error=f"{self._protocol} restore failed.",
+                        stage="restore",
+                    )
+                self._ftdi.purge_pending_io()
+
+            if self._prepare is not None:
+                prepare_result = self._normalize_result(self._prepare(), "prepare")
+                if not prepare_result.success:
+                    return prepare_result
+
+            if self._settle_ms > 0:
+                time.sleep(self._settle_ms / 1000.0)
+
+            self._ftdi.purge_pending_io()
+
+            if self._task is None:
+                return FtdiTaskResult(True, stage="restore")
+
+            return self._normalize_result(self._task(), "task")
+        except Exception as exc:
+            return FtdiTaskResult(False, error=str(exc), stage="task")
+
+
+class _FtdiTaskCallbackRelay(QObject):
+    """Deliver async task completion back on the manager's thread."""
+
+    def __init__(self, callback: Callable[[FtdiTaskResult], None], parent: Optional[QObject] = None) -> None:
+        super().__init__(parent)
+        self._callback = callback
+
+    @Slot(object)
+    def deliver(self, result: object) -> None:
+        try:
+            if isinstance(result, FtdiTaskResult):
+                self._callback(result)
+        except Exception:
+            logger.exception("Async FTDI callback failed.")
+        finally:
+            self.deleteLater()
 
 
 class FtdiManager(QObject):
@@ -81,7 +177,9 @@ class FtdiManager(QObject):
         self._i2c_hold_value: int = 0x00
         self._gpio_out_value: int = 0x00
         self._gpio_high_out_value: int = 0x00
+        self._gpio_low_direction: int = 0x00
         self._gpio_high_direction: int = 0x00
+        self._async_tasks: dict[int, tuple[QThread, _FtdiProtocolTaskWorker, Optional[_FtdiTaskCallbackRelay]]] = {}
         self._i2c = I2cController(self)
         self._spi = SpiController(self)
         self._bitbang = BitbangController(self)
@@ -160,6 +258,41 @@ class FtdiManager(QObject):
         self._emit_current_device_info()
         return True
 
+    def run_async_protocol_task(
+        self,
+        protocol: Optional[str],
+        *,
+        force: bool = False,
+        settle_ms: int = 0,
+        prepare: Optional[Callable[[], Any]] = None,
+        task: Optional[Callable[[], Any]] = None,
+        on_done: Optional[Callable[[FtdiTaskResult], None]] = None,
+    ) -> int:
+        """Run a short protocol restore + FTDI task sequence on a worker thread."""
+        worker = _FtdiProtocolTaskWorker(
+            self,
+            protocol=protocol,
+            force=force,
+            settle_ms=settle_ms,
+            prepare=prepare,
+            task=task,
+        )
+        thread = QThread(self)
+        relay = _FtdiTaskCallbackRelay(on_done, self) if on_done is not None else None
+        task_id = id(thread)
+        self._async_tasks[task_id] = (thread, worker, relay)
+
+        worker.moveToThread(thread)
+        if relay is not None:
+            worker.finished.connect(relay.deliver)
+        worker.finished.connect(thread.quit)
+        worker.finished.connect(worker.deleteLater)
+        thread.finished.connect(thread.deleteLater)
+        thread.finished.connect(lambda task_key=task_id: self._async_tasks.pop(task_key, None))
+        thread.started.connect(worker.run)
+        thread.start()
+        return task_id
+
     def set_protocol_mode(self, mode: str, force: bool = False) -> bool:
         """Switch FTDI mode based on protocol selection.
 
@@ -237,6 +370,7 @@ class FtdiManager(QObject):
                     self._active_protocol = mode
                     self._bitbang_i2c_warned = False
                     self._mode_switch_ts = 0
+                    self._gpio_low_direction = 0x00
                     # Ensure SCL/SDA bits are high so apply_gpio_out
                     # doesn't pull the I2C bus low after GPIO/bitbang mode.
                     self._gpio_out_value |= 0x03
@@ -301,8 +435,8 @@ class FtdiManager(QObject):
         backend = backend.lower()
         locker = QMutexLocker(self._mutex)
         try:
-            self._purge_pending_io()
             if backend == "bitbang":
+                self._purge_pending_io()
                 self._bitbang.enable(self._bitbang_mask)
                 self._channel_modes[ch] = "bitbang"
                 self._active_protocol = "GPIO"
@@ -317,13 +451,14 @@ class FtdiManager(QObject):
                 if not self.supports_mpsse(ch):
                     return False
                 cur_mode = self._channel_modes.get(ch, "?")
-                self._log(f"[GPIO-BACKEND] mpsse requested, current mode={cur_mode}")
                 if cur_mode == "mpsse" and force:
                     cur_mode = ""
                 if cur_mode == "mpsse":
-                    return True  # Already in MPSSE — skip re-init
+                    return True  # Already in MPSSE — skip re-init and purge
+                self._purge_pending_io()
                 if self._channel_modes.get(ch) == "bitbang":
                     self._bitbang.disable()
+                self._gpio_low_direction = 0x00
                 self._i2c.configure()
                 self._channel_modes[ch] = "mpsse"
                 self._active_protocol = "I2C"
@@ -370,6 +505,43 @@ class FtdiManager(QObject):
                 self._bitbang.enable(self._bitbang_mask)
             except Exception as e:
                 self._log(f"[ERROR] Bitbang mask set failed: {e}")
+
+    def mpsse_set_gpio_low(self, mask: int, value: int) -> None:
+        """Set low-byte GPIO pins directly via MPSSE set_bits_low.
+
+        Unlike set_gpio_masked (which routes through apply_gpio_out with I2C
+        direction 0x03), this method accumulates direction bits across calls
+        (like set_gpio_high_masked does for the high byte) so that previously
+        configured GPIO output pins are not reverted to input.
+
+        Writes the MPSSE command directly to the FTDI handle to avoid any
+        intermediate buffering or routing through the I2C controller.
+        """
+        locker = QMutexLocker(self._mutex)
+        self._gpio_out_value = (self._gpio_out_value & ~mask) | (value & mask)
+        self._gpio_low_direction |= (mask & 0xFF)
+        if not self._is_connected or self._ft is None:
+            return
+        if self._channel_modes.get(self._active_channel, "") != "mpsse":
+            return
+        # Force SCL(D0)/SDA(D1) high for I2C bus safety
+        out = self._gpio_out_value | 0x03
+        # Direction: I2C pins + accumulated GPIO directions
+        # NOTE: I2C hold is NOT applied here — this function is for explicit
+        # GPIO control (FTDI Verifier GPIO tab).  The hold mask is designed
+        # for I2C operations and must not override user GPIO output values.
+        direction = 0x03 | self._gpio_low_direction
+        out_byte = out & 0xFF
+        dir_byte = direction & 0xFF
+        try:
+            # Write MPSSE set_bits_low + send_immediate directly to FTDI handle
+            self._ft.write(bytes([0x80, out_byte, dir_byte, 0x87]))
+            self._log(
+                f"[GPIO-LOW] mask=0x{mask:02X} val=0x{value:02X} "
+                f"out=0x{out_byte:02X} dir=0x{dir_byte:02X}"
+            )
+        except Exception as e:
+            self._log(f"[ERROR] MPSSE GPIO write failed: {e}")
 
     def set_gpio_low(self, bit: int, high: bool) -> None:
         """Set a single ADBUS GPIO bit high/low in current mode."""
@@ -736,8 +908,25 @@ class FtdiManager(QObject):
             if self.supports_mpsse(ch):
                 self._configure_mpsse()
                 self._channel_modes[ch] = "mpsse"
+                self._active_protocol = "I2C"
+                self._bitbang_i2c_warned = False
+                self._mode_switch_ts = 0
+                self._gpio_out_value |= 0x03
+                try:
+                    self._i2c.apply_gpio_out(self._gpio_out_value)
+                except Exception:
+                    pass
+                if self._gpio_high_direction:
+                    try:
+                        self._i2c.set_bits_high(
+                            self._gpio_high_out_value & 0xFF,
+                            self._gpio_high_direction & 0xFF,
+                        )
+                    except Exception:
+                        pass
             else:
                 self._channel_modes[ch] = "uart"
+                self._active_protocol = "UART"
 
             if self._active_channel != ch and prev_ft is not None:
                 self._ft = prev_ft
@@ -781,6 +970,13 @@ class FtdiManager(QObject):
                 self._ft.read(queued)
             except Exception:
                 pass
+
+    def purge_pending_io(self) -> None:
+        """Thread-safe public wrapper for best-effort USB/MPSSE purge."""
+        if not self._is_connected or self._ft is None:
+            return
+        locker = QMutexLocker(self._mutex)
+        self._purge_pending_io()
 
     def set_i2c_hold(self, mask: int, value: int) -> None:
         """Hold GPIO states on ADBUS while in MPSSE I2C (bits 4-7 recommended)."""
@@ -930,6 +1126,7 @@ class FtdiManager(QObject):
                 self._active_channel = "A"
                 self._channel = "A"
                 self._channel_modes = {}
+                self._gpio_low_direction = 0x00
                 self._gpio_high_out_value = 0x00
                 self._gpio_high_direction = 0x00
         # Emit signals AFTER releasing mutex to avoid deadlock

@@ -22,7 +22,7 @@ from PySide6.QtWidgets import (
     QTextEdit, QCheckBox, QLineEdit,
 )
 
-from core.ftdi_manager import FtdiManager
+from core.ftdi_manager import FtdiManager, FtdiTaskResult
 from core.theme_manager import ThemeManager
 from core.data_recorder import DataRecorder
 from modules.base_module import BaseModule
@@ -54,6 +54,7 @@ class INA3221Module(BaseModule):
         self._worker_thread: Optional[QThread] = None
         self._slave_addr: int = 0x40
         self._is_monitoring: bool = False
+        self._start_pending: bool = False
         self._window_seconds: int = 60
         self._io_hold_mask: int = 0xF0
         self._io_hold_value: int = 0x00
@@ -294,6 +295,51 @@ class INA3221Module(BaseModule):
             self._saved_hold = self._ftdi.get_i2c_hold()
         self._ftdi.set_i2c_hold(self._io_hold_mask, self._io_hold_value)
         self._refresh_hold_status()
+
+    def _apply_io_hold_hw(self) -> bool:
+        if not self._ftdi.is_connected:
+            return False
+        if not self._ftdi.supports_mpsse(self._ftdi.channel):
+            return False
+        self._ftdi.set_i2c_hold(self._io_hold_mask, self._io_hold_value)
+        return True
+
+    def _run_async_i2c_task(
+        self,
+        *,
+        force: bool,
+        settle_ms: int,
+        task,
+        on_done,
+        sync_hold_ui: bool = False,
+    ) -> bool:
+        if not self._ftdi.is_connected or not self._ftdi.supports_mpsse(self._ftdi.channel):
+            return False
+
+        def _handle_done(result: FtdiTaskResult) -> None:
+            if self._ftdi.is_connected:
+                self._refresh_hold_status(sync_buttons=sync_hold_ui)
+            on_done(result)
+
+        self._ftdi.run_async_protocol_task(
+            "I2C",
+            force=force,
+            settle_ms=settle_ms,
+            prepare=self._apply_io_hold_hw,
+            task=task,
+            on_done=_handle_done,
+        )
+        return True
+
+    def _force_restore_i2c_in_task(self, settle_ms: int = 60) -> bool:
+        if not self._ftdi.set_protocol_mode("I2C", force=True):
+            return False
+        if not self._apply_io_hold_hw():
+            return False
+        if settle_ms > 0:
+            time.sleep(settle_ms / 1000.0)
+        self._ftdi.purge_pending_io()
+        return True
 
     def _restore_i2c_context(
         self,
@@ -661,7 +707,13 @@ class INA3221Module(BaseModule):
         super().on_tab_activated()
         if self._ftdi.is_connected:
             self._set_hold_controls_enabled(True)
-            self._restore_i2c_context(force=True, settle_ms=40, sync_hold_ui=True)
+            self._run_async_i2c_task(
+                force=False,
+                settle_ms=0,
+                task=lambda: True,
+                on_done=lambda _result: None,
+                sync_hold_ui=True,
+            )
 
     def on_channel_changed(self, channel: str) -> None:
         if not self._ftdi.supports_mpsse(channel):
@@ -681,15 +733,12 @@ class INA3221Module(BaseModule):
         self.start_communication()
 
     def start_communication(self) -> None:
-        if self._is_monitoring:
+        if self._is_monitoring or self._start_pending:
             return
         if not self._ftdi.is_connected:
             return
         if not self._ftdi.supports_mpsse(self._ftdi.channel):
             return
-
-        self._ftdi.set_protocol_mode("I2C")
-        self._write_config_from_ui()
 
         # Parse shunt values
         shunts = []
@@ -699,6 +748,71 @@ class INA3221Module(BaseModule):
             except ValueError:
                 shunts.append(0.01)
 
+        cfg = self._build_config_word()
+        self._start_pending = True
+        self._start_btn.setEnabled(False)
+        self._append_log("[INFO] Restoring INA3221 I2C context...")
+
+        def _task() -> FtdiTaskResult:
+            data = bytes([INA3221Reg.CONFIG.value, (cfg >> 8) & 0xFF, cfg & 0xFF])
+            probe = self._probe_slave_ack_task(80)
+            if not probe.success:
+                return probe
+
+            if not self._ftdi.i2c_write(self._slave_addr, data):
+                if not self._force_restore_i2c_in_task(80):
+                    return FtdiTaskResult(False, error="Config write restore failed.", stage="restore")
+                probe = self._probe_slave_ack_task(0)
+                if not probe.success:
+                    return probe
+                if not self._ftdi.i2c_write(self._slave_addr, data):
+                    return FtdiTaskResult(False, error="Config write failed.", stage="write")
+
+            raw = self._ftdi.i2c_read(self._slave_addr, bytes([INA3221Reg.CONFIG.value]), 2)
+            if raw is None or len(raw) < 2:
+                if not self._force_restore_i2c_in_task(60):
+                    return FtdiTaskResult(False, error="Config verify restore failed.", stage="restore")
+                probe = self._probe_slave_ack_task(0)
+                if not probe.success:
+                    return probe
+                if not self._ftdi.i2c_write(self._slave_addr, data):
+                    return FtdiTaskResult(False, error="Config write retry failed.", stage="write")
+                raw = self._ftdi.i2c_read(self._slave_addr, bytes([INA3221Reg.CONFIG.value]), 2)
+            if raw is None or len(raw) < 2:
+                return FtdiTaskResult(False, error="Config verify read failed.", stage="verify")
+
+            read_cfg = (raw[0] << 8) | raw[1]
+            if read_cfg != cfg:
+                return FtdiTaskResult(
+                    False,
+                    error=f"Config verify mismatch: 0x{read_cfg:04X} != 0x{cfg:04X}",
+                    stage="verify",
+                )
+
+            snapshot = self._read_register_snapshot_task()
+            if not snapshot.success:
+                return snapshot
+            return FtdiTaskResult(
+                True,
+                payload={"config": cfg, "registers": snapshot.payload},
+                stage="start",
+            )
+
+        if not self._run_async_i2c_task(
+            force=False,
+            settle_ms=0,
+            task=_task,
+            on_done=lambda result, shunt_values=shunts: self._on_start_sequence_finished(
+                result,
+                shunt_values,
+            ),
+        ):
+            self._start_pending = False
+            if self._ftdi.is_connected and self._ftdi.supports_mpsse(self._ftdi.channel):
+                self._start_btn.setEnabled(True)
+            self._append_log("[ERROR] Failed to queue INA3221 start task.")
+
+    def _start_worker_monitoring(self, shunts: List[float]) -> None:
         self._worker = INA3221Worker(self._ftdi)
         self._worker.configure(
             slave_addr=self._slave_addr,
@@ -734,7 +848,29 @@ class INA3221Module(BaseModule):
 
         self._append_log("[INFO] Monitoring started.")
 
+    def _on_start_sequence_finished(self, result: FtdiTaskResult, shunts: List[float]) -> None:
+        self._start_pending = False
+        if not result.success:
+            self._append_log(f"[ERROR] Monitoring start skipped: {result.error}")
+            self._stop_btn.setEnabled(False)
+            self._rec_btn.setEnabled(False)
+            self._set_controls_enabled(True)
+            start_enabled = self._ftdi.is_connected and self._ftdi.supports_mpsse(self._ftdi.channel)
+            self._start_btn.setEnabled(start_enabled)
+            return
+
+        payload = result.payload if isinstance(result.payload, dict) else {}
+        snapshot = payload.get("registers")
+        if snapshot is not None:
+            self._apply_register_snapshot(snapshot)
+        cfg = payload.get("config")
+        if cfg is not None:
+            self._append_log(f"[INFO] Config written: 0x{cfg:04X}")
+
+        self._start_worker_monitoring(shunts)
+
     def stop_communication(self) -> None:
+        self._start_pending = False
         if not self._is_monitoring:
             return
 
@@ -785,32 +921,22 @@ class INA3221Module(BaseModule):
 
         self._scan_result_label.setText("Scanning...")
         self._addr_combo.clear()
+        self._scan_btn.setEnabled(False)
 
-        if not self._restore_i2c_context(force=True, settle_ms=40):
-            self._scan_result_label.setText("I2C restore failed")
-            self._append_log("[ERROR] Address scan aborted: I2C restore failed.")
-            return
-
-        found = self._ftdi.i2c_scan(self.INA3221_SCAN_START, self.INA3221_SCAN_END)
-        if not found:
-            self._append_log("[WARN] No INA3221 device found, retrying after I2C restore...")
-            if self._restore_i2c_context(force=True, settle_ms=80):
+        def _task() -> FtdiTaskResult:
+            found = self._ftdi.i2c_scan(self.INA3221_SCAN_START, self.INA3221_SCAN_END)
+            if not found:
+                if not self._force_restore_i2c_in_task(80):
+                    return FtdiTaskResult(False, error="I2C restore failed.", stage="restore")
                 found = self._ftdi.i2c_scan(self.INA3221_SCAN_START, self.INA3221_SCAN_END)
+            return FtdiTaskResult(True, payload=found, stage="scan")
 
-        if not found:
-            self._scan_result_label.setText("INA3221 device not found")
-            self._start_btn.setEnabled(False)
-            self._append_log("[WARN] No INA3221 device found on bus.")
-            return
-
-        for addr in found:
-            self._addr_combo.addItem(f"0x{addr:02X}", addr)
-
-        self._scan_result_label.setText(f"{len(found)} device(s) found")
-        self._slave_addr = found[0]
-        self._addr_combo.setCurrentIndex(0)
-        self._start_btn.setEnabled(True)
-        self._append_log(f"[INFO] Found {len(found)} device(s): {', '.join(f'0x{a:02X}' for a in found)}")
+        self._run_async_i2c_task(
+            force=False,
+            settle_ms=0,
+            task=_task,
+            on_done=self._on_scan_addresses_finished,
+        )
 
     @Slot(int)
     def _on_addr_changed(self, index: int) -> None:
@@ -895,10 +1021,7 @@ class INA3221Module(BaseModule):
 
     # ── Config ───────────────────────────────────────────────────────
 
-    def _write_config_from_ui(self) -> None:
-        if not self._ftdi.is_connected:
-            return
-
+    def _build_config_word(self) -> int:
         mode = self._op_mode_combo.currentData() or 7
         avg = self._avg_combo.currentData() or 2
         vbusct = self._vbusct_combo.currentData() or 4
@@ -914,11 +1037,33 @@ class INA3221Module(BaseModule):
         cfg |= (vbusct << 6)
         cfg |= (vshct << 3)
         cfg |= mode
+        return cfg
 
+    def _write_config_from_ui(self) -> bool:
+        if not self._ftdi.is_connected:
+            return False
+        cfg = self._build_config_word()
         data = bytes([INA3221Reg.CONFIG.value, (cfg >> 8) & 0xFF, cfg & 0xFF])
-        self._ftdi.i2c_write(self._slave_addr, data)
-        self._refresh_register_map()
+        if not self._ftdi.i2c_write(self._slave_addr, data):
+            return False
         self._append_log(f"[INFO] Config written: 0x{cfg:04X}")
+        return True
+
+    def _probe_slave_ack_task(self, retry_restore_ms: int = 80) -> FtdiTaskResult:
+        found = self._ftdi.i2c_scan(self._slave_addr, self._slave_addr)
+        if found:
+            return FtdiTaskResult(True, payload=found[0], stage="probe")
+        if retry_restore_ms > 0:
+            if not self._force_restore_i2c_in_task(retry_restore_ms):
+                return FtdiTaskResult(False, error="I2C restore failed before probing INA3221.", stage="restore")
+            found = self._ftdi.i2c_scan(self._slave_addr, self._slave_addr)
+            if found:
+                return FtdiTaskResult(True, payload=found[0], stage="probe")
+        return FtdiTaskResult(
+            False,
+            error=f"INA3221 address 0x{self._slave_addr:02X} did not ACK after restore.",
+            stage="probe",
+        )
 
     def _parse_config_from_hex(self, cfg: int) -> None:
         self._op_mode_combo.blockSignals(True)
@@ -957,26 +1102,47 @@ class INA3221Module(BaseModule):
         for cb in self._ch_enable_cbs:
             cb.blockSignals(False)
 
+    def _read_register_snapshot_task(self) -> FtdiTaskResult:
+        snapshot = []
+        retry_done = False
+        for reg in DISPLAY_REGISTERS:
+            raw = self._ftdi.i2c_read(self._slave_addr, bytes([reg.value]), 2)
+            if (raw is None or len(raw) < 2) and not retry_done:
+                retry_done = True
+                if not self._force_restore_i2c_in_task(60):
+                    return FtdiTaskResult(False, error="Register restore failed.", stage="restore")
+                raw = self._ftdi.i2c_read(self._slave_addr, bytes([reg.value]), 2)
+            if raw is None or len(raw) < 2:
+                return FtdiTaskResult(
+                    False,
+                    error=f"Register read failed at 0x{reg.value:02X}.",
+                    stage="read",
+                )
+            val = (raw[0] << 8) | raw[1]
+            snapshot.append((reg, val))
+        return FtdiTaskResult(True, payload=snapshot, stage="read")
+
+    def _apply_register_snapshot(self, snapshot) -> None:
+        if snapshot is None:
+            return
+        self._reg_table.blockSignals(True)
+        for row, (reg, val) in enumerate(snapshot):
+            val_item = self._reg_table.item(row, 3)
+            if val_item:
+                val_item.setText(f"0x{val:04X}")
+            if reg == INA3221Reg.CONFIG:
+                self._parse_config_from_hex(val)
+        self._reg_table.blockSignals(False)
+
     def _refresh_register_map(self) -> None:
         if not self._ftdi.is_connected:
             return
-
-        self._reg_table.blockSignals(True)
-        for row, reg in enumerate(DISPLAY_REGISTERS):
-            raw = self._ftdi.i2c_read(self._slave_addr, bytes([reg.value]), 2)
-            if raw is not None and len(raw) >= 2:
-                val = (raw[0] << 8) | raw[1]
-                hex_str = f"0x{val:04X}"
-
-                if reg == INA3221Reg.CONFIG:
-                    self._parse_config_from_hex(val)
-            else:
-                hex_str = "ERROR"
-
-            val_item = self._reg_table.item(row, 3)
-            if val_item:
-                val_item.setText(hex_str)
-        self._reg_table.blockSignals(False)
+        self._run_async_i2c_task(
+            force=False,
+            settle_ms=0,
+            task=self._read_register_snapshot_task,
+            on_done=self._on_refresh_register_map_finished,
+        )
 
     @Slot(int, int)
     def _on_reg_cell_changed(self, row: int, col: int) -> None:
@@ -994,13 +1160,82 @@ class INA3221Module(BaseModule):
             value = int(text, 16) if text.startswith(("0x", "0X")) else int(text, 16)
             reg = DISPLAY_REGISTERS[row]
             data = bytes([reg.value, (value >> 8) & 0xFF, value & 0xFF])
-            self._ftdi.i2c_write(self._slave_addr, data)
-
-            if reg == INA3221Reg.CONFIG:
-                self._parse_config_from_hex(value)
+            self._run_async_i2c_task(
+                force=False,
+                settle_ms=0,
+                task=lambda reg_value=data, reg_addr=reg, reg_hex=value: self._write_register_task(
+                    reg_addr,
+                    reg_value,
+                    reg_hex,
+                ),
+                on_done=self._on_register_write_finished,
+            )
 
         except ValueError:
             self._refresh_register_map()
+
+    def _write_register_task(
+        self,
+        reg: INA3221Reg,
+        data: bytes,
+        value: int,
+    ) -> FtdiTaskResult:
+        if not self._ftdi.i2c_write(self._slave_addr, data):
+            if not self._force_restore_i2c_in_task(60):
+                return FtdiTaskResult(False, error="Register write restore failed.", stage="restore")
+            if not self._ftdi.i2c_write(self._slave_addr, data):
+                return FtdiTaskResult(False, error="Register write failed.", stage="write")
+
+        snapshot = self._read_register_snapshot_task()
+        if not snapshot.success:
+            return snapshot
+        return FtdiTaskResult(
+            True,
+            payload={"registers": snapshot.payload, "reg": reg, "value": value},
+            stage="write",
+        )
+
+    def _on_scan_addresses_finished(self, result: FtdiTaskResult) -> None:
+        self._scan_btn.setEnabled(True)
+        if not result.success:
+            self._scan_result_label.setText("I2C restore failed")
+            self._start_btn.setEnabled(False)
+            self._append_log(f"[ERROR] Address scan aborted: {result.error}")
+            return
+
+        found = list(result.payload or [])
+        if not found:
+            self._scan_result_label.setText("INA3221 device not found")
+            self._start_btn.setEnabled(False)
+            self._append_log("[WARN] No INA3221 device found on bus.")
+            return
+
+        for addr in found:
+            self._addr_combo.addItem(f"0x{addr:02X}", addr)
+
+        self._scan_result_label.setText(f"{len(found)} device(s) found")
+        self._slave_addr = found[0]
+        self._addr_combo.setCurrentIndex(0)
+        if not self._is_monitoring and not self._start_pending:
+            self._start_btn.setEnabled(True)
+        self._append_log(f"[INFO] Found {len(found)} device(s): {', '.join(f'0x{a:02X}' for a in found)}")
+
+    def _on_refresh_register_map_finished(self, result: FtdiTaskResult) -> None:
+        if not result.success:
+            self._append_log(f"[ERROR] Register refresh failed: {result.error}")
+            return
+        self._apply_register_snapshot(result.payload)
+
+    def _on_register_write_finished(self, result: FtdiTaskResult) -> None:
+        if not result.success:
+            self._append_log(f"[ERROR] Register write failed: {result.error}")
+            self._refresh_register_map()
+            return
+
+        payload = result.payload if isinstance(result.payload, dict) else {}
+        snapshot = payload.get("registers")
+        if snapshot is not None:
+            self._apply_register_snapshot(snapshot)
 
     # ── Helpers ──────────────────────────────────────────────────────
 

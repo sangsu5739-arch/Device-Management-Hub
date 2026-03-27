@@ -21,7 +21,7 @@ from PySide6.QtWidgets import (
     QTextEdit,
 )
 
-from core.ftdi_manager import FtdiManager
+from core.ftdi_manager import FtdiManager, FtdiTaskResult
 from core.theme_manager import ThemeManager
 from core.data_recorder import DataRecorder
 from modules.base_module import BaseModule
@@ -61,6 +61,7 @@ class INA228Module(BaseModule):
         self._worker_thread: Optional[QThread] = None
         self._slave_addr: int = 0x40
         self._is_monitoring: bool = False
+        self._start_pending: bool = False
         self._window_seconds: int = 60
         self._io_hold_mask: int = 0xF0
         self._io_hold_value: int = 0x00
@@ -208,7 +209,13 @@ class INA228Module(BaseModule):
         connected = self._ftdi.is_connected
         self._set_hold_controls_enabled(connected)
         if connected:
-            self._restore_i2c_context(force=True, settle_ms=40, sync_hold_ui=True)
+            self._run_async_i2c_task(
+                force=False,
+                settle_ms=0,
+                task=lambda: True,
+                on_done=lambda _result: None,
+                sync_hold_ui=True,
+            )
 
     def on_channel_changed(self, channel: str) -> None:
         if not self._ftdi.supports_mpsse(channel):
@@ -232,7 +239,7 @@ class INA228Module(BaseModule):
 
     def start_communication(self) -> None:
         """Start worker thread (monitoring ON)."""
-        if self._is_monitoring:
+        if self._is_monitoring or self._start_pending:
             return
         if not self._ftdi.is_connected:
             return
@@ -241,18 +248,40 @@ class INA228Module(BaseModule):
 
         # Ensure MPSSE mode is active — previous tab (e.g., FTDI Verifier GPIO) may have
         # left the channel in bitbang mode which blocks I2C.
-        self._ftdi.set_protocol_mode("I2C")
+        config = {
+            "slave_addr": self._slave_addr,
+            "adc_range": self._adc_range_combo.currentIndex(),
+            "shunt_resistor": self._shunt_spinbox.value(),
+            "poll_interval_ms": self._interval_spinbox.value(),
+            "avg_index": self._avg_combo.currentIndex(),
+            "vbusct_index": self._vbusct_combo.currentIndex(),
+            "vshct_index": self._vshct_combo.currentIndex(),
+        }
+        self._start_pending = True
+        self._start_btn.setEnabled(False)
+        self._append_log("[INFO] Restoring INA228 I2C context...")
 
-        self._worker = INA228Worker(self._ftdi)
-        self._worker.configure(
-            slave_addr=self._slave_addr,
-            adc_range=self._adc_range_combo.currentIndex(),
-            shunt_resistor=self._shunt_spinbox.value(),
-            poll_interval_ms=self._interval_spinbox.value(),
-            avg_index=self._avg_combo.currentIndex(),
-            vbusct_index=self._vbusct_combo.currentIndex(),
-            vshct_index=self._vshct_combo.currentIndex(),
+        def _task() -> FtdiTaskResult:
+            size = REGISTER_SIZE.get(INA228Reg.CONFIG, 2)
+            raw = self._ftdi.i2c_read(self._slave_addr, bytes([INA228Reg.CONFIG.value]), size)
+            if raw is None or len(raw) < size:
+                if not self._force_restore_i2c_in_task(60):
+                    return FtdiTaskResult(False, error="INA228 restore failed.", stage="restore")
+                raw = self._ftdi.i2c_read(self._slave_addr, bytes([INA228Reg.CONFIG.value]), size)
+            if raw is None or len(raw) < size:
+                return FtdiTaskResult(False, error="INA228 probe read failed.", stage="verify")
+            return FtdiTaskResult(True, payload=config, stage="start")
+
+        self._run_async_i2c_task(
+            force=False,
+            settle_ms=0,
+            task=_task,
+            on_done=self._on_start_sequence_finished,
         )
+
+    def _start_worker_monitoring(self, config: dict) -> None:
+        self._worker = INA228Worker(self._ftdi)
+        self._worker.configure(**config)
 
         self._worker_thread = QThread()
         self._worker.moveToThread(self._worker_thread)
@@ -262,7 +291,6 @@ class INA228Module(BaseModule):
         self._worker.log_message.connect(self._on_worker_log)
         self._worker_thread.start()
 
-        # Connect FTDI comm log to I2C log tab
         self._ftdi.data_sent.connect(self._append_log)
         self._ftdi.data_received.connect(self._append_log)
         self._ftdi.log_message.connect(self._append_log)
@@ -283,8 +311,18 @@ class INA228Module(BaseModule):
         self._vshct_combo.setEnabled(False)
         self._shunt_spinbox.setEnabled(False)
 
+    def _on_start_sequence_finished(self, result: FtdiTaskResult) -> None:
+        self._start_pending = False
+        if not result.success:
+            self._append_log(f"[ERROR] Monitoring start skipped: {result.error}")
+            if not self._is_monitoring and self._ftdi.is_connected:
+                self._start_btn.setEnabled(True)
+            return
+        self._start_worker_monitoring(dict(result.payload or {}))
+
     def stop_communication(self) -> None:
         """Stop worker thread (monitoring OFF)."""
+        self._start_pending = False
         if not self._is_monitoring:
             return
 
@@ -309,8 +347,7 @@ class INA228Module(BaseModule):
         if self._worker_thread is not None:
             self._worker_thread.quit()
             if not self._worker_thread.wait(3000):
-                self._worker_thread.terminate()
-                self._worker_thread.wait(1000)
+                self._append_log("[WARN] INA228 worker did not stop within 3000 ms.")
             self._worker_thread.deleteLater()
             self._worker_thread = None
         self._worker = None
@@ -436,6 +473,50 @@ class INA228Module(BaseModule):
             self._saved_hold = self._ftdi.get_i2c_hold()
         self._ftdi.set_i2c_hold(self._io_hold_mask, self._io_hold_value)
         self._refresh_hold_status()
+
+    def _apply_io_hold_hw(self) -> bool:
+        if not self._ftdi.is_connected:
+            return False
+        if not self._ftdi.supports_mpsse(self._ftdi.channel):
+            return False
+        self._ftdi.set_i2c_hold(self._io_hold_mask, self._io_hold_value)
+        return True
+
+    def _run_async_i2c_task(
+        self,
+        *,
+        force: bool,
+        settle_ms: int,
+        task,
+        on_done,
+        sync_hold_ui: bool = False,
+    ) -> None:
+        if not self._ftdi.is_connected or not self._ftdi.supports_mpsse(self._ftdi.channel):
+            return
+
+        def _handle_done(result: FtdiTaskResult) -> None:
+            if self._ftdi.is_connected:
+                self._refresh_hold_status(sync_buttons=sync_hold_ui)
+            on_done(result)
+
+        self._ftdi.run_async_protocol_task(
+            "I2C",
+            force=force,
+            settle_ms=settle_ms,
+            prepare=self._apply_io_hold_hw,
+            task=task,
+            on_done=_handle_done,
+        )
+
+    def _force_restore_i2c_in_task(self, settle_ms: int = 60) -> bool:
+        if not self._ftdi.set_protocol_mode("I2C", force=True):
+            return False
+        if not self._apply_io_hold_hw():
+            return False
+        if settle_ms > 0:
+            time.sleep(settle_ms / 1000.0)
+        self._ftdi.purge_pending_io()
+        return True
 
     def _restore_i2c_context(
         self,
@@ -760,31 +841,22 @@ class INA228Module(BaseModule):
 
         self._scan_result_label.setText("Scanning...")
         self._addr_combo.clear()
+        self._scan_btn.setEnabled(False)
 
-        if not self._restore_i2c_context(force=True, settle_ms=40):
-            self._scan_result_label.setText("I2C restore failed")
-            self._append_log("[ERROR] Address scan aborted: I2C restore failed.")
-            self._start_btn.setEnabled(False)
-            return
-
-        found = self._ftdi.i2c_scan(self.INA228_SCAN_START, self.INA228_SCAN_END)
-        if not found:
-            self._append_log("[WARN] No INA228 device found, retrying after I2C restore...")
-            if self._restore_i2c_context(force=True, settle_ms=80):
+        def _task() -> FtdiTaskResult:
+            found = self._ftdi.i2c_scan(self.INA228_SCAN_START, self.INA228_SCAN_END)
+            if not found:
+                if not self._force_restore_i2c_in_task(80):
+                    return FtdiTaskResult(False, error="I2C restore failed.", stage="restore")
                 found = self._ftdi.i2c_scan(self.INA228_SCAN_START, self.INA228_SCAN_END)
+            return FtdiTaskResult(True, payload=found, stage="scan")
 
-        if not found:
-            self._scan_result_label.setText("INA228 device not found")
-            self._start_btn.setEnabled(False)
-            return
-
-        for addr in found:
-            self._addr_combo.addItem(f"0x{addr:02X}", addr)
-
-        self._scan_result_label.setText(f"{len(found)} device(s) found")
-        self._slave_addr = found[0]
-        self._addr_combo.setCurrentIndex(0)
-        self._start_btn.setEnabled(True)
+        self._run_async_i2c_task(
+            force=False,
+            settle_ms=0,
+            task=_task,
+            on_done=self._on_scan_addresses_finished,
+        )
 
     @Slot(int)
     def _on_addr_changed(self, index: int) -> None:
@@ -903,33 +975,51 @@ class INA228Module(BaseModule):
             cursor.removeSelectedText()
             cursor.deleteChar()
 
-    def _refresh_register_map(self) -> None:
-        """Refresh register map table (direct read in UI thread when idle)."""
-        if not self._ftdi.is_connected:
-            return
-        if not self._restore_i2c_context(force=False, settle_ms=0):
-            return
-
-        self._reg_table.blockSignals(True)
-        for row, reg in enumerate(DISPLAY_REGISTERS):
+    def _read_register_snapshot_task(self) -> FtdiTaskResult:
+        snapshot = []
+        retry_done = False
+        for reg in DISPLAY_REGISTERS:
             size = REGISTER_SIZE.get(reg, 2)
             raw = self._ftdi.i2c_read(self._slave_addr, bytes([reg.value]), size)
+            if (raw is None or len(raw) < size) and not retry_done:
+                retry_done = True
+                if not self._force_restore_i2c_in_task(60):
+                    return FtdiTaskResult(False, error="Register restore failed.", stage="restore")
+                raw = self._ftdi.i2c_read(self._slave_addr, bytes([reg.value]), size)
             if raw is None or len(raw) < size:
-                if self._restore_i2c_context(force=True, settle_ms=60):
-                    raw = self._ftdi.i2c_read(self._slave_addr, bytes([reg.value]), size)
-            if raw is not None and len(raw) >= size:
-                if size >= 3:
-                    val = ((raw[0] << 16) | (raw[1] << 8) | raw[2]) >> 4
-                else:
-                    val = (raw[0] << 8) | raw[1]
-                hex_str = f"0x{val:04X}" if size == 2 else f"0x{val:05X}"
+                return FtdiTaskResult(
+                    False,
+                    error=f"Register read failed at 0x{reg.value:02X}.",
+                    stage="read",
+                )
+            if size >= 3:
+                val = ((raw[0] << 16) | (raw[1] << 8) | raw[2]) >> 4
             else:
-                hex_str = "ERROR"
+                val = (raw[0] << 8) | raw[1]
+            snapshot.append((reg, size, val))
+        return FtdiTaskResult(True, payload=snapshot, stage="read")
 
+    def _apply_register_snapshot(self, snapshot) -> None:
+        if snapshot is None:
+            return
+        self._reg_table.blockSignals(True)
+        for row, (_reg, size, val) in enumerate(snapshot):
+            hex_str = f"0x{val:04X}" if size == 2 else f"0x{val:05X}"
             val_item = self._reg_table.item(row, 3)
             if val_item:
                 val_item.setText(hex_str)
         self._reg_table.blockSignals(False)
+
+    def _refresh_register_map(self) -> None:
+        """Refresh register map table without blocking the UI thread."""
+        if not self._ftdi.is_connected:
+            return
+        self._run_async_i2c_task(
+            force=False,
+            settle_ms=0,
+            task=self._read_register_snapshot_task,
+            on_done=self._on_refresh_register_map_finished,
+        )
 
     @Slot(int, int)
     def _on_reg_cell_changed(self, row: int, col: int) -> None:
@@ -952,16 +1042,58 @@ class INA228Module(BaseModule):
 
             reg = DISPLAY_REGISTERS[row]
             data = bytes([reg.value, (value >> 8) & 0xFF, value & 0xFF])
-            if not self._restore_i2c_context(force=False, settle_ms=0):
-                self._append_log("[ERROR] Register write aborted: I2C restore failed.")
-                self._refresh_register_map()
-                return
-            if not self._ftdi.i2c_write(self._slave_addr, data):
-                self._append_log("[WARN] Register write failed, retrying after I2C restore...")
-                if (not self._restore_i2c_context(force=True, settle_ms=60)
-                        or not self._ftdi.i2c_write(self._slave_addr, data)):
-                    self._append_log("[ERROR] Register write failed.")
-                    self._refresh_register_map()
-                    return
+            self._run_async_i2c_task(
+                force=False,
+                settle_ms=0,
+                task=lambda reg_value=data: self._write_register_task(reg_value),
+                on_done=self._on_register_write_finished,
+            )
         except ValueError:
             self._refresh_register_map()
+
+    def _write_register_task(self, data: bytes) -> FtdiTaskResult:
+        if not self._ftdi.i2c_write(self._slave_addr, data):
+            if not self._force_restore_i2c_in_task(60):
+                return FtdiTaskResult(False, error="Register write restore failed.", stage="restore")
+            if not self._ftdi.i2c_write(self._slave_addr, data):
+                return FtdiTaskResult(False, error="Register write failed.", stage="write")
+        snapshot = self._read_register_snapshot_task()
+        if not snapshot.success:
+            return snapshot
+        return FtdiTaskResult(True, payload=snapshot.payload, stage="write")
+
+    def _on_scan_addresses_finished(self, result: FtdiTaskResult) -> None:
+        self._scan_btn.setEnabled(True)
+        if not result.success:
+            self._scan_result_label.setText("I2C restore failed")
+            self._start_btn.setEnabled(False)
+            self._append_log(f"[ERROR] Address scan aborted: {result.error}")
+            return
+
+        found = list(result.payload or [])
+        if not found:
+            self._scan_result_label.setText("INA228 device not found")
+            self._start_btn.setEnabled(False)
+            return
+
+        for addr in found:
+            self._addr_combo.addItem(f"0x{addr:02X}", addr)
+
+        self._scan_result_label.setText(f"{len(found)} device(s) found")
+        self._slave_addr = found[0]
+        self._addr_combo.setCurrentIndex(0)
+        if not self._is_monitoring and not self._start_pending:
+            self._start_btn.setEnabled(True)
+
+    def _on_refresh_register_map_finished(self, result: FtdiTaskResult) -> None:
+        if not result.success:
+            self._append_log(f"[ERROR] Register refresh failed: {result.error}")
+            return
+        self._apply_register_snapshot(result.payload)
+
+    def _on_register_write_finished(self, result: FtdiTaskResult) -> None:
+        if not result.success:
+            self._append_log(f"[ERROR] Register write failed: {result.error}")
+            self._refresh_register_map()
+            return
+        self._apply_register_snapshot(result.payload)

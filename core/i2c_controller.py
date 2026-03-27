@@ -60,6 +60,13 @@ class I2cController(MpsseBaseController):
     def set_bits_low(self, value: int, direction: int) -> None:
         self.write(bytes([self._MPSSE_SET_BITS_LOW, value & 0xFF, direction & 0xFF]))
 
+    def set_bits_low_immediate(self, value: int, direction: int) -> None:
+        """set_bits_low with SEND_IMMEDIATE to flush the command to the chip."""
+        self.write(bytes([
+            self._MPSSE_SET_BITS_LOW, value & 0xFF, direction & 0xFF,
+            self._MPSSE_SEND_IMMEDIATE,
+        ]))
+
     def set_bits_high(self, value: int, direction: int) -> None:
         self.write(bytes([
             self._MPSSE_SET_BITS_HIGH, value & 0xFF, direction & 0xFF,
@@ -194,6 +201,7 @@ class I2cController(MpsseBaseController):
                 self._o.data_sent.emit(f"[{timestamp}] TX -> [0x{slave_addr:02X}] {hex_str}")
                 return True
             except Exception as e:
+                self._o._purge_pending_io()
                 if attempt < attempts - 1:
                     time.sleep(self._o._i2c_retry_delay_s)
                     continue
@@ -234,6 +242,7 @@ class I2cController(MpsseBaseController):
                 self._o.data_received.emit(f"[{timestamp}] RX <- [0x{slave_addr:02X}] {hex_str}")
                 return bytes(out)
             except Exception as e:
+                self._o._purge_pending_io()
                 if attempt < attempts - 1:
                     time.sleep(self._o._i2c_retry_delay_s)
                     continue

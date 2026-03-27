@@ -20,7 +20,7 @@ from PySide6.QtWidgets import (
     QSplitter, QTabWidget, QHeaderView, QFrame,
 )
 
-from core.ftdi_manager import FtdiManager
+from core.ftdi_manager import FtdiManager, FtdiTaskResult
 from core.theme_manager import ThemeManager
 from modules.base_module import BaseModule
 from modules.pi6cg18201.register_map import (
@@ -59,6 +59,8 @@ class PI6CGModule(BaseModule):
         self._reg_map = RegisterMap()
         self._slave_address: int = SLAVE_ADDRESS_7BIT_SADR_LOW
         self._live_mode: bool = False
+        self._io_pending: bool = False
+        self._pending_live_write: bool = False
         self._advanced_mode: bool = False
         self._advanced_hint_labels: list[QLabel] = []
         self._settings = QSettings("UniversalDeviceStudio", "PI6CGModule")
@@ -165,7 +167,12 @@ class PI6CGModule(BaseModule):
             return
         if not self._ftdi.supports_mpsse(self._ftdi.channel):
             return
-        self._restore_i2c_context(force=True, settle_ms=40)
+        self._run_async_i2c_task(
+            force=False,
+            settle_ms=0,
+            task=lambda: True,
+            on_done=lambda _result: None,
+        )
 
     def on_channel_changed(self, channel: str) -> None:
         if not self._ftdi.supports_mpsse(channel):
@@ -180,7 +187,8 @@ class PI6CGModule(BaseModule):
         pass  # PI6CG18201 uses manual trigger (live mode auto-sends on control change)
 
     def stop_communication(self) -> None:
-        pass
+        self._io_pending = False
+        self._pending_live_write = False
 
     def update_data(self) -> None:
         """Read registers from hardware."""
@@ -516,7 +524,10 @@ class PI6CGModule(BaseModule):
         self._reg_map.full_map_changed.emit()
 
         if self._live_mode and self._ftdi.is_connected:
-            self._write_registers_to_device(force=False)
+            if self._io_pending:
+                self._pending_live_write = True
+            else:
+                self._write_registers_to_device(force=False)
 
     @Slot(int)
     def _on_advanced_mode_changed(self, state: int) -> None:
@@ -574,7 +585,9 @@ class PI6CGModule(BaseModule):
         if not self._ftdi.supports_mpsse(self._ftdi.channel):
             self._show_mpsse_warning(self._ftdi.channel)
             return
-        self._write_registers_to_device(force=True)
+        if self._io_pending:
+            return
+        self._write_registers_to_device(force=False)
 
     @Slot()
     def _on_read_registers(self) -> None:
@@ -583,10 +596,9 @@ class PI6CGModule(BaseModule):
         if not self._ftdi.supports_mpsse(self._ftdi.channel):
             self._show_mpsse_warning(self._ftdi.channel)
             return
-        data = self._read_registers_from_device(force=True)
-        if data:
-            self._reg_map.set_all_bytes(data)
-            self._sync_controls_from_regmap()
+        if self._io_pending:
+            return
+        self._read_registers_from_device(force=False)
 
     @Slot(int, int)
     def _on_register_changed(self, byte_index: int, new_value: int) -> None:
@@ -707,6 +719,44 @@ class PI6CGModule(BaseModule):
             q_slew_bits=q_slew_bits,
         )
 
+    def _run_async_i2c_task(
+        self,
+        *,
+        force: bool,
+        settle_ms: int,
+        task,
+        on_done,
+    ) -> None:
+        if not self._ftdi.is_connected or not self._ftdi.supports_mpsse(self._ftdi.channel):
+            return
+
+        self._io_pending = True
+
+        def _handle_done(result: FtdiTaskResult) -> None:
+            self._io_pending = False
+            on_done(result)
+            if self._pending_live_write and self._live_mode and self._ftdi.is_connected:
+                self._pending_live_write = False
+                self._write_registers_to_device(force=False)
+            else:
+                self._pending_live_write = False
+
+        self._ftdi.run_async_protocol_task(
+            "I2C",
+            force=force,
+            settle_ms=settle_ms,
+            task=task,
+            on_done=_handle_done,
+        )
+
+    def _force_restore_i2c_in_task(self, settle_ms: int = 60) -> bool:
+        if not self._ftdi.set_protocol_mode("I2C", force=True):
+            return False
+        if settle_ms > 0:
+            time.sleep(settle_ms / 1000.0)
+        self._ftdi.purge_pending_io()
+        return True
+
     def _restore_i2c_context(self, force: bool = False, settle_ms: int = 30) -> bool:
         if not self._ftdi.is_connected:
             return False
@@ -720,32 +770,60 @@ class PI6CGModule(BaseModule):
         return True
 
     def _write_registers_to_device(self, force: bool = False) -> bool:
-        if not self._restore_i2c_context(force=force, settle_ms=40 if force else 0):
-            return False
-        data = self._reg_map.get_all_bytes()
-        if self._ftdi.smbus_block_write(self._slave_address, 0x00, data):
-            return True
-        self._append_log("[WARN] Clock write failed, retrying after I2C restore...")
-        if not self._restore_i2c_context(force=True, settle_ms=60):
-            return False
-        if self._ftdi.smbus_block_write(self._slave_address, 0x00, data):
-            return True
-        self._append_log("[ERROR] Clock register write failed.")
-        return False
+        data = bytes(self._reg_map.get_all_bytes())
+
+        def _task() -> FtdiTaskResult:
+            if self._ftdi.smbus_block_write(self._slave_address, 0x00, data):
+                return FtdiTaskResult(True, stage="write")
+            if not self._force_restore_i2c_in_task(60):
+                return FtdiTaskResult(False, error="Clock write restore failed.", stage="restore")
+            if self._ftdi.smbus_block_write(self._slave_address, 0x00, data):
+                return FtdiTaskResult(True, stage="write")
+            return FtdiTaskResult(False, error="Clock register write failed.", stage="write")
+
+        self._run_async_i2c_task(
+            force=force,
+            settle_ms=40 if force else 0,
+            task=_task,
+            on_done=self._on_write_registers_finished,
+        )
+        return True
 
     def _read_registers_from_device(self, force: bool = False) -> Optional[bytes]:
-        if not self._restore_i2c_context(force=force, settle_ms=40 if force else 0):
-            return None
-        data = self._ftdi.smbus_block_read(self._slave_address, 0x00, TOTAL_BYTES)
-        if data is not None:
-            return data
-        self._append_log("[WARN] Clock read failed, retrying after I2C restore...")
-        if not self._restore_i2c_context(force=True, settle_ms=60):
-            return None
-        data = self._ftdi.smbus_block_read(self._slave_address, 0x00, TOTAL_BYTES)
-        if data is None:
-            self._append_log("[ERROR] Clock register read failed.")
-        return data
+        def _task() -> FtdiTaskResult:
+            data = self._ftdi.smbus_block_read(self._slave_address, 0x00, TOTAL_BYTES)
+            if data is not None:
+                return FtdiTaskResult(True, payload=bytes(data), stage="read")
+            if not self._force_restore_i2c_in_task(60):
+                return FtdiTaskResult(False, error="Clock read restore failed.", stage="restore")
+            data = self._ftdi.smbus_block_read(self._slave_address, 0x00, TOTAL_BYTES)
+            if data is None:
+                return FtdiTaskResult(False, error="Clock register read failed.", stage="read")
+            return FtdiTaskResult(True, payload=bytes(data), stage="read")
+
+        self._run_async_i2c_task(
+            force=force,
+            settle_ms=40 if force else 0,
+            task=_task,
+            on_done=self._on_read_registers_finished,
+        )
+        return None
+
+    def _on_write_registers_finished(self, result: FtdiTaskResult) -> None:
+        if not result.success:
+            self._append_log(f"[ERROR] {result.error}")
+            return
+        self._append_log("[INFO] Clock registers written.")
+
+    def _on_read_registers_finished(self, result: FtdiTaskResult) -> None:
+        if not result.success:
+            self._append_log(f"[ERROR] {result.error}")
+            return
+        data = result.payload
+        if data:
+            self._reg_map.set_all_bytes(data)
+            self._sync_controls_from_regmap()
+            self._append_log("[INFO] Clock registers read.")
 
     def _append_log(self, message: str) -> None:
         if not hasattr(self, "_log_text"):

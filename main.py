@@ -844,6 +844,18 @@ class MainWindow(QMainWindow):
         except Exception:
             pass
 
+        active_index = self._tab_widget.currentIndex()
+        if 0 <= active_index < len(self._modules):
+            active_module = self._modules[active_index]
+
+            def _reactivate_active_module(module=active_module) -> None:
+                try:
+                    module.on_tab_activated()
+                except Exception as e:
+                    logger.error(f"Active module post-connect activation error: {e}")
+
+            QTimer.singleShot(0, _reactivate_active_module)
+
         QApplication.beep()
 
     @Slot()

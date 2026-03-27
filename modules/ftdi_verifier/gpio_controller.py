@@ -47,7 +47,9 @@ class GpioController:
                 value = mask if high else 0
                 self._m._ftdi.set_gpio_high_masked(mask, value)
             else:
-                self._m._ftdi.set_gpio_low(pin.mpsse_bit, high)
+                mask = (1 << pin.mpsse_bit)
+                value = mask if high else 0
+                self._m._ftdi.mpsse_set_gpio_low(mask, value)
         except Exception:
             pass
         is_high_byte = pin.name.startswith(("AC", "BC"))
@@ -184,24 +186,18 @@ class GpioController:
             else:
                 low_mask |= (1 << pin.mpsse_bit)
 
-        # Try MPSSE first (low+high), fallback to Bitbang for low byte only.
+        # Use MPSSE for all GPIO control (no bitbang mode switching).
         if not self._m._ftdi.set_gpio_backend("mpsse"):
+            self._m._append_log("[GPIO] set_all_low: MPSSE not available.")
+            return
+        self._m._set_gpio_backend_label("MPSSE")
+        try:
             if low_mask:
-                self._m._ftdi.set_gpio_backend("bitbang")
-                self._m._set_gpio_backend_label("BITBANG")
-                try:
-                    self._m._ftdi.set_gpio_masked(low_mask, 0x00)
-                except Exception:
-                    pass
-        else:
-            self._m._set_gpio_backend_label("MPSSE")
-            try:
-                if low_mask:
-                    self._m._ftdi.set_gpio_masked(low_mask, 0x00)
-                if high_mask:
-                    self._m._ftdi.set_gpio_high_masked(high_mask, 0x00)
-            except Exception:
-                pass
+                self._m._ftdi.mpsse_set_gpio_low(low_mask, 0x00)
+            if high_mask:
+                self._m._ftdi.set_gpio_high_masked(high_mask, 0x00)
+        except Exception:
+            pass
 
         # Update UI state
         for pin in self._m._current_chip.pins.values():

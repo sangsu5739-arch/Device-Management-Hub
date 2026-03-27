@@ -1605,10 +1605,15 @@ class FtdiVerifierModule(BaseModule):
     # -- GPIO --
 
     def _force_stop_gpio_polling(self) -> None:
-        """Stop GPIO polling, reset button state, and restore MPSSE mode.
+        """Stop GPIO polling and reset button state.
 
         Called when leaving GPIO mode or switching away from the Verifier
         tab so the polling worker doesn't hold the FTDI bus.
+
+        Since GPIO polling now uses MPSSE throughout (no bitbang switching),
+        the FTDI mode is already "mpsse" when polling stops — no expensive
+        resetDevice / init_mpsse recovery is needed.  A lightweight purge
+        is sufficient to clean up any residual MPSSE command data.
         """
         if not hasattr(self, "_gpio_poll_btn"):
             return
@@ -1629,22 +1634,33 @@ class FtdiVerifierModule(BaseModule):
             if self._gpio_poll_blink is not None and self._gpio_poll_blink.isActive():
                 self._gpio_poll_blink.stop()
             self._append_log("[GPIO] Polling auto-stopped (mode/tab change).")
-        # Always force a full MPSSE re-init for I2C, regardless of current mode.
-        # GPIO operations use MPSSE backend (set_gpio_backend("mpsse")) so
-        # _channel_modes will already be "mpsse" — but the MPSSE engine's
-        # internal state (buffers, pin directions) may be dirty from GPIO
-        # set_bits_low / read_bits_low commands.  A force re-init purges
-        # stale USB data and re-configures the MPSSE for clean I2C.
+        # Lightweight restore: purge stale USB data and ensure I2C pin
+        # direction (D0/D1 output, D2-D7 per hold mask).  No force re-init
+        # needed because GPIO polling stays in MPSSE mode the entire time.
         if self._ftdi.is_connected and self._ftdi.supports_mpsse(self._ftdi.channel):
-            self._append_log("[GPIO] Restoring I2C (force) ...")
-            if self._ftdi.set_protocol_mode("I2C", force=True):
-                self._append_log(
-                    f"[GPIO] I2C/MPSSE restored OK "
-                    f"(gpio_out=0x{self._ftdi._gpio_out_value:02X})"
-                )
-                self._set_gpio_backend_label("MPSSE")
+            self._ftdi.purge_pending_io()
+            # set_protocol_mode without force: idempotency check sees "mpsse"
+            # and returns immediately — no resetDevice / init_mpsse overhead.
+            self._ftdi.set_protocol_mode("I2C")
+
+    def _get_gpio_blink_masks(self) -> tuple[int, int]:
+        low_mask = 0
+        high_mask = 0
+        if self._current_chip is None or not hasattr(self, "_pinout"):
+            return low_mask, high_mask
+
+        for pin in self._current_chip.pins.values():
+            active = self._pinout._pin_active_funcs.get(pin.number, pin.default_function)
+            if active not in (PinFunction.GPIO_OUT, PinFunction.GPIO_IN):
+                continue
+            if pin.mpsse_bit is None:
+                continue
+            bit = 1 << pin.mpsse_bit
+            if pin.name.startswith(("AC", "BC")):
+                high_mask |= bit
             else:
-                self._append_log("[GPIO] WARN: failed to restore I2C/MPSSE cleanly.")
+                low_mask |= bit
+        return low_mask & 0xFF, high_mask & 0xFF
 
     @Slot(bool)
     def _on_gpio_poll_toggled(self, checked: bool) -> None:
@@ -2021,42 +2037,11 @@ class FtdiVerifierModule(BaseModule):
             return
         self._poll_blink_state = not self._poll_blink_state
         pin_states: dict[int, bool] = {}
-        low_mask = 0
-        high_mask = 0
-        high_value = 0
-        low_value = 0
         for pin_num, pin in self._current_chip.pins.items():
             active = self._pinout._pin_active_funcs.get(pin.number, pin.default_function)
             if active in (PinFunction.GPIO_OUT, PinFunction.GPIO_IN):
                 pin_states[pin.number] = self._poll_blink_state
-                if pin.name.startswith(("AC", "BC")):
-                    if pin.mpsse_bit is not None:
-                        bit = 1 << pin.mpsse_bit
-                        high_mask |= bit
-                        if self._poll_blink_state:
-                            high_value |= bit
-                else:
-                    if pin.mpsse_bit is not None:
-                        bit = 1 << pin.mpsse_bit
-                        low_mask |= bit
-                        if self._poll_blink_state:
-                            low_value |= bit
         if pin_states:
-            # Apply hardware toggle first
-            try:
-                # Bitbang controls low byte only; MPSSE required for high byte.
-                if low_mask:
-                    self._ftdi.set_gpio_backend("bitbang")
-                    self._set_gpio_backend_label("BITBANG")
-                    self._ftdi.set_gpio_masked(low_mask, low_value)
-                if high_mask:
-                    if self._ftdi.set_gpio_backend("mpsse"):
-                        self._set_gpio_backend_label("MPSSE")
-                        self._ftdi.set_gpio_high_masked(high_mask, high_value)
-                    else:
-                        self._append_log("GPIO toggle: MPSSE not available on this channel (high byte skipped).")
-            except Exception:
-                pass
             self._pinout.set_pin_states_bulk(pin_states)
             self._gpio_states.update(pin_states)
             self._refresh_gpio_table()
@@ -2225,8 +2210,17 @@ class FtdiVerifierModule(BaseModule):
         if self._worker_thread is not None:
             return
 
+        # Ensure MPSSE mode before starting GPIO polling.
+        # All GPIO operations now use MPSSE set_bits_low (no bitbang),
+        # so the mode must be MPSSE throughout the polling lifecycle.
+        if self._ftdi.is_connected and self._ftdi.supports_mpsse(self._ftdi.channel):
+            self._ftdi.set_gpio_backend("mpsse")
+
         self._worker = VerifierWorker(self._ftdi)
         self._worker.start_gpio_polling(interval_ms)
+        low_mask, high_mask = self._get_gpio_blink_masks()
+        self._worker.configure_gpio_blink(low_mask=low_mask, high_mask=high_mask, enabled=True)
+        self._set_gpio_backend_label("MPSSE")
         self._worker.gpio_updated.connect(self._on_gpio_updated)
         self._worker.log_message.connect(self._append_log)
         self._worker.error_occurred.connect(self._append_log)
@@ -2238,6 +2232,7 @@ class FtdiVerifierModule(BaseModule):
 
     def _stop_worker(self) -> None:
         if self._worker is not None:
+            self._worker.clear_gpio_blink()
             self._worker.stop()
         if self._worker_thread is not None:
             self._worker_thread.quit()

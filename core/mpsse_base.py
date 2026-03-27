@@ -64,6 +64,7 @@ class MpsseBaseController:
         """Wait for expected bytes to land in the RX queue, then read."""
         if length <= 0:
             return b""
+        queued = 0
         for _ in range(retries):
             try:
                 queued = self._o._ft.getQueueStatus() if self._o._ft is not None else 0
@@ -72,6 +73,8 @@ class MpsseBaseController:
             if queued >= length:
                 break
             time.sleep(0.005)
+        if queued < length:
+            return b""
         try:
             return self.read(length)
         except Exception:

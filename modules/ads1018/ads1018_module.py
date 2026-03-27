@@ -21,7 +21,7 @@ from PySide6.QtWidgets import (
 )
 from PySide6.QtGui import QColor, QFont
 
-from core.ftdi_manager import FtdiManager
+from core.ftdi_manager import FtdiManager, FtdiTaskResult
 from core.theme_manager import ThemeManager
 from core.data_recorder import DataRecorder
 from modules.base_module import BaseModule
@@ -46,6 +46,7 @@ class ADS1018Module(BaseModule):
         self._worker: Optional[ADS1018Worker] = None
         self._worker_thread = None  # no longer used (threading.Thread is inside worker)
         self._running = False
+        self._start_pending = False
         self._config = ADS1018Config()
 
         # Per-channel UI references (must be set before super().__init__ calls init_ui)
@@ -602,7 +603,13 @@ class ADS1018Module(BaseModule):
         connected = self._ftdi.is_connected
         self._set_hold_controls_enabled(connected)
         if connected:
-            self._restore_spi_context(force=True, settle_ms=30, sync_hold_ui=True)
+            self._run_async_spi_task(
+                force=False,
+                settle_ms=0,
+                task=lambda: True,
+                on_done=lambda _result: None,
+                sync_hold_ui=True,
+            )
 
     def on_tab_deactivated(self) -> None:
         if self._running:
@@ -613,7 +620,7 @@ class ADS1018Module(BaseModule):
             self.stop_communication()
 
     def start_communication(self) -> None:
-        if self._running:
+        if self._running or self._start_pending:
             return
         if not self._ftdi.is_connected:
             self._append_log("[WARN] FTDI not connected.")
@@ -629,10 +636,6 @@ class ADS1018Module(BaseModule):
         self._config.ts_mode = (self._ts_mode_combo.currentData() == 1)
         self._config.pullup_enable = self._pullup_cb.isChecked()
         self._config.cs_pin = self._cs_combo.currentData()
-
-        self._ftdi.set_protocol_mode("SPI")
-        self._ftdi.spi_configure(clock_hz=4_000_000, cpol=1, cpha=0)
-        self._append_log("[INFO] SPI configured: CPOL=1 CPHA=0, clock=4000000 Hz")
 
         channels = []
         for i in range(4):
@@ -651,18 +654,28 @@ class ADS1018Module(BaseModule):
                 voltage_divider=vdiv, enabled=True,
             ))
         self._config.channels = channels
-
-        # Create worker
-        self._worker = ADS1018Worker(self._ftdi)
-        self._worker.configure(
-            pga=self._config.pga,
-            data_rate=self._config.data_rate,
-            pullup=self._config.pullup_enable,
-            continuous=self._config.continuous,
-            ts_mode=self._config.ts_mode,
-            cs_pin=self._config.cs_pin,
-            channel_configs=channels,
+        config = {
+            "pga": self._config.pga,
+            "data_rate": self._config.data_rate,
+            "pullup": self._config.pullup_enable,
+            "continuous": self._config.continuous,
+            "ts_mode": self._config.ts_mode,
+            "cs_pin": self._config.cs_pin,
+            "channel_configs": channels,
+        }
+        self._start_pending = True
+        self._start_btn.setEnabled(False)
+        self._append_log("[INFO] Restoring ADS1018 SPI context...")
+        self._run_async_spi_task(
+            force=False,
+            settle_ms=0,
+            task=lambda: FtdiTaskResult(True, payload=config, stage="start"),
+            on_done=self._on_start_sequence_finished,
         )
+
+    def _start_worker_monitoring(self, config: dict) -> None:
+        self._worker = ADS1018Worker(self._ftdi)
+        self._worker.configure(**config)
 
         self._worker.measurement.connect(self._on_measurement)
         self._worker.error_occurred.connect(self._on_worker_error)
@@ -679,16 +692,30 @@ class ADS1018Module(BaseModule):
         self._rate_combo.setEnabled(False)
         self._cs_combo.setEnabled(False)
         self._pullup_cb.setEnabled(False)
-        for edit in self._ch_shunt_edits: edit.setEnabled(False)
-        for edit in self._ch_gain_edits: edit.setEnabled(False)
-        for combo in self._ch_vdiv_combos: combo.setEnabled(False)
+        for edit in self._ch_shunt_edits:
+            edit.setEnabled(False)
+        for edit in self._ch_gain_edits:
+            edit.setEnabled(False)
+        for combo in self._ch_vdiv_combos:
+            combo.setEnabled(False)
         for group in self._ch_radio_groups:
             for btn in group.buttons():
                 btn.setEnabled(False)
 
+        self._append_log("[INFO] SPI configured: CPOL=1 CPHA=0, clock=4000000 Hz")
         self._append_log("[INFO] Monitoring started.")
 
+    def _on_start_sequence_finished(self, result: FtdiTaskResult) -> None:
+        self._start_pending = False
+        if not result.success:
+            self._append_log(f"[ERROR] Monitoring start skipped: {result.error}")
+            if not self._running and self._ftdi.is_connected:
+                self._start_btn.setEnabled(True)
+            return
+        self._start_worker_monitoring(dict(result.payload or {}))
+
     def stop_communication(self) -> None:
+        self._start_pending = False
         if not self._running:
             return
 
@@ -839,6 +866,41 @@ class ADS1018Module(BaseModule):
         # Delegate GPIO mapping to ftdi_manager using masked write
         self._ftdi.set_gpio_masked(self._io_hold_mask, self._io_hold_value)
         self._refresh_hold_status()
+
+    def _prepare_spi_context_hw(self) -> bool:
+        if not self._ftdi.is_connected:
+            return False
+        if not self._ftdi.supports_mpsse(self._ftdi.channel):
+            return False
+        self._ftdi.spi_configure(clock_hz=4_000_000, cpol=1, cpha=0)
+        self._ftdi.set_gpio_masked(self._io_hold_mask, self._io_hold_value)
+        return True
+
+    def _run_async_spi_task(
+        self,
+        *,
+        force: bool,
+        settle_ms: int,
+        task,
+        on_done,
+        sync_hold_ui: bool = False,
+    ) -> None:
+        if not self._ftdi.is_connected or not self._ftdi.supports_mpsse(self._ftdi.channel):
+            return
+
+        def _handle_done(result: FtdiTaskResult) -> None:
+            if self._ftdi.is_connected:
+                self._refresh_hold_status(sync_buttons=sync_hold_ui)
+            on_done(result)
+
+        self._ftdi.run_async_protocol_task(
+            "SPI",
+            force=force,
+            settle_ms=settle_ms,
+            prepare=self._prepare_spi_context_hw,
+            task=task,
+            on_done=_handle_done,
+        )
 
     def _restore_spi_context(
         self,
