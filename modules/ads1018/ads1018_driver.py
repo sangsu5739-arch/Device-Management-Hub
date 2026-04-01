@@ -9,9 +9,12 @@ Reference: C:/log/sample/ADS1018.py
 
 from __future__ import annotations
 
+import logging
 import time
 from dataclasses import dataclass, field
 from typing import Optional, TYPE_CHECKING
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from core.ftdi_manager import FtdiManager
@@ -206,13 +209,12 @@ class ADS1018Driver:
         tx_data = self._build_tx_frame()
         cs = self.config.cs_pin
 
-        # DEBUG: show config register and TX frame
-        print(f"[ADS1018] CH{channel} config=0x{self._config_reg:04X} TX={tx_data.hex(' ')}")
+        logger.debug(f"[ADS1018] CH{channel} config=0x{self._config_reg:04X} TX={tx_data.hex(' ')}")
 
         # 1st transfer: write config only (C++ TxPacket_Adc — no SEND_IMMEDIATE, no read)
         ok = self._ftdi.spi_write(tx_data, cs)
         if not ok:
-            print(f"[ADS1018] CH{channel} 1st write: FAIL")
+            logger.debug(f"[ADS1018] CH{channel} 1st write: FAIL")
             return None
 
         # Wait for conversion (C++ Sleep(50))
@@ -221,12 +223,11 @@ class ADS1018Driver:
         # 2nd transfer: full-duplex read (C++ TxPacket_Adc + RxPacket)
         rx = self._ftdi.spi_transfer(tx_data, cs)
         if rx is None or len(rx) < 4:
-            print(f"[ADS1018] CH{channel} 2nd transfer: rx={rx.hex(' ') if rx else 'None'} len={len(rx) if rx else 0}")
+            logger.debug(f"[ADS1018] CH{channel} 2nd transfer: rx={rx.hex(' ') if rx else 'None'} len={len(rx) if rx else 0}")
             return None
 
-        # DEBUG: show raw RX bytes and parsed value
         raw16 = (rx[0] << 8) | rx[1]
-        print(f"[ADS1018] CH{channel} RX={rx.hex(' ')} raw16=0x{raw16:04X}", end="")
+        logger.debug(f"[ADS1018] CH{channel} RX={rx.hex(' ')} raw16=0x{raw16:04X}")
 
         # ADC value is in the first two bytes
         raw = raw16
@@ -238,7 +239,7 @@ class ADS1018Driver:
             raw = raw >> 4  # 12-bit result for voltage
             if raw & 0x0800:
                 raw -= 0x1000
-        print(f" -> raw12={raw}")
+        logger.debug(f"[ADS1018] CH{channel} raw12={raw}")
         return raw
 
     # ── Value Conversion ──────────────────────────────────────────────

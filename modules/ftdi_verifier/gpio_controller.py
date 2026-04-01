@@ -27,7 +27,7 @@ class GpioController:
         if pin_num < 0:
             return
         pin = self._m._current_chip.pins.get(pin_num) if self._m._current_chip else None
-        if pin is None or pin.mpsse_bit is None:
+        if pin is None or pin.mpsse_bit < 0:
             self._m._append_log("GPIO write failed: invalid pin mapping.")
             return
         # GPIO tab: use MPSSE for all GPIO (both low and high byte).
@@ -50,8 +50,8 @@ class GpioController:
                 mask = (1 << pin.mpsse_bit)
                 value = mask if high else 0
                 self._m._ftdi.mpsse_set_gpio_low(mask, value)
-        except Exception:
-            pass
+        except Exception as e:
+            self._m._append_log(f"[GPIO] toggle error: {e}")
         is_high_byte = pin.name.startswith(("AC", "BC"))
         readback = self._m._ftdi.read_gpio_high() if is_high_byte else self._m._ftdi.read_gpio_low()
         rb_hex = f"0x{readback:02X}" if readback is not None else "None"
@@ -179,7 +179,7 @@ class GpioController:
         for pin in self._m._current_chip.pins.values():
             if pin.channel != self._m._current_channel:
                 continue
-            if pin.mpsse_bit is None:
+            if pin.mpsse_bit < 0:
                 continue
             if pin.name.startswith(("AC", "BC")):
                 high_mask |= (1 << pin.mpsse_bit)
@@ -196,14 +196,14 @@ class GpioController:
                 self._m._ftdi.mpsse_set_gpio_low(low_mask, 0x00)
             if high_mask:
                 self._m._ftdi.set_gpio_high_masked(high_mask, 0x00)
-        except Exception:
-            pass
+        except Exception as e:
+            self._m._append_log(f"[GPIO] set_all_low error: {e}")
 
         # Update UI state
         for pin in self._m._current_chip.pins.values():
             if pin.channel != self._m._current_channel:
                 continue
-            if pin.mpsse_bit is None:
+            if pin.mpsse_bit < 0:
                 continue
             self._m._gpio_states[pin.number] = False
             self._m._pinout.set_pin_state(pin.number, False)

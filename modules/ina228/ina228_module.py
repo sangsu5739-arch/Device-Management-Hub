@@ -237,17 +237,8 @@ class INA228Module(BaseModule):
             return
         self.start_communication()
 
-    def start_communication(self) -> None:
-        """Start worker thread (monitoring ON)."""
-        if self._is_monitoring or self._start_pending:
-            return
-        if not self._ftdi.is_connected:
-            return
-        if not self._ftdi.supports_mpsse(self._ftdi.channel):
-            return
-
-        # Ensure MPSSE mode is active — previous tab (e.g., FTDI Verifier GPIO) may have
-        # left the channel in bitbang mode which blocks I2C.
+    def _build_start_task(self):
+        """Build the I2C probe task closure for start_communication."""
         config = {
             "slave_addr": self._slave_addr,
             "adc_range": self._adc_range_combo.currentIndex(),
@@ -257,9 +248,6 @@ class INA228Module(BaseModule):
             "vbusct_index": self._vbusct_combo.currentIndex(),
             "vshct_index": self._vshct_combo.currentIndex(),
         }
-        self._start_pending = True
-        self._start_btn.setEnabled(False)
-        self._append_log("[INFO] Restoring INA228 I2C context...")
 
         def _task() -> FtdiTaskResult:
             size = REGISTER_SIZE.get(INA228Reg.CONFIG, 2)
@@ -272,10 +260,25 @@ class INA228Module(BaseModule):
                 return FtdiTaskResult(False, error="INA228 probe read failed.", stage="verify")
             return FtdiTaskResult(True, payload=config, stage="start")
 
+        return _task
+
+    def start_communication(self) -> None:
+        """Start worker thread (monitoring ON)."""
+        if self._is_monitoring or self._start_pending:
+            return
+        if not self._ftdi.is_connected:
+            return
+        if not self._ftdi.supports_mpsse(self._ftdi.channel):
+            return
+
+        self._start_pending = True
+        self._start_btn.setEnabled(False)
+        self._append_log("[INFO] Restoring INA228 I2C context...")
+
         self._run_async_i2c_task(
-            force=False,
-            settle_ms=0,
-            task=_task,
+            force=True,
+            settle_ms=40,
+            task=self._build_start_task(),
             on_done=self._on_start_sequence_finished,
         )
 
@@ -315,6 +318,7 @@ class INA228Module(BaseModule):
         self._start_pending = False
         if not result.success:
             self._append_log(f"[ERROR] Monitoring start skipped: {result.error}")
+            self._append_log("[INFO] Try FTDI Disconnect \u2192 Connect to recover.")
             if not self._is_monitoring and self._ftdi.is_connected:
                 self._start_btn.setEnabled(True)
             return
@@ -492,11 +496,15 @@ class INA228Module(BaseModule):
         sync_hold_ui: bool = False,
     ) -> None:
         if not self._ftdi.is_connected or not self._ftdi.supports_mpsse(self._ftdi.channel):
+            on_done(FtdiTaskResult(False, error="FTDI not ready.", stage="pre-check"))
             return
 
         def _handle_done(result: FtdiTaskResult) -> None:
-            if self._ftdi.is_connected:
-                self._refresh_hold_status(sync_buttons=sync_hold_ui)
+            try:
+                if self._ftdi.is_connected:
+                    self._refresh_hold_status(sync_buttons=sync_hold_ui)
+            except Exception:
+                pass
             on_done(result)
 
         self._ftdi.run_async_protocol_task(
@@ -511,8 +519,7 @@ class INA228Module(BaseModule):
     def _force_restore_i2c_in_task(self, settle_ms: int = 60) -> bool:
         if not self._ftdi.set_protocol_mode("I2C", force=True):
             return False
-        if not self._apply_io_hold_hw():
-            return False
+        self._apply_io_hold_hw()
         if settle_ms > 0:
             time.sleep(settle_ms / 1000.0)
         self._ftdi.purge_pending_io()

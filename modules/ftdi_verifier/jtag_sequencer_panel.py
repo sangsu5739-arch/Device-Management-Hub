@@ -45,7 +45,7 @@ class _PinLed(QLabel):
         if self._state:
             bg = "#4A90E2"
         else:
-            bg = tm.color("jtag_tap_state") if tm.is_dark else "#D0D4DC"
+            bg = tm.color("jtag_tap_state") if tm.is_dark() else "#D0D4DC"
         self.setStyleSheet(
             f"background: {bg}; border-radius: 7px; border: 1px solid #3A3F50;"
         )

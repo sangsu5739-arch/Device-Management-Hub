@@ -37,6 +37,45 @@ class EepromWorker(QObject):
             return None, None
         return locker, ft
 
+    def _enter_prog_mode(self, ft) -> None:
+        """Safely exit MPSSE/bitbang and enter normal D2XX mode for EEPROM access.
+
+        A clean transition is critical: eeRead/eeProgram called while the
+        MPSSE engine is active (or with stale USB data) can crash the
+        ftd2xx C library.  The sequence mirrors what set_protocol_mode("PROG")
+        does, but operates directly on the handle since the mutex is held.
+        """
+        import time
+        # 1. Purge stale MPSSE/bitbang data from USB buffers
+        try:
+            ft.purge(3)  # PURGE_RX | PURGE_TX
+        except Exception:
+            pass
+        # 2. Drain any residual RX bytes
+        try:
+            queued = ft.getQueueStatus()
+            if queued > 0:
+                ft.read(queued)
+        except Exception:
+            pass
+        # 3. Reset bit mode to normal D2XX (exit MPSSE/bitbang)
+        try:
+            ft.setBitMode(0x00, 0x00)
+        except Exception:
+            pass
+        # 4. Settle time for USB interface to stabilize
+        time.sleep(0.05)
+
+    def _restore_mpsse_mode(self) -> None:
+        """Request MPSSE re-init after EEPROM operation.
+
+        We cannot call set_protocol_mode here because the mutex is
+        already held.  Instead, mark the channel mode as empty so that
+        the next I2C/SPI operation triggers a full re-init.
+        """
+        ch = self._ftdi._active_channel
+        self._ftdi._channel_modes[ch] = ""
+
     @Slot()
     def read_eeprom(self) -> None:
         """Reads EEPROM parameters using ftd2xx"""
@@ -47,6 +86,7 @@ class EepromWorker(QObject):
 
         self.log_message.emit("[EEPROM] Reading parameters...")
         try:
+            self._enter_prog_mode(ft)
             ee = ft.eeRead()
 
             def decode_str(val: Any) -> str:
@@ -72,6 +112,7 @@ class EepromWorker(QObject):
             self.log_message.emit(f"[EEPROM] Read failed: {e}")
             self.operation_finished.emit(False, str(e))
         finally:
+            self._restore_mpsse_mode()
             locker.unlock()
 
     @Slot()
@@ -91,6 +132,7 @@ class EepromWorker(QObject):
 
         self.log_message.emit("[EEPROM] Writing parameters to device...")
         try:
+            self._enter_prog_mode(ft)
             ee = ft.eeRead()
 
             # ftd2xx ctypes fields (c_char_p) require bytes, not str
@@ -124,6 +166,7 @@ class EepromWorker(QObject):
             self.log_message.emit(f"[EEPROM] Write failed: {e}")
             self.operation_finished.emit(False, str(e))
         finally:
+            self._restore_mpsse_mode()
             locker.unlock()
 
     @Slot()
@@ -140,6 +183,7 @@ class EepromWorker(QObject):
 
         self.log_message.emit("[EEPROM] Resetting device...")
         try:
+            self._enter_prog_mode(ft)
             ft.resetDevice()
             ft.cyclePort()
             self.log_message.emit("[EEPROM] Device reset complete. Re-enumeration generated.")

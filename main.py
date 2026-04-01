@@ -313,10 +313,9 @@ class MainWindow(QMainWindow):
         self._connect_signals()
         self._load_modules()
 
-        # Debug: print loaded tab info
         tab_count = self._tab_widget.count()
         tab_names = [self._tab_widget.tabText(i) for i in range(tab_count)]
-        print(f"[UDS] Loaded tabs: {tab_count} - {tab_names}")
+        logger.info(f"Loaded tabs: {tab_count} - {tab_names}")
 
         if self._device_combo.count() > 0 and self._device_combo.currentIndex() < 0:
             self._device_combo.setCurrentIndex(0)
@@ -719,8 +718,8 @@ class MainWindow(QMainWindow):
         for module in self._modules:
             try:
                 module.stop_communication()
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning(f"Failed to stop communication for {type(module).__name__}: {e}")
 
         msg = QMessageBox(self)
         self._apply_msgbox_window_icon(msg)
@@ -753,8 +752,8 @@ class MainWindow(QMainWindow):
         for module in self._modules:
             try:
                 module.stop_communication()
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning(f"Failed to stop communication for {type(module).__name__}: {e}")
         self._ftdi.close_device()
 
     def _on_connect_toggle(self, checked: bool) -> None:
@@ -1170,8 +1169,8 @@ class MainWindow(QMainWindow):
         for module in self._modules:
             try:
                 module.stop_communication()
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning(f"Failed to stop {type(module).__name__} on close: {e}")
         if self._ftdi.is_connected:
             self._ftdi.close_device()
         super().closeEvent(event)

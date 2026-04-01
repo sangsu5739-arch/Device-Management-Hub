@@ -314,11 +314,15 @@ class INA3221Module(BaseModule):
         sync_hold_ui: bool = False,
     ) -> bool:
         if not self._ftdi.is_connected or not self._ftdi.supports_mpsse(self._ftdi.channel):
+            on_done(FtdiTaskResult(False, error="FTDI not ready.", stage="pre-check"))
             return False
 
         def _handle_done(result: FtdiTaskResult) -> None:
-            if self._ftdi.is_connected:
-                self._refresh_hold_status(sync_buttons=sync_hold_ui)
+            try:
+                if self._ftdi.is_connected:
+                    self._refresh_hold_status(sync_buttons=sync_hold_ui)
+            except Exception:
+                pass
             on_done(result)
 
         self._ftdi.run_async_protocol_task(
@@ -334,8 +338,7 @@ class INA3221Module(BaseModule):
     def _force_restore_i2c_in_task(self, settle_ms: int = 60) -> bool:
         if not self._ftdi.set_protocol_mode("I2C", force=True):
             return False
-        if not self._apply_io_hold_hw():
-            return False
+        self._apply_io_hold_hw()
         if settle_ms > 0:
             time.sleep(settle_ms / 1000.0)
         self._ftdi.purge_pending_io()
@@ -732,26 +735,9 @@ class INA3221Module(BaseModule):
             return
         self.start_communication()
 
-    def start_communication(self) -> None:
-        if self._is_monitoring or self._start_pending:
-            return
-        if not self._ftdi.is_connected:
-            return
-        if not self._ftdi.supports_mpsse(self._ftdi.channel):
-            return
-
-        # Parse shunt values
-        shunts = []
-        for i in range(3):
-            try:
-                shunts.append(float(self._ch_shunt_edits[i].text()))
-            except ValueError:
-                shunts.append(0.01)
-
+    def _build_start_task(self, shunts=None):
+        """Build the I2C config+probe task closure for start_communication."""
         cfg = self._build_config_word()
-        self._start_pending = True
-        self._start_btn.setEnabled(False)
-        self._append_log("[INFO] Restoring INA3221 I2C context...")
 
         def _task() -> FtdiTaskResult:
             data = bytes([INA3221Reg.CONFIG.value, (cfg >> 8) & 0xFF, cfg & 0xFF])
@@ -798,10 +784,32 @@ class INA3221Module(BaseModule):
                 stage="start",
             )
 
+        return _task
+
+    def start_communication(self) -> None:
+        if self._is_monitoring or self._start_pending:
+            return
+        if not self._ftdi.is_connected:
+            return
+        if not self._ftdi.supports_mpsse(self._ftdi.channel):
+            return
+
+        # Parse shunt values
+        shunts = []
+        for i in range(3):
+            try:
+                shunts.append(float(self._ch_shunt_edits[i].text()))
+            except ValueError:
+                shunts.append(0.01)
+
+        self._start_pending = True
+        self._start_btn.setEnabled(False)
+        self._append_log("[INFO] Restoring INA3221 I2C context...")
+
         if not self._run_async_i2c_task(
-            force=False,
-            settle_ms=0,
-            task=_task,
+            force=True,
+            settle_ms=40,
+            task=self._build_start_task(shunts),
             on_done=lambda result, shunt_values=shunts: self._on_start_sequence_finished(
                 result,
                 shunt_values,
@@ -852,6 +860,7 @@ class INA3221Module(BaseModule):
         self._start_pending = False
         if not result.success:
             self._append_log(f"[ERROR] Monitoring start skipped: {result.error}")
+            self._append_log("[INFO] Try FTDI Disconnect \u2192 Connect to recover.")
             self._stop_btn.setEnabled(False)
             self._rec_btn.setEnabled(False)
             self._set_controls_enabled(True)

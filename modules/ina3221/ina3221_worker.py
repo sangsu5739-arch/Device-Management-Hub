@@ -5,6 +5,7 @@ Polls register data via FtdiManager I2C interface.
 
 from __future__ import annotations
 
+import math
 import time
 from dataclasses import dataclass, field
 from typing import List, Optional
@@ -83,8 +84,14 @@ class INA3221Worker(QObject):
             raw_sh = self._ftdi.i2c_read(self._slave_addr, bytes([regs[i*2].value]), 2)
             if raw_sh is not None and len(raw_sh) >= 2:
                 val16 = (raw_sh[0] << 8) | raw_sh[1]
-                m.vshunt_mv[i] = INA3221Conversion.raw_to_shunt_voltage_mv(val16)
-                m.current_ma[i] = INA3221Conversion.calculate_current_ma(m.vshunt_mv[i], self._shunt_resistors[i])
+                # Filter: 0xFFFF typically indicates NACK / bus error
+                if val16 == 0xFFFF:
+                    return None
+                vshunt = INA3221Conversion.raw_to_shunt_voltage_mv(val16)
+                if not math.isfinite(vshunt):
+                    return None
+                m.vshunt_mv[i] = vshunt
+                m.current_ma[i] = INA3221Conversion.calculate_current_ma(vshunt, self._shunt_resistors[i])
             else:
                 return None  # I2C fail
 
@@ -92,7 +99,12 @@ class INA3221Worker(QObject):
             raw_bus = self._ftdi.i2c_read(self._slave_addr, bytes([regs[i*2 + 1].value]), 2)
             if raw_bus is not None and len(raw_bus) >= 2:
                 val16 = (raw_bus[0] << 8) | raw_bus[1]
-                m.vbus_v[i] = INA3221Conversion.raw_to_bus_voltage_v(val16)
+                if val16 == 0xFFFF:
+                    return None
+                vbus = INA3221Conversion.raw_to_bus_voltage_v(val16)
+                if not math.isfinite(vbus):
+                    return None
+                m.vbus_v[i] = vbus
             else:
                 return None  # I2C fail
 

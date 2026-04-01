@@ -64,6 +64,6 @@ class TapStateDiagram(QLabel):
 
     def _apply_theme(self) -> None:
         tm = ThemeManager.instance()
-        pix = self._dark_pix if tm.is_dark else self._light_pix
+        pix = self._dark_pix if tm.is_dark() else self._light_pix
         if pix and not pix.isNull():
             self.setPixmap(pix)

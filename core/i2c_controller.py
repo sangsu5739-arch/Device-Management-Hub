@@ -81,7 +81,7 @@ class I2cController(MpsseBaseController):
         if not resp:
             self._o._purge_pending_io()
             return None
-        return resp[0] if resp else None
+        return resp[0]
 
     def read_gpio_high(self) -> Optional[int]:
         if self._o._ft is None:
@@ -91,7 +91,7 @@ class I2cController(MpsseBaseController):
         if not resp:
             self._o._purge_pending_io()
             return None
-        return resp[0] if resp else None
+        return resp[0]
 
     # -- I2C helpers --
 
@@ -109,6 +109,49 @@ class I2cController(MpsseBaseController):
             value = (value & ~hold_mask) | (hold_value & hold_mask)
             direction |= hold_mask
         return value & 0xFF, direction & 0xFF
+
+    def recover_bus(self) -> bool:
+        """I2C bus recovery: toggle SCL 9 times to release a stuck slave.
+
+        If a previous GPIO or interrupted I2C operation left a slave holding
+        SDA low, the bus is stuck.  Clocking SCL 9 times lets the slave
+        finish its byte and release SDA, after which a STOP restores idle.
+
+        Returns True if SDA is released (bus recovered).
+        """
+        import logging
+        _log = logging.getLogger(__name__)
+
+        # 1. Release SDA (input), drive SCL low
+        val, d = self._merge_i2c_hold(0x00, self._I2C_DIR_SDA_IN)
+        self.set_bits_low(val, d)
+
+        # 2. Toggle SCL 9 times
+        for i in range(9):
+            # SCL high (SDA remains input/released)
+            val, d = self._merge_i2c_hold(self._PIN_SCL, self._I2C_DIR_SDA_IN)
+            self.write(bytes([self._MPSSE_SET_BITS_LOW, val, d]))
+            # SCL low
+            val, d = self._merge_i2c_hold(0x00, self._I2C_DIR_SDA_IN)
+            self.write(bytes([self._MPSSE_SET_BITS_LOW, val, d]))
+
+        # 3. Check if SDA is released
+        val, d = self._merge_i2c_hold(self._PIN_SCL, self._I2C_DIR_SDA_IN)
+        self.set_bits_low(val, d)
+        sda_state = self.read_gpio_low()
+        sda_free = bool(sda_state is not None and sda_state & self._PIN_SDA)
+
+        # 4. Generate STOP to return bus to idle
+        self._i2c_stop()
+
+        # 5. Set idle: SCL high, SDA high
+        self.set_lines(scl_high=True, sda_high=True)
+
+        if sda_free:
+            _log.debug("I2C bus recovery: SDA released OK")
+        else:
+            _log.warning("I2C bus recovery: SDA still held low after 9 clocks")
+        return sda_free
 
     def apply_gpio_out(self, value: int) -> None:
         # SCL (D0) and SDA (D1) must be idle-high for I2C.

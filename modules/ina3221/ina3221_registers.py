@@ -130,8 +130,9 @@ class INA3221Conversion:
 
     @staticmethod
     def raw_to_bus_voltage_v(raw_16bit: int) -> float:
-        signed = INA3221Conversion.raw16_to_signed(raw_16bit)
-        return float(signed) * 0.001
+        # Bus voltage is unsigned (0-26V range). D15-D3 data, D2-D0 reserved.
+        # LSB = 8mV; (raw >> 3) * 0.008 == raw * 0.001
+        return float(raw_16bit & 0xFFFF) * 0.001
 
     @staticmethod
     def raw_to_shunt_voltage_mv(raw_16bit: int) -> float:

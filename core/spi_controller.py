@@ -14,10 +14,13 @@ Standard MPSSE SPI pin mapping:
 
 from __future__ import annotations
 
+import logging
 import time
 from typing import TYPE_CHECKING, Optional
 
 from core.mpsse_base import MpsseBaseController
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from core.ftdi_manager import FtdiManager
@@ -173,7 +176,7 @@ class SpiController(MpsseBaseController):
     # SPI Transfer
     # ------------------------------------------------------------------
 
-    def transfer(self, tx_data: bytes, cs_pin: int = MpsseBaseController.PIN_ADBUS3) -> bytes:
+    def transfer(self, tx_data: bytes, cs_pin: int = MpsseBaseController.PIN_ADBUS3) -> Optional[bytes]:
         """Full-duplex SPI transfer with automatic CS handling.
 
         Matches Ansari ADS1018.py tx_packet + rx_packet pattern:
@@ -248,18 +251,18 @@ class SpiController(MpsseBaseController):
             except Exception:
                 queued = 0
 
-        print(f"[SPI] queued={queued} expected={length}")
+        logger.debug(f"[SPI] queued={queued} expected={length}")
 
         if queued > 0:
             all_data = self.read(queued)
-            print(f"[SPI] read({queued})={all_data.hex(' ')}")
+            logger.debug(f"[SPI] read({queued})={all_data.hex(' ')}")
             # Return last 'length' bytes (Ansari uses rx_buffer[rx_len-4], [rx_len-3])
             if len(all_data) >= length:
                 return all_data[-length:]
             return all_data
 
-        print("[SPI] WARNING: no data in queue, returning zeros")
-        return b"\x00" * length
+        logger.warning("[SPI] no data in queue after transfer")
+        return None
 
     def write_only(self, tx_data: bytes, cs_pin: int = MpsseBaseController.PIN_ADBUS3) -> None:
         """Write-only SPI transfer with automatic CS handling.

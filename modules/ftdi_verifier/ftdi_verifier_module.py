@@ -230,6 +230,10 @@ class FtdiVerifierModule(BaseModule):
         self._spi_probe_running = False
         self._stop_single_shot_threads()
         self._stop_worker()
+        if self._uart_read_timer is not None and self._uart_read_timer.isActive():
+            self._uart_read_timer.stop()
+        if self._gpio_poll_blink is not None and self._gpio_poll_blink.isActive():
+            self._gpio_poll_blink.stop()
         # On global stop (disconnect or channel switch), do not restore FTDI from UART.
         self._close_uart(restore=False)
 
@@ -1094,7 +1098,7 @@ class FtdiVerifierModule(BaseModule):
         self._gpio_bit_to_pin: Dict[int, int] = {}
         self._gpio_table.setRowCount(len(pins))
         for row, pin in enumerate(pins):
-            if pin.channel == self._current_channel and pin.mpsse_bit is not None:
+            if pin.channel == self._current_channel and pin.mpsse_bit >= 0:
                 self._gpio_bit_to_pin[pin.mpsse_bit] = pin.number
             self._gpio_table.setItem(row, 0, QTableWidgetItem(f"D{pin.number}"))
             self._gpio_table.setItem(row, 1, QTableWidgetItem(pin.name))
@@ -1634,14 +1638,14 @@ class FtdiVerifierModule(BaseModule):
             if self._gpio_poll_blink is not None and self._gpio_poll_blink.isActive():
                 self._gpio_poll_blink.stop()
             self._append_log("[GPIO] Polling auto-stopped (mode/tab change).")
-        # Lightweight restore: purge stale USB data and ensure I2C pin
-        # direction (D0/D1 output, D2-D7 per hold mask).  No force re-init
-        # needed because GPIO polling stays in MPSSE mode the entire time.
+        # Restore I2C-ready MPSSE state after GPIO operations.
+        # GPIO blink accumulates _gpio_low_direction via mpsse_set_gpio_low(),
+        # and the MPSSE chip's direction register may have D4-D7 as outputs.
+        # A force re-init ensures the direction, clock, and 3-phase settings
+        # are correct for I2C — the idempotency check would skip this.
         if self._ftdi.is_connected and self._ftdi.supports_mpsse(self._ftdi.channel):
             self._ftdi.purge_pending_io()
-            # set_protocol_mode without force: idempotency check sees "mpsse"
-            # and returns immediately — no resetDevice / init_mpsse overhead.
-            self._ftdi.set_protocol_mode("I2C")
+            self._ftdi.set_protocol_mode("I2C", force=True)
 
     def _get_gpio_blink_masks(self) -> tuple[int, int]:
         low_mask = 0
@@ -1653,7 +1657,7 @@ class FtdiVerifierModule(BaseModule):
             active = self._pinout._pin_active_funcs.get(pin.number, pin.default_function)
             if active not in (PinFunction.GPIO_OUT, PinFunction.GPIO_IN):
                 continue
-            if pin.mpsse_bit is None:
+            if pin.mpsse_bit < 0:
                 continue
             bit = 1 << pin.mpsse_bit
             if pin.name.startswith(("AC", "BC")):

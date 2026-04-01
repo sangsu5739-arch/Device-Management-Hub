@@ -6,8 +6,11 @@ shared by both I2C and SPI controllers.
 
 from __future__ import annotations
 
+import logging
 import time
 from typing import TYPE_CHECKING
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from core.ftdi_manager import FtdiManager
@@ -68,7 +71,8 @@ class MpsseBaseController:
         for _ in range(retries):
             try:
                 queued = self._o._ft.getQueueStatus() if self._o._ft is not None else 0
-            except Exception:
+            except Exception as e:
+                logger.debug(f"getQueueStatus failed: {e}")
                 queued = 0
             if queued >= length:
                 break
@@ -77,7 +81,8 @@ class MpsseBaseController:
             return b""
         try:
             return self.read(length)
-        except Exception:
+        except Exception as e:
+            logger.debug(f"read_with_wait read failed: {e}")
             return b""
 
     def init_mpsse(self) -> None:
@@ -102,8 +107,8 @@ class MpsseBaseController:
             # 1. Purge stale data from previous mode
             try:
                 ft.purge(self._PURGE_RXTX)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"Purge during init failed: {e}")
 
             # 2. USB-level reset
             ft.resetDevice()
@@ -114,8 +119,8 @@ class MpsseBaseController:
                 stale = ft.getQueueStatus()
                 if stale > 0:
                     ft.read(stale)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"RX flush during init failed: {e}")
 
             # 4. Configure USB parameters
             ft.setUSBParameters(65536, 65535)
@@ -134,8 +139,8 @@ class MpsseBaseController:
                     leftover = ft.getQueueStatus()
                     if leftover > 0:
                         ft.read(leftover)
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(f"Final flush after sync failed: {e}")
                 if attempt > 0:
                     self._o._log(
                         f"[INFO] MPSSE init succeeded on attempt {attempt + 1}"
@@ -164,7 +169,8 @@ class MpsseBaseController:
             time.sleep(0.02)
             try:
                 rxn = self._o._ft.getQueueStatus() if self._o._ft is not None else 0
-            except Exception:
+            except Exception as e:
+                logger.debug(f"sync_mpsse getQueueStatus failed: {e}")
                 rxn = 0
 
             if rxn > 0:
@@ -185,6 +191,6 @@ class MpsseBaseController:
         # Extra purge to avoid stale data in further ops
         try:
             self._o._ft.purge(self._PURGE_RXTX)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"sync_mpsse final purge failed: {e}")
         return False

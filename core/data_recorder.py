@@ -11,11 +11,14 @@ Usage:
 from __future__ import annotations
 
 import csv
+import logging
 import os
 import time
 from datetime import datetime
 from pathlib import Path
 from typing import List, Optional, Tuple
+
+logger = logging.getLogger(__name__)
 
 
 class DataRecorder:
@@ -90,8 +93,8 @@ class DataRecorder:
         try:
             self._file.flush()
             self._file.close()
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning(f"Error closing data recorder file: {e}")
 
         self._file = None
         self._writer = None

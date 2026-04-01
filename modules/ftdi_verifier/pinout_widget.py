@@ -561,6 +561,7 @@ class PinoutWidget(QWidget):
         return QSize(650, 550)
 
     def closeEvent(self, event) -> None:
-        """Cleanup timer when widget closes."""
+        """Cleanup timers when widget closes."""
         self._blink_timer.stop()
+        self._polling_timer.stop()
         super().closeEvent(event)

@@ -180,6 +180,7 @@ class FtdiManager(QObject):
         self._gpio_low_direction: int = 0x00
         self._gpio_high_direction: int = 0x00
         self._async_tasks: dict[int, tuple[QThread, _FtdiProtocolTaskWorker, Optional[_FtdiTaskCallbackRelay]]] = {}
+        self._async_task_counter: int = 0
         self._i2c = I2cController(self)
         self._spi = SpiController(self)
         self._bitbang = BitbangController(self)
@@ -236,6 +237,7 @@ class FtdiManager(QObject):
 
     def set_active_channel(self, channel: str) -> bool:
         ch = channel.upper()
+        locker = QMutexLocker(self._mutex)
         if ch not in self._ft_handles:
             if not self._is_connected:
                 return False
@@ -254,6 +256,7 @@ class FtdiManager(QObject):
         self._active_channel = ch
         self._channel = ch
         self._ft = self._ft_handles.get(ch)
+        del locker
         self.active_channel_changed.emit(ch)
         self._emit_current_device_info()
         return True
@@ -279,7 +282,8 @@ class FtdiManager(QObject):
         )
         thread = QThread(self)
         relay = _FtdiTaskCallbackRelay(on_done, self) if on_done is not None else None
-        task_id = id(thread)
+        self._async_task_counter += 1
+        task_id = self._async_task_counter
         self._async_tasks[task_id] = (thread, worker, relay)
 
         worker.moveToThread(thread)
@@ -385,6 +389,15 @@ class FtdiManager(QObject):
                                 self._gpio_high_out_value & 0xFF,
                                 self._gpio_high_direction & 0xFF,
                             )
+                        except Exception:
+                            pass
+                    # I2C bus recovery: if a previous GPIO/bitbang operation
+                    # left a slave holding SDA low, clock SCL 9 times to
+                    # free it.  Only on force re-init to avoid overhead on
+                    # normal idempotent mode switches.
+                    if force:
+                        try:
+                            self._i2c.recover_bus()
                         except Exception:
                             pass
                     self._log(f"[INFO] Protocol mode: {mode} (CH={ch})")
@@ -911,7 +924,7 @@ class FtdiManager(QObject):
                 self._active_protocol = "I2C"
                 self._bitbang_i2c_warned = False
                 self._mode_switch_ts = 0
-                self._gpio_out_value |= 0x03
+                self._gpio_out_value = 0x03  # Clean start: only SCL/SDA high
                 try:
                     self._i2c.apply_gpio_out(self._gpio_out_value)
                 except Exception:
@@ -924,6 +937,12 @@ class FtdiManager(QObject):
                         )
                     except Exception:
                         pass
+                # I2C bus recovery on connect: free any slave stuck from
+                # a previous session's interrupted transaction.
+                try:
+                    self._i2c.recover_bus()
+                except Exception:
+                    pass
             else:
                 self._channel_modes[ch] = "uart"
                 self._active_protocol = "UART"
@@ -1126,9 +1145,15 @@ class FtdiManager(QObject):
                 self._active_channel = "A"
                 self._channel = "A"
                 self._channel_modes = {}
+                self._gpio_out_value = 0x00
                 self._gpio_low_direction = 0x00
                 self._gpio_high_out_value = 0x00
                 self._gpio_high_direction = 0x00
+                self._i2c_hold_mask = 0x00
+                self._i2c_hold_value = 0x00
+                self._mode_switch_ts = 0.0
+                self._mode_switch_guard_warned = False
+                self._bitbang_i2c_warned = False
         # Emit signals AFTER releasing mutex to avoid deadlock
         self._log("Disconnected.")
         self.device_disconnected.emit()

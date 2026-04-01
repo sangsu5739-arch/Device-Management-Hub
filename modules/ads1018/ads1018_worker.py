@@ -122,15 +122,19 @@ class ADS1018Worker(QObject):
         while self._running:
             try:
                 m = ADS1018Measurement(timestamp=time.time())
+                cycle_had_error = False
+                any_channel_read = False
 
                 for ch in range(4):
                     ch_cfg = self._config.channels[ch]
                     if not ch_cfg.enabled:
                         continue
 
+                    any_channel_read = True
                     raw = self._driver.read_channel(ch)
                     if raw is None:
                         consecutive_errors += 1
+                        cycle_had_error = True
                         if consecutive_errors >= max_errors:
                             self.error_occurred.emit(
                                 f"ADS1018: {max_errors} consecutive read errors"
@@ -138,8 +142,6 @@ class ADS1018Worker(QObject):
                             self._running = False
                             break
                         continue
-
-                    consecutive_errors = 0
                     m.raw_values[ch] = raw
                     m.modes[ch] = ch_cfg.mode
 
@@ -155,7 +157,10 @@ class ADS1018Worker(QObject):
                         m.values[ch] = self._driver.calculate_voltage(raw, ch_cfg.voltage_divider)
                         m.units[ch] = "V"
 
-                if self._running:
+                if not cycle_had_error and any_channel_read:
+                    consecutive_errors = 0
+
+                if self._running and any_channel_read:
                     self.measurement.emit(m)
 
             except Exception as e:
