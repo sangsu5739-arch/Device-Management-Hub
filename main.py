@@ -36,7 +36,7 @@ from modules.base_module import BaseModule
 logger = logging.getLogger(__name__)
 
 # ── Application Version ──────────────────────────────────────────────────────
-APP_VERSION = "1.0.0"
+APP_VERSION = "1.1.0"
 APP_NAME    = "Universal Device Studio"
 # ─────────────────────────────────────────────────────────────────────────────
 

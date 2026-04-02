@@ -9,7 +9,9 @@ hiddenimports += collect_submodules('core')
 a = Analysis(
     ['main.py'],
     pathex=['.'],
-    binaries=[],
+    binaries=[
+        ('C:/Windows/System32/ftd2xx.dll', '.'),
+    ],
     datas=[('assets', 'assets'), ('modules', 'modules'), ('core', 'core')],
     hiddenimports=hiddenimports,
     hookspath=[],
