@@ -1,10 +1,50 @@
 from __future__ import annotations
 
+import ctypes as c
 import time
 from typing import Dict, Any, Optional
 
 from PySide6.QtCore import QObject, Signal, Slot, QMutexLocker
 from core.ftdi_manager import FtdiManager
+
+
+def _safe_ee_read(ft):
+    """Wrapper around ft.eeRead() that keeps ctypes string buffers alive.
+
+    The ftd2xx library's eeRead() creates local string buffers, casts them
+    to c_char_p (raw pointers) inside the returned progdata struct, then
+    lets the buffers go out of scope.  If Python's GC collects them before
+    the caller uses progdata, the pointers become dangling → crash.
+
+    This wrapper holds explicit references to the buffers alongside the
+    returned struct so they survive until the caller is done.
+    """
+    import ftd2xx._ftd2xx as _ft
+    from ftd2xx.ftd2xx import ft_program_data, ProgramData, call_ft
+    from ftd2xx import defines
+
+    buf_mfg = c.create_string_buffer(defines.MAX_DESCRIPTION_SIZE)
+    buf_mfg_id = c.create_string_buffer(defines.MAX_DESCRIPTION_SIZE)
+    buf_desc = c.create_string_buffer(defines.MAX_DESCRIPTION_SIZE)
+    buf_serial = c.create_string_buffer(defines.MAX_DESCRIPTION_SIZE)
+
+    progdata = ft_program_data(
+        **ProgramData(
+            Signature1=0,
+            Signature2=0xFFFFFFFF,
+            Version=4,
+            Manufacturer=c.cast(buf_mfg, c.c_char_p),
+            ManufacturerId=c.cast(buf_mfg_id, c.c_char_p),
+            Description=c.cast(buf_desc, c.c_char_p),
+            SerialNumber=c.cast(buf_serial, c.c_char_p),
+        )
+    )
+
+    call_ft(_ft.FT_EE_Read, ft.handle, c.byref(progdata))
+
+    # Keep buffers alive by attaching them to the struct object
+    progdata._buf_refs = (buf_mfg, buf_mfg_id, buf_desc, buf_serial)
+    return progdata
 
 
 class EepromWorker(QObject):
@@ -87,7 +127,7 @@ class EepromWorker(QObject):
         self.log_message.emit("[EEPROM] Reading parameters...")
         try:
             self._enter_prog_mode(ft)
-            ee = ft.eeRead()
+            ee = _safe_ee_read(ft)
 
             def decode_str(val: Any) -> str:
                 if isinstance(val, (bytes, bytearray)):
@@ -133,7 +173,7 @@ class EepromWorker(QObject):
         self.log_message.emit("[EEPROM] Writing parameters to device...")
         try:
             self._enter_prog_mode(ft)
-            ee = ft.eeRead()
+            ee = _safe_ee_read(ft)
 
             # ftd2xx ctypes fields (c_char_p) require bytes, not str
             if "manufacturer" in params and params["manufacturer"]:
