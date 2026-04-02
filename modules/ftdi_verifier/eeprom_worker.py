@@ -1,50 +1,100 @@
 from __future__ import annotations
 
 import ctypes as c
+import logging
 import time
-from typing import Dict, Any, Optional
+from typing import Any, Optional
 
 from PySide6.QtCore import QObject, Signal, Slot, QMutexLocker
 from core.ftdi_manager import FtdiManager
 
+logger = logging.getLogger(__name__)
 
-def _safe_ee_read(ft):
-    """Wrapper around ft.eeRead() that keeps ctypes string buffers alive.
 
-    The ftd2xx library's eeRead() creates local string buffers, casts them
-    to c_char_p (raw pointers) inside the returned progdata struct, then
-    lets the buffers go out of scope.  If Python's GC collects them before
-    the caller uses progdata, the pointers become dangling → crash.
+def _ee_read_to_dict(ft) -> dict:
+    """Read EEPROM and immediately extract all values into a Python dict.
 
-    This wrapper holds explicit references to the buffers alongside the
-    returned struct so they survive until the caller is done.
+    The ftd2xx library's eeRead() returns a ctypes struct whose string
+    pointer fields (Manufacturer, Description, etc.) reference local
+    buffers that can be garbage-collected at any time.  By extracting
+    everything into native Python types *before* returning, we eliminate
+    the dangling-pointer crash entirely.
     """
-    import ftd2xx._ftd2xx as _ft
-    from ftd2xx.ftd2xx import ft_program_data, ProgramData, call_ft
-    from ftd2xx import defines
+    ee = ft.eeRead()
 
-    buf_mfg = c.create_string_buffer(defines.MAX_DESCRIPTION_SIZE)
-    buf_mfg_id = c.create_string_buffer(defines.MAX_DESCRIPTION_SIZE)
-    buf_desc = c.create_string_buffer(defines.MAX_DESCRIPTION_SIZE)
-    buf_serial = c.create_string_buffer(defines.MAX_DESCRIPTION_SIZE)
+    def _s(val: Any) -> str:
+        if isinstance(val, (bytes, bytearray)):
+            return val.decode("utf-8", errors="ignore").strip("\x00")
+        if val is None:
+            return ""
+        return str(val)
 
-    progdata = ft_program_data(
-        **ProgramData(
-            Signature1=0,
-            Signature2=0xFFFFFFFF,
-            Version=4,
-            Manufacturer=c.cast(buf_mfg, c.c_char_p),
-            ManufacturerId=c.cast(buf_mfg_id, c.c_char_p),
-            Description=c.cast(buf_desc, c.c_char_p),
-            SerialNumber=c.cast(buf_serial, c.c_char_p),
-        )
+    return {
+        "Manufacturer": _s(getattr(ee, "Manufacturer", b"")),
+        "ManufacturerId": _s(getattr(ee, "ManufacturerId", b"")),
+        "Description": _s(getattr(ee, "Description", b"")),
+        "SerialNumber": _s(getattr(ee, "SerialNumber", b"")),
+        "VendorId": int(getattr(ee, "VendorId", 0)),
+        "ProductId": int(getattr(ee, "ProductId", 0)),
+        "MaxPower": int(getattr(ee, "MaxPower", 0)),
+        "PnP": int(getattr(ee, "PnP", 0)),
+        "SelfPowered": int(getattr(ee, "SelfPowered", 0)),
+        "RemoteWakeup": int(getattr(ee, "RemoteWakeup", 0)),
+        "SerNumEnable": int(getattr(ee, "SerNumEnable", 0)),
+    }
+    # ee (ctypes struct with dangling pointers) is discarded here — safe.
+
+
+def _ee_write(ft, params: dict) -> None:
+    """Build a fresh ft_program_data struct and program the EEPROM.
+
+    Instead of read-modify-write on the same ctypes struct (which risks
+    dangling pointers), we read current values into a Python dict, merge
+    user params, then construct a brand-new struct for eeProgram().
+    """
+    # 1. Read current EEPROM into safe Python dict
+    current = _ee_read_to_dict(ft)
+
+    # 2. Merge user params over current values
+    if params.get("manufacturer"):
+        current["Manufacturer"] = params["manufacturer"]
+    if params.get("description"):
+        current["Description"] = params["description"]
+    if params.get("serial"):
+        current["SerialNumber"] = params["serial"]
+    vid_str = params.get("vid", "")
+    if vid_str:
+        current["VendorId"] = int(vid_str, 16)
+    pid_str = params.get("pid", "")
+    if pid_str:
+        current["ProductId"] = int(pid_str, 16)
+    if "max_power" in params:
+        current["MaxPower"] = int(params["max_power"])
+    if "self_powered" in params:
+        current["SelfPowered"] = 1 if params["self_powered"] else 0
+    if "remote_wakeup" in params:
+        current["RemoteWakeup"] = 1 if params["remote_wakeup"] else 0
+
+    # 3. Build fresh struct — all string buffers are owned by this scope
+    buf_mfg = c.create_string_buffer(current["Manufacturer"].encode("utf-8"), 256)
+    buf_mfg_id = c.create_string_buffer(current["ManufacturerId"].encode("utf-8"), 256)
+    buf_desc = c.create_string_buffer(current["Description"].encode("utf-8"), 256)
+    buf_serial = c.create_string_buffer(current["SerialNumber"].encode("utf-8"), 256)
+
+    ft.eeProgram(
+        Manufacturer=c.cast(buf_mfg, c.c_char_p),
+        ManufacturerId=c.cast(buf_mfg_id, c.c_char_p),
+        Description=c.cast(buf_desc, c.c_char_p),
+        SerialNumber=c.cast(buf_serial, c.c_char_p),
+        VendorId=current["VendorId"],
+        ProductId=current["ProductId"],
+        MaxPower=current["MaxPower"],
+        PnP=current["PnP"],
+        SelfPowered=current["SelfPowered"],
+        RemoteWakeup=current["RemoteWakeup"],
+        SerNumEnable=current["SerNumEnable"],
     )
-
-    call_ft(_ft.FT_EE_Read, ft.handle, c.byref(progdata))
-
-    # Keep buffers alive by attaching them to the struct object
-    progdata._buf_refs = (buf_mfg, buf_mfg_id, buf_desc, buf_serial)
-    return progdata
+    # buf_mfg, buf_mfg_id, buf_desc, buf_serial are alive until here — safe.
 
 
 class EepromWorker(QObject):
@@ -78,14 +128,7 @@ class EepromWorker(QObject):
         return locker, ft
 
     def _enter_prog_mode(self, ft) -> None:
-        """Safely exit MPSSE/bitbang and enter normal D2XX mode for EEPROM access.
-
-        A clean transition is critical: eeRead/eeProgram called while the
-        MPSSE engine is active (or with stale USB data) can crash the
-        ftd2xx C library.  The sequence mirrors what set_protocol_mode("PROG")
-        does, but operates directly on the handle since the mutex is held.
-        """
-        import time
+        """Safely exit MPSSE/bitbang and enter normal D2XX mode for EEPROM access."""
         # 1. Purge stale MPSSE/bitbang data from USB buffers
         try:
             ft.purge(3)  # PURGE_RX | PURGE_TX
@@ -104,15 +147,10 @@ class EepromWorker(QObject):
         except Exception:
             pass
         # 4. Settle time for USB interface to stabilize
-        time.sleep(0.05)
+        time.sleep(0.1)
 
     def _restore_mpsse_mode(self) -> None:
-        """Request MPSSE re-init after EEPROM operation.
-
-        We cannot call set_protocol_mode here because the mutex is
-        already held.  Instead, mark the channel mode as empty so that
-        the next I2C/SPI operation triggers a full re-init.
-        """
+        """Mark channel mode as empty so the next I2C/SPI operation triggers re-init."""
         ch = self._ftdi._active_channel
         self._ftdi._channel_modes[ch] = ""
 
@@ -127,28 +165,24 @@ class EepromWorker(QObject):
         self.log_message.emit("[EEPROM] Reading parameters...")
         try:
             self._enter_prog_mode(ft)
-            ee = _safe_ee_read(ft)
-
-            def decode_str(val: Any) -> str:
-                if isinstance(val, (bytes, bytearray)):
-                    return val.decode("utf-8", errors="ignore").strip("\x00")
-                return str(val or "")
+            raw = _ee_read_to_dict(ft)
 
             data = {
-                "manufacturer": decode_str(getattr(ee, "Manufacturer", "")),
-                "description": decode_str(getattr(ee, "Description", "")),
-                "serial": decode_str(getattr(ee, "SerialNumber", "")),
-                "vid": f"{getattr(ee, 'VendorId', 0):04X}",
-                "pid": f"{getattr(ee, 'ProductId', 0):04X}",
-                "max_power": int(getattr(ee, "MaxPower", 0)),
-                "self_powered": bool(getattr(ee, "SelfPowered", False)),
-                "remote_wakeup": bool(getattr(ee, "RemoteWakeup", False))
+                "manufacturer": raw["Manufacturer"],
+                "description": raw["Description"],
+                "serial": raw["SerialNumber"],
+                "vid": f"{raw['VendorId']:04X}",
+                "pid": f"{raw['ProductId']:04X}",
+                "max_power": raw["MaxPower"],
+                "self_powered": bool(raw["SelfPowered"]),
+                "remote_wakeup": bool(raw["RemoteWakeup"]),
             }
 
             self.eeprom_data_read.emit(data)
             self.operation_finished.emit(True, "EEPROM read completed")
             self.log_message.emit("[EEPROM] Read completed successfully.")
         except Exception as e:
+            logger.exception("EEPROM read failed")
             self.log_message.emit(f"[EEPROM] Read failed: {e}")
             self.operation_finished.emit(False, str(e))
         finally:
@@ -157,9 +191,7 @@ class EepromWorker(QObject):
 
     @Slot()
     def write_eeprom(self) -> None:
-        """Writes EEPROM parameters using ftd2xx.
-        Params are read from self._pending_params (set before thread start).
-        """
+        """Writes EEPROM parameters using ftd2xx."""
         params = self._pending_params
         if not params:
             self.operation_finished.emit(False, "No parameters provided")
@@ -173,36 +205,11 @@ class EepromWorker(QObject):
         self.log_message.emit("[EEPROM] Writing parameters to device...")
         try:
             self._enter_prog_mode(ft)
-            ee = _safe_ee_read(ft)
-
-            # ftd2xx ctypes fields (c_char_p) require bytes, not str
-            if "manufacturer" in params and params["manufacturer"]:
-                ee.Manufacturer = params["manufacturer"].encode("utf-8")
-            if "description" in params and params["description"]:
-                ee.Description = params["description"].encode("utf-8")
-            if "serial" in params and params["serial"]:
-                ee.SerialNumber = params["serial"].encode("utf-8")
-
-            vid_str = params.get("vid", "")
-            pid_str = params.get("pid", "")
-            if vid_str:
-                ee.VendorId = int(vid_str, 16)
-            if pid_str:
-                ee.ProductId = int(pid_str, 16)
-
-            if "max_power" in params:
-                ee.MaxPower = int(params["max_power"])
-            if "self_powered" in params:
-                ee.SelfPowered = 1 if params["self_powered"] else 0
-            if "remote_wakeup" in params:
-                ee.RemoteWakeup = 1 if params["remote_wakeup"] else 0
-
-            self.log_message.emit(f"[EEPROM] New VID: 0x{vid_str or 'Keep'}, PID: 0x{pid_str or 'Keep'}, Max Power: {getattr(ee, 'MaxPower', 0)} mA")
-
-            ft.eeProgram(ee)
+            _ee_write(ft, params)
             self.operation_finished.emit(True, "EEPROM written successfully")
             self.log_message.emit("[EEPROM] Write completed successfully. (A reset/replug might be needed)")
         except Exception as e:
+            logger.exception("EEPROM write failed")
             self.log_message.emit(f"[EEPROM] Write failed: {e}")
             self.operation_finished.emit(False, str(e))
         finally:
@@ -211,11 +218,7 @@ class EepromWorker(QObject):
 
     @Slot()
     def reset_device(self) -> None:
-        """Resets the connected FTDI device using ftd2xx.
-
-        After cyclePort() the USB handle is invalidated, so we signal
-        the main thread to run close_device() to keep FtdiManager in sync.
-        """
+        """Resets the connected FTDI device using ftd2xx."""
         locker, ft = self._get_ft_locked()
         if ft is None:
             self.operation_finished.emit(False, "Device not connected or handle unavailable")
@@ -229,6 +232,7 @@ class EepromWorker(QObject):
             self.log_message.emit("[EEPROM] Device reset complete. Re-enumeration generated.")
             self.operation_finished.emit(True, "Device reset successfully")
         except Exception as e:
+            logger.exception("EEPROM reset failed")
             self.log_message.emit(f"[EEPROM] Reset failed: {e}")
             self.operation_finished.emit(False, str(e))
         finally:
