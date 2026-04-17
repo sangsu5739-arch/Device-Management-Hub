@@ -18,6 +18,7 @@ from PySide6.QtCore import QObject, Signal, QMutex, QMutexLocker, QThread, Slot
 from core.i2c_controller import I2cController
 from core.spi_controller import SpiController
 from core.ftdi_bitbang import BitbangController
+from core.jtag_controller import JtagController
 
 logger = logging.getLogger(__name__)
 
@@ -184,6 +185,8 @@ class FtdiManager(QObject):
         self._i2c = I2cController(self)
         self._spi = SpiController(self)
         self._bitbang = BitbangController(self)
+        self._jtag = JtagController(self)
+        self._jtag_clock_hz: int = 1_000_000
         self._active_protocol: str = "I2C"  # current protocol mode
         FtdiManager._initialized = True
 
@@ -318,7 +321,9 @@ class FtdiManager(QObject):
         # (e.g. _force_stop_gpio_polling → I2C, then on_tab_activated → I2C).
         if not force:
             cur_mode = self._channel_modes.get(ch, "")
-            if mode in ("I2C", "JTAG") and cur_mode == "mpsse":
+            if mode == "I2C" and cur_mode == "mpsse":
+                return True
+            if mode == "JTAG" and cur_mode == "jtag":
                 return True
             if mode == "SPI" and cur_mode == "spi":
                 return True
@@ -367,11 +372,27 @@ class FtdiManager(QObject):
                     self._mode_switch_ts = 0
                 return True
 
-            if mode in ("I2C", "JTAG"):
+            if mode == "JTAG":
+                if self.supports_mpsse(ch):
+                    self._jtag.configure(self._jtag_clock_hz)
+                    self._channel_modes[ch] = "jtag"
+                    self._active_protocol = "JTAG"
+                    self._bitbang_i2c_warned = False
+                    self._mode_switch_ts = 0
+                    self._gpio_low_direction = 0x00
+                    self._log(f"[INFO] Protocol mode: JTAG (CH={ch})")
+                else:
+                    self._channel_modes[ch] = "uart"
+                    self._active_protocol = "UART"
+                    self._bitbang_i2c_warned = False
+                    self._mode_switch_ts = 0
+                return True
+
+            if mode == "I2C":
                 if self.supports_mpsse(ch):
                     self._i2c.configure()
                     self._channel_modes[ch] = "mpsse"
-                    self._active_protocol = mode
+                    self._active_protocol = "I2C"
                     self._bitbang_i2c_warned = False
                     self._mode_switch_ts = 0
                     self._gpio_low_direction = 0x00
@@ -400,7 +421,7 @@ class FtdiManager(QObject):
                             self._i2c.recover_bus()
                         except Exception:
                             pass
-                    self._log(f"[INFO] Protocol mode: {mode} (CH={ch})")
+                    self._log(f"[INFO] Protocol mode: I2C (CH={ch})")
                 else:
                     self._channel_modes[ch] = "uart"
                     self._active_protocol = "UART"
@@ -1352,6 +1373,134 @@ class FtdiManager(QObject):
         except Exception as e:
             self._log(f"[Error] SPI GPIO error: {e}")
 
+    # ── JTAG API ────────────────────────────────────────────────────
+
+    def jtag_configure(self, clock_hz: int) -> bool:
+        """Set JTAG TCK frequency and (re)configure if already in JTAG mode."""
+        self._jtag_clock_hz = clock_hz
+        if self._channel_modes.get(self._active_channel) == "jtag":
+            locker = QMutexLocker(self._mutex)
+            try:
+                self._jtag.set_clock(clock_hz)
+                return True
+            except Exception as e:
+                self._log(f"[Error] JTAG set_clock: {e}")
+                return False
+        return True
+
+    def jtag_reset(self) -> bool:
+        """Reset the JTAG TAP to Test-Logic-Reset."""
+        if not self._is_connected or self._ft is None:
+            return False
+        if self._channel_modes.get(self._active_channel) != "jtag":
+            if not self.set_protocol_mode("JTAG"):
+                return False
+        locker = QMutexLocker(self._mutex)
+        try:
+            self._jtag.reset_tap()
+            return True
+        except Exception as e:
+            self._log(f"[Error] JTAG reset: {e}")
+            return False
+
+    def jtag_read_idcode(self) -> Optional[object]:
+        """Read IDCODE(s) from the JTAG chain.
+
+        Returns a JtagChainInfo object, or None on failure.
+        """
+        if not self._is_connected or self._ft is None:
+            self.comm_error.emit("Device not connected.")
+            return None
+        if self._channel_modes.get(self._active_channel) != "jtag":
+            if not self.set_protocol_mode("JTAG"):
+                return None
+        locker = QMutexLocker(self._mutex)
+        try:
+            return self._jtag.read_idcode()
+        except Exception as e:
+            err = f"JTAG read IDCODE error: {e}"
+            self._log(f"[Error] {err}")
+            self.comm_error.emit(err)
+            return None
+
+    def jtag_bypass_test(self, device_count: int = 1) -> Optional[bool]:
+        """Run JTAG BYPASS test.  Returns True on pass, False on fail, None on error."""
+        if not self._is_connected or self._ft is None:
+            self.comm_error.emit("Device not connected.")
+            return None
+        if self._channel_modes.get(self._active_channel) != "jtag":
+            if not self.set_protocol_mode("JTAG"):
+                return None
+        locker = QMutexLocker(self._mutex)
+        try:
+            return self._jtag.bypass_test(device_count)
+        except Exception as e:
+            err = f"JTAG bypass test error: {e}"
+            self._log(f"[Error] {err}")
+            self.comm_error.emit(err)
+            return None
+
+    def jtag_scan_ir_length(self) -> Optional[list]:
+        """Detect IR lengths for each device in the JTAG chain."""
+        if not self._is_connected or self._ft is None:
+            return None
+        if self._channel_modes.get(self._active_channel) != "jtag":
+            if not self.set_protocol_mode("JTAG"):
+                return None
+        locker = QMutexLocker(self._mutex)
+        try:
+            return self._jtag.scan_ir_length()
+        except Exception as e:
+            self._log(f"[Error] JTAG IR scan: {e}")
+            return None
+
+    def jtag_get_tap_state(self) -> str:
+        """Return current TAP state name."""
+        return self._jtag.tap_state
+
+    def jtag_get_tap_state_display(self) -> str:
+        """Return current TAP state full display name."""
+        return self._jtag.tap_state_display
+
+    def jtag_read_pins(self) -> Optional[int]:
+        """Read JTAG pin states (ADBUS low byte)."""
+        if not self._is_connected or self._ft is None:
+            return None
+        if self._channel_modes.get(self._active_channel) != "jtag":
+            return None
+        locker = QMutexLocker(self._mutex)
+        try:
+            return self._jtag.read_gpio_state()
+        except Exception as e:
+            self._log(f"[Error] JTAG read pins: {e}")
+            return None
+
+    def jtag_execute_vectors(self, vectors: list,
+                            progress_callback=None) -> Optional[object]:
+        """Execute ATP vectors through JTAG MPSSE.
+
+        Args:
+            vectors: List of AtpVector objects.
+            progress_callback: Optional callable(current, total).
+
+        Returns:
+            VectorBatchResult, or None on error.
+        """
+        if not self._is_connected or self._ft is None:
+            self.comm_error.emit("Device not connected.")
+            return None
+        if self._channel_modes.get(self._active_channel) != "jtag":
+            if not self.set_protocol_mode("JTAG"):
+                return None
+        locker = QMutexLocker(self._mutex)
+        try:
+            return self._jtag.clock_vectors_batch(vectors, progress_callback)
+        except Exception as e:
+            err = f"JTAG vector execution error: {e}"
+            self._log(f"[Error] {err}")
+            self.comm_error.emit(err)
+            return None
+
     def read_gpio_low(self) -> Optional[int]:
         """Read low GPIO bits (ADBUS) in current mode."""
         if not self._is_connected or self._ft is None:
@@ -1366,6 +1515,8 @@ class FtdiManager(QObject):
                 return self._spi.read_gpio_low()
             if mode == "mpsse":
                 return self._i2c.read_gpio_low()
+            if mode == "jtag":
+                return self._jtag.read_gpio_state()
             return None
         except Exception as e:
             self._log(f"[ERROR] GPIO read failed: {e}")

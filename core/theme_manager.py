@@ -254,6 +254,14 @@ DARK_PALETTE: Dict[str, str] = {
     "jtag_run_text":    "#4A90E2",
     "jtag_status_text": "#6A7080",
 
+    # JTAG step status colors
+    "jtag_step_pending":  "#6A7080",
+    "jtag_step_running":  "#4A90E2",
+    "jtag_step_passed":   "#27AE60",
+    "jtag_step_failed":   "#E74C3C",
+    "jtag_step_skipped":  "#95A5A6",
+    "jtag_step_error":    "#E67E22",
+
     # I2C buttons
     "i2c_scan_bg":      "#22303e",
     "i2c_scan_text":    "#80c0e0",
@@ -592,23 +600,32 @@ LIGHT_PALETTE: Dict[str, str] = {
     "gpio_pin_name":    "#2d6caa",
 
     # ── JTAG ─────────────────────────────────────────────────
-    "jtag_btn_bg":      "#d0e4f8",
-    "jtag_btn_text":    "#1e4878",
-    "jtag_btn_border":  "#78a8d8",
-    "jtag_btn_hover":   "#b8d4f0",
-    "jtag_seq_table_bg":"#f0f4f8",
-    "jtag_seq_selected":"#c8d8f0",
-    "jtag_preview_bg":  "#fafafa",
+    # Neutral background + I2C-matching accent buttons
+    "jtag_btn_bg":      "#e8ecf2",
+    "jtag_btn_text":    "#2a3a50",
+    "jtag_btn_border":  "#c0c8d4",
+    "jtag_btn_hover":   "#d8e0ec",
+    "jtag_seq_table_bg":"#ffffff",
+    "jtag_seq_selected":"#d8e4f4",
+    "jtag_preview_bg":  "#fafbfc",
     "jtag_preview_text":"#2a3040",
-    "jtag_tap_bg":      "#f8f8fc",
-    "jtag_tap_state":   "#d8e4f0",
-    "jtag_tap_state_active": "#9966cc",
+    "jtag_tap_bg":      "#f8f9fb",
+    "jtag_tap_state":   "#e0e6ee",
+    "jtag_tap_state_active": "#3574b8",
     "jtag_tap_text":    "#2a3040",
     "jtag_tap_arrow":   "#8090a0",
-    "jtag_mapping_bg":  "#f0f4f8",
-    "jtag_run_bg":      "#e0d0f0",
-    "jtag_run_text":    "#5522aa",
-    "jtag_status_text": "#506070",
+    "jtag_mapping_bg":  "#fafbfc",
+    "jtag_run_bg":      "#d0e4f8",
+    "jtag_run_text":    "#1e4878",
+    "jtag_status_text": "#607080",
+
+    # JTAG step status colors (light)
+    "jtag_step_pending":  "#8090A0",
+    "jtag_step_running":  "#2E7BC4",
+    "jtag_step_passed":   "#1E8A4E",
+    "jtag_step_failed":   "#C0392B",
+    "jtag_step_skipped":  "#7F8C8D",
+    "jtag_step_error":    "#D35400",
 
     # ── I2C buttons ──────────────────────────────────────────
     "i2c_scan_bg":      "#d0e4f8",

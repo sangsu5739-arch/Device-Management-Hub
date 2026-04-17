@@ -33,11 +33,14 @@ from modules.ftdi_verifier.ftdi_chip_specs import (
     get_chip_spec, get_channel_protocols,
 )
 from modules.ftdi_verifier.jtag_sequencer_panel import JtagSequencerPanel
+from modules.ftdi_verifier.jtag_left_panel import JtagLeftPanel
+from modules.ftdi_verifier.scenario_model import StepStatus
+from modules.ftdi_verifier.scenario_executor import ExecutionMode
 from modules.ftdi_verifier.pinout_widget import PinoutWidget
 from modules.ftdi_verifier.pinmap_controller import PinmapController
 from modules.ftdi_verifier.gpio_controller import GpioController
 from modules.ftdi_verifier.verifier_worker import (
-    VerifierWorker, I2CScanResult, ProtocolTestResult,
+    VerifierWorker, I2CScanResult, ProtocolTestResult, JtagResult,
 )
 from modules.ftdi_verifier.eeprom_prog_widget import EepromProgPanel
 
@@ -86,6 +89,9 @@ class FtdiVerifierModule(BaseModule):
         self._spi_id_thread: Optional[QThread] = None
         self._i2c_test_thread: Optional[QThread] = None
         self._i2c_scan_thread: Optional[QThread] = None
+        self._jtag_thread: Optional[QThread] = None
+        self._jtag_device_count: int = 1
+        self._scenario_executor = None
         self._spi_probe_running: bool = False
         self._pinmap = PinmapController(self)
         self._gpio = GpioController(self)
@@ -111,6 +117,9 @@ class FtdiVerifierModule(BaseModule):
         control_panel = self._create_control_panel()
         pinout_panel = self._create_pinout_panel()
         self._jtag_right_panel = JtagSequencerPanel()
+        self._jtag_right_panel.read_idcode_clicked.connect(self._on_jtag_read_idcode)
+        self._jtag_right_panel.reset_tap_clicked.connect(self._on_jtag_reset_tap)
+        self._jtag_right_panel.bypass_test_clicked.connect(self._on_jtag_bypass_test)
         self._right_stack = QStackedWidget()
         self._right_stack.addWidget(pinout_panel)       # index 0: pinout
         self._right_stack.addWidget(self._jtag_right_panel)  # index 1: JTAG
@@ -759,220 +768,360 @@ class FtdiVerifierModule(BaseModule):
     # ── JTAG Sequencer \uc88c\uce21 \ud328\ub110 \ube4c\ub354 ──────────────────────────────
 
     def _build_jtag_left_panel(self) -> None:
-        """JTAG \uc88c\uce21 \ud328\ub110 \uc804\uccb4 \uad6c\uc131."""
+        """JTAG \uc88c\uce21 \ud328\ub110 \u2014 JtagLeftPanel\uc5d0 \uc704\uc784."""
         layout = QVBoxLayout(self._jtag_group)
-        layout.setSpacing(4)
-        layout.setContentsMargins(6, 4, 6, 4)
+        layout.setSpacing(0)
+        layout.setContentsMargins(0, 0, 0, 0)
+        self._jtag_left = JtagLeftPanel()
+        layout.addWidget(self._jtag_left)
 
-        layout.addWidget(self._build_jtag_header())
-        layout.addWidget(self._build_jtag_sequence_list(), 1)
-        layout.addWidget(self._build_jtag_file_preview())
+        # Connect left panel signals to module handlers
+        self._jtag_left.folder_changed.connect(self._on_jtag_folder_changed)
+        self._jtag_left.csv_changed.connect(self._on_jtag_csv_changed)
+        self._jtag_left.register_map_changed.connect(self._on_jtag_regmap_changed)
+        self._jtag_left.tck_changed.connect(self._on_jtag_tck_changed)
+        self._jtag_left.step_selected.connect(self._on_jtag_step_selected)
+        self._jtag_left.run_requested.connect(self._on_jtag_run)
+        self._jtag_left.run_all_requested.connect(self._on_jtag_run)
+        self._jtag_left.run_selected_requested.connect(self._on_jtag_run_selected)
+        self._jtag_left.run_from_here_requested.connect(self._on_jtag_run_from)
+        self._jtag_left.dry_run_requested.connect(self._on_jtag_dry_run)
+        self._jtag_left.stop_requested.connect(self._on_jtag_stop)
+        self._jtag_left.retry_failed_requested.connect(self._on_jtag_retry)
+        self._jtag_left.scenario_save_requested.connect(self._on_scenario_save)
+        self._jtag_left.scenario_load_requested.connect(self._on_scenario_load)
 
-        # \uc2e4\ud589 \ubc84\ud2bc
-        self._jtag_run_btn = QPushButton("\u25b6  Run Sequence")
-        self._jtag_run_btn.setEnabled(False)
-        self._jtag_run_btn.setMinimumHeight(34)
-        self._jtag_run_btn.setToolTip("Execute loaded ATP pattern sequence.")
-        self._jtag_run_btn.clicked.connect(self._on_jtag_run)
-        layout.addWidget(self._jtag_run_btn)
+    # ── JTAG Left Panel signal handlers ────────────────────────────
 
-        layout.addWidget(self._build_jtag_status_bar())
-
-    def _build_jtag_header(self) -> QGroupBox:
-        """TCK \uc124\uc815 + \ud30c\uc77c \uc120\ud0dd \ubc84\ud2bc."""
-        grp = QGroupBox("TCK Settings")
-        g = QGridLayout(grp)
-        g.setSpacing(4)
-        g.setContentsMargins(6, 4, 6, 4)
-
-        g.addWidget(QLabel("TCK Freq:"), 0, 0)
-        self._jtag_tck_combo = QComboBox()
-        self._jtag_tck_combo.addItems([
-            "100 kHz", "500 kHz", "1 MHz", "2 MHz", "3 MHz", "6 MHz",
-        ])
-        self._jtag_tck_combo.setCurrentIndex(2)  # 1 MHz \uae30\ubcf8
-        g.addWidget(self._jtag_tck_combo, 0, 1)
-
-        self._jtag_folder_btn = QPushButton("\ud83d\udcc2  Pattern Folder")
-        self._jtag_folder_btn.setFixedHeight(28)
-        self._jtag_folder_btn.clicked.connect(self._on_jtag_select_folder)
-        g.addWidget(self._jtag_folder_btn, 1, 0)
-
-        self._jtag_csv_btn = QPushButton("\ud83d\udcc4  CSV File")
-        self._jtag_csv_btn.setFixedHeight(28)
-        self._jtag_csv_btn.clicked.connect(self._on_jtag_select_csv)
-        g.addWidget(self._jtag_csv_btn, 1, 1)
-
-        self._jtag_folder_label = QLabel("-")
-        self._jtag_folder_label.setFont(QFont("Consolas", 8))
-        self._jtag_folder_label.setWordWrap(True)
-        g.addWidget(self._jtag_folder_label, 2, 0, 1, 2)
-
-        return grp
-
-    def _build_jtag_sequence_list(self) -> QGroupBox:
-        """\uc2dc\ud000\uc2a4 \ubaa9\ub85d \ud14c\uc774\ube14."""
-        grp = QGroupBox("Sequence List")
-        layout = QVBoxLayout(grp)
-        layout.setContentsMargins(4, 4, 4, 4)
-
-        self._jtag_seq_table = QTableWidget(0, 4)
-        self._jtag_seq_table.setHorizontalHeaderLabels(
-            ["#", "Filename", "Dynamic", "Map"]
-        )
-        h_hdr = self._jtag_seq_table.horizontalHeader()
-        h_hdr.setSectionResizeMode(0, QHeaderView.ResizeMode.Fixed)
-        h_hdr.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
-        h_hdr.setSectionResizeMode(2, QHeaderView.ResizeMode.Fixed)
-        h_hdr.setSectionResizeMode(3, QHeaderView.ResizeMode.Fixed)
-        self._jtag_seq_table.setColumnWidth(0, 30)
-        self._jtag_seq_table.setColumnWidth(2, 60)
-        self._jtag_seq_table.setColumnWidth(3, 50)
-        self._jtag_seq_table.verticalHeader().setVisible(False)
-        self._jtag_seq_table.setSelectionBehavior(
-            QAbstractItemView.SelectionBehavior.SelectRows
-        )
-        self._jtag_seq_table.setEditTriggers(
-            QAbstractItemView.EditTrigger.NoEditTriggers
-        )
-        self._jtag_seq_table.cellClicked.connect(self._on_jtag_seq_selected)
-        layout.addWidget(self._jtag_seq_table)
-        return grp
-
-    def _build_jtag_file_preview(self) -> QGroupBox:
-        """ATP \ud30c\uc77c \ubbf8\ub9ac\ubcf4\uae30."""
-        grp = QGroupBox("File Preview")
-        layout = QVBoxLayout(grp)
-        layout.setContentsMargins(4, 4, 4, 4)
-
-        self._jtag_file_preview = QTextEdit()
-        self._jtag_file_preview.setReadOnly(True)
-        self._jtag_file_preview.setFont(QFont("Consolas", 9))
-        self._jtag_file_preview.setMaximumHeight(150)
-        self._jtag_file_preview.setPlaceholderText(
-            "Select a file from the sequence list to preview its contents."
-        )
-        layout.addWidget(self._jtag_file_preview)
-        return grp
-
-    def _build_jtag_status_bar(self) -> QFrame:
-        """\ud558\ub2e8 \uc0c1\ud0dc \ud45c\uc2dc \ud504\ub808\uc784."""
-        frame = QFrame()
-        frame.setFrameShape(QFrame.Shape.NoFrame)
-        g = QGridLayout(frame)
-        g.setSpacing(2)
-        g.setContentsMargins(4, 6, 4, 2)
-
-        lbl_font = QFont("Segoe UI", 8)
-
-        g.addWidget(QLabel("Progress:"), 0, 0)
-        self._jtag_progress_label = QLabel("0 / 0")
-        self._jtag_progress_label.setFont(lbl_font)
-        g.addWidget(self._jtag_progress_label, 0, 1)
-
-        g.addWidget(QLabel("Pattern:"), 1, 0)
-        self._jtag_current_pattern = QLabel("-")
-        self._jtag_current_pattern.setFont(lbl_font)
-        g.addWidget(self._jtag_current_pattern, 1, 1)
-
-        g.addWidget(QLabel("TDO Save:"), 2, 0)
-        self._jtag_tdo_path_label = QLabel("-")
-        self._jtag_tdo_path_label.setFont(lbl_font)
-        self._jtag_tdo_path_label.setWordWrap(True)
-        g.addWidget(self._jtag_tdo_path_label, 2, 1)
-
-        return frame
-
-    # ── JTAG Sequencer \uc2ac\ub86f ──────────────────────────────────────
-
-    @Slot()
-    def _on_jtag_select_folder(self) -> None:
-        """ATP \ud328\ud134 \ud3f4\ub354 \uc120\ud0dd."""
-        folder = QFileDialog.getExistingDirectory(
-            self, "Select Pattern Folder", ""
-        )
-        if not folder:
-            return
-        self._jtag_folder_label.setText(folder)
+    @Slot(str)
+    def _on_jtag_folder_changed(self, folder: str) -> None:
         self._append_log(f"[JTAG] Pattern folder: {folder}")
-
-        # \ud3f4\ub354 \ub0b4 ATP \ud30c\uc77c \ub098\uc5f4
-        import os
-        atp_files = sorted(
-            f for f in os.listdir(folder)
-            if f.lower().endswith((".atp", ".txt", ".pat"))
-        )
-        self._jtag_seq_table.setRowCount(0)
-        self._jtag_atp_folder = folder
-        self._jtag_atp_files = atp_files
-        for i, fname in enumerate(atp_files):
-            row = self._jtag_seq_table.rowCount()
-            self._jtag_seq_table.insertRow(row)
-            # #
-            item_num = QTableWidgetItem(str(i + 1))
-            item_num.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-            self._jtag_seq_table.setItem(row, 0, item_num)
-            # \ud30c\uc77c\uba85
-            self._jtag_seq_table.setItem(row, 1, QTableWidgetItem(fname))
-            # Dynamic \uccb4\ud06c\ubc15\uc2a4
-            chk = QCheckBox()
-            chk.setStyleSheet("margin-left: 18px;")
-            chk.toggled.connect(lambda checked, r=row: self._on_jtag_dynamic_toggled(r, checked))
-            self._jtag_seq_table.setCellWidget(row, 2, chk)
-            # \ub9e4\ud551 \uc0c1\ud0dc
-            item_map = QTableWidgetItem("-")
-            item_map.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-            self._jtag_seq_table.setItem(row, 3, item_map)
-
-        if atp_files:
-            self._jtag_run_btn.setEnabled(True)
-            self._append_log(f"[JTAG] {len(atp_files)} ATP file(s) loaded")
+        count = len(self._jtag_left.atp_files)
+        if count > 0:
+            self._append_log(f"[JTAG] {count} ATP file(s) loaded, scenario auto-built")
         else:
-            self._jtag_run_btn.setEnabled(False)
             self._append_log("[JTAG] No ATP files found in folder.")
 
-    @Slot()
-    def _on_jtag_select_csv(self) -> None:
-        """CSV \ud30c\uc77c \uc120\ud0dd."""
-        path, _ = QFileDialog.getOpenFileName(
-            self, "Select CSV File", "", "CSV Files (*.csv);;All Files (*)"
-        )
-        if not path:
-            return
+    @Slot(str)
+    def _on_jtag_csv_changed(self, path: str) -> None:
         import os
-        self._jtag_csv_path = path
         self._append_log(f"[JTAG] CSV: {os.path.basename(path)}")
         if hasattr(self, "_jtag_right_panel"):
             self._jtag_right_panel.set_mapping_file(os.path.basename(path))
 
-    @Slot(int, int)
-    def _on_jtag_seq_selected(self, row: int, _col: int = 0) -> None:
-        """\uc2dc\ud000\uc2a4 \ud589 \ud074\ub9ad \u2192 \ud30c\uc77c \ubbf8\ub9ac\ubcf4\uae30."""
-        if not hasattr(self, "_jtag_atp_folder") or not hasattr(self, "_jtag_atp_files"):
-            return
-        if row < 0 or row >= len(self._jtag_atp_files):
-            return
+    @Slot(str)
+    def _on_jtag_regmap_changed(self, path: str) -> None:
         import os
-        filepath = os.path.join(self._jtag_atp_folder, self._jtag_atp_files[row])
-        try:
-            with open(filepath, "r", encoding="utf-8", errors="replace") as f:
-                content = f.read(8192)  # \ubbf8\ub9ac\ubcf4\uae30\uc6a9 8KB \uc81c\ud55c
-            self._jtag_file_preview.setPlainText(content)
-        except Exception as e:
-            self._jtag_file_preview.setPlainText(f"(Failed to read file: {e})")
+        self._append_log(f"[JTAG] Register Map: {os.path.basename(path)}")
 
-    @Slot(int, bool)
-    def _on_jtag_dynamic_toggled(self, row: int, checked: bool) -> None:
-        """Dynamic \ubaa8\ub4dc \uccb4\ud06c\ubc15\uc2a4 \ud1a0\uae00."""
-        status = "\u2713" if checked else "-"
-        item = self._jtag_seq_table.item(row, 3)
-        if item:
-            item.setText(status)
+    @Slot(int)
+    def _on_jtag_tck_changed(self, hz: int) -> None:
+        self._ftdi.jtag_configure(hz)
+        self._append_log(f"[JTAG] TCK frequency: {hz} Hz")
+
+    @Slot(int, str)
+    def _on_jtag_step_selected(self, row: int, filepath: str) -> None:
+        """Step selected — show dynamic fields in right panel mapping table."""
+        if not hasattr(self, "_jtag_right_panel"):
+            return
+        try:
+            from modules.ftdi_verifier.atp_parser import AtpParser
+            fields = AtpParser.get_register_list(filepath)
+            if fields:
+                self._jtag_right_panel.set_dynamic_fields(fields)
+                # Determine source label from step's dynamic mode
+                step_id = None
+                if hasattr(self, "_jtag_left"):
+                    ids = self._jtag_left.get_selected_step_ids()
+                    if ids:
+                        step = self._jtag_left.scenario.get_step_by_id(ids[0])
+                        if step:
+                            source_map = {
+                                "none": "-", "auto": "RegMap",
+                                "csv": "CSV", "manual": "Manual", "script": "Script",
+                            }
+                            src = source_map.get(step.dynamic_source.mode.value, "-")
+                            self._jtag_right_panel.update_dynamic_field_source(fields, src)
+            else:
+                self._jtag_right_panel.clear_mapping()
+        except Exception:
+            self._jtag_right_panel.clear_mapping()
 
     @Slot()
     def _on_jtag_run(self) -> None:
-        """\uc2dc\ud000\uc2a4 \uc2e4\ud589 (\ubbf8\uad6c\ud604 stub)."""
-        self._append_log("[JTAG] Sequence execution is not yet implemented.")
+        """\uc2dc\ub098\ub9ac\uc624 \uc2e4\ud589 (Run All)."""
+        self._launch_scenario_executor(ExecutionMode.RUN_ALL)
+
+    @Slot(list)
+    def _on_jtag_run_selected(self, step_ids: list) -> None:
+        self._launch_scenario_executor(ExecutionMode.RUN_SELECTED, step_ids=step_ids)
+
+    @Slot(str)
+    def _on_jtag_run_from(self, step_id: str) -> None:
+        self._launch_scenario_executor(ExecutionMode.RUN_FROM_HERE, start_from_id=step_id)
+
+    @Slot()
+    def _on_jtag_dry_run(self) -> None:
+        self._launch_scenario_executor(ExecutionMode.DRY_RUN)
+
+    @Slot()
+    def _on_jtag_stop(self) -> None:
+        if hasattr(self, "_scenario_executor") and self._scenario_executor:
+            self._scenario_executor.request_stop()
+            self._append_log("[JTAG] Stop requested")
+
+    @Slot()
+    def _on_jtag_retry(self) -> None:
+        """Retry failed steps only."""
+        if not hasattr(self, "_jtag_left"):
+            return
+        failed_ids = [
+            s.step_id for s in self._jtag_left.scenario.steps
+            if s.status in (StepStatus.FAILED, StepStatus.ERROR)
+        ]
+        if failed_ids:
+            self._launch_scenario_executor(ExecutionMode.RUN_SELECTED, step_ids=failed_ids)
+        else:
+            self._append_log("[JTAG] No failed steps to retry")
+
+    def _launch_scenario_executor(
+        self,
+        mode: ExecutionMode = ExecutionMode.RUN_ALL,
+        step_ids: list = None,
+        start_from_id: str = None,
+    ) -> None:
+        """Create ScenarioExecutor, move to QThread, start."""
+        if not hasattr(self, "_jtag_left"):
+            return
+        if self._jtag_thread is not None and self._jtag_thread.isRunning():
+            self._append_log("[JTAG] Execution already running")
+            return
+
+        scenario = self._jtag_left.scenario
+        if not scenario.steps:
+            self._append_log("[JTAG] No steps to execute")
+            return
+
+        # Reset all step statuses
+        scenario.reset_all_status()
+        self._jtag_left._rebuild_table()
+
+        # Load register map if path is set
+        reg_map = None
+        if scenario.register_map_path:
+            from modules.ftdi_verifier.register_map import RegisterMap
+            reg_map = RegisterMap()
+            count = reg_map.load_csv(scenario.register_map_path)
+            self._append_log(f"[JTAG] Register map: {count} entries")
+
+        from modules.ftdi_verifier.scenario_executor import ScenarioExecutor
+        executor = ScenarioExecutor(self._ftdi, scenario, reg_map)
+        self._scenario_executor = executor
+        executor.step_started.connect(self._on_exec_step_started)
+        executor.step_progress.connect(self._on_exec_step_progress)
+        executor.step_completed.connect(self._on_exec_step_completed)
+        executor.execution_finished.connect(self._on_exec_finished)
+        executor.log_message.connect(self._append_log)
+        executor.tdo_data_captured.connect(self._on_exec_tdo_captured)
+
+        self._jtag_left.set_execution_running(True)
+
+        self._jtag_thread = QThread()
+        executor.moveToThread(self._jtag_thread)
+        self._jtag_thread.started.connect(
+            lambda: executor.execute(mode, step_ids, start_from_id)
+        )
+        executor.execution_finished.connect(self._jtag_thread.quit)
+        executor.execution_finished.connect(executor.deleteLater)
+        self._jtag_thread.finished.connect(self._jtag_thread.deleteLater)
+        self._jtag_thread.finished.connect(self._on_exec_thread_finished)
+        self._jtag_thread.start()
+
+    @Slot(str)
+    def _on_exec_step_started(self, step_id: str) -> None:
+        self._jtag_left.update_step_status(step_id, StepStatus.RUNNING, "Running...")
+        step = self._jtag_left.scenario.get_step_by_id(step_id)
+        if step and hasattr(self, "_jtag_right_panel"):
+            self._jtag_right_panel.set_active_step(step.name)
+
+    @Slot(str, int, int)
+    def _on_exec_step_progress(self, step_id: str, current: int, total: int) -> None:
+        self._jtag_left.update_progress(current, total)
+
+    @Slot(object)
+    def _on_exec_step_completed(self, result) -> None:
+        self._jtag_left.update_step_status(
+            result.step_id, result.status, result.message
+        )
+        step = self._jtag_left.scenario.get_step_by_id(result.step_id)
+        if step:
+            self._jtag_left.update_current_pattern(step.name)
+
+    @Slot(bool, str)
+    def _on_exec_finished(self, success: bool, summary: str) -> None:
+        self._append_log(f"[JTAG] {summary}")
+        self._jtag_left.set_execution_running(False)
+        if hasattr(self, "_jtag_right_panel"):
+            self._jtag_right_panel.clear_active_step()
+        # Count pass/fail
+        passed = sum(1 for s in self._jtag_left.scenario.steps
+                     if s.status == StepStatus.PASSED)
+        failed = sum(1 for s in self._jtag_left.scenario.steps
+                     if s.status in (StepStatus.FAILED, StepStatus.ERROR))
+        self._jtag_left.update_pass_fail(passed, failed)
+
+    @Slot(str, str)
+    def _on_exec_tdo_captured(self, step_id: str, hex_value: str) -> None:
+        if hasattr(self, "_jtag_right_panel"):
+            step = self._jtag_left.scenario.get_step_by_id(step_id)
+            name = step.name if step else step_id[:8]
+            self._jtag_right_panel.append_tdo_data(f"[{name}] {hex_value}")
+
+    @Slot()
+    def _on_exec_thread_finished(self) -> None:
+        self._jtag_thread = None
+        self._scenario_executor = None
+
+    @Slot()
+    def _on_scenario_save(self) -> None:
+        """Save current scenario to JSON."""
+        if not hasattr(self, "_jtag_left"):
+            return
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Save Scenario", "",
+            "JSON Files (*.json);;All Files (*)"
+        )
+        if not path:
+            return
+        try:
+            self._jtag_left.scenario.to_json(path)
+            self._append_log(f"[JTAG] Scenario saved: {path}")
+        except Exception as e:
+            self._append_log(f"[JTAG] Save failed: {e}")
+
+    @Slot()
+    def _on_scenario_load(self) -> None:
+        """Load scenario from JSON."""
+        if not hasattr(self, "_jtag_left"):
+            return
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Load Scenario", "",
+            "JSON Files (*.json);;All Files (*)"
+        )
+        if not path:
+            return
+        try:
+            from modules.ftdi_verifier.scenario_model import Scenario
+            scenario = Scenario.from_json(path)
+            self._jtag_left.set_scenario(scenario)
+            self._append_log(
+                f"[JTAG] Scenario loaded: {scenario.name} "
+                f"({len(scenario.steps)} steps)"
+            )
+        except Exception as e:
+            self._append_log(f"[JTAG] Load failed: {e}")
+
+    def _run_jtag_op(self, op_name: str, method_name: str, *args) -> None:
+        """Launch a single-shot JTAG worker thread."""
+        if self._jtag_thread is not None and self._jtag_thread.isRunning():
+            self._append_log(f"[JTAG] {op_name}: previous operation still running")
+            return
+        if not self._ftdi.is_connected:
+            self._append_log(f"[JTAG] {op_name}: device not connected")
+            return
+
+        worker = VerifierWorker(self._ftdi)
+        worker.jtag_result.connect(self._on_jtag_result)
+        worker.log_message.connect(self._append_log)
+        worker.error_occurred.connect(self._append_log)
+
+        self._jtag_thread = QThread()
+        worker.moveToThread(self._jtag_thread)
+        fn = getattr(worker, method_name)
+        self._jtag_thread.started.connect(lambda: fn(*args))
+        worker.jtag_result.connect(self._jtag_thread.quit)
+        worker.jtag_result.connect(worker.deleteLater)
+        self._jtag_thread.finished.connect(self._jtag_thread.deleteLater)
+        self._jtag_thread.finished.connect(self._on_jtag_thread_finished)
+        self._jtag_thread.start()
+
+    @Slot()
+    def _on_jtag_thread_finished(self) -> None:
+        self._jtag_thread = None
+
+    @Slot()
+    def _on_jtag_read_idcode(self) -> None:
+        self._run_jtag_op("Read IDCODE", "jtag_read_idcode")
+
+    @Slot()
+    def _on_jtag_reset_tap(self) -> None:
+        self._run_jtag_op("Reset TAP", "jtag_reset_tap")
+
+    @Slot()
+    def _on_jtag_bypass_test(self) -> None:
+        self._run_jtag_op("Bypass Test", "jtag_bypass_test", self._jtag_device_count)
+
+    @Slot(object)
+    def _on_jtag_result(self, result: JtagResult) -> None:
+        """Handle JTAG operation results — update right panel UI."""
+        panel = self._jtag_right_panel
+
+        # Update TAP state
+        if result.tap_state:
+            from core.jtag_controller import TAP_DISPLAY_NAMES
+            display = TAP_DISPLAY_NAMES.get(result.tap_state, result.tap_state)
+            panel.set_current_state(display)
+
+        # Update pin LEDs
+        for pin, high in result.pin_states.items():
+            panel.set_pin_state(pin, high)
+
+        # Operation-specific updates
+        if result.operation == "read_idcode" and result.chain_info is not None:
+            chain = result.chain_info
+            self._jtag_device_count = max(1, chain.device_count)
+            if chain.device_count > 0:
+                dev = chain.devices[0]
+                panel.set_chain_info(
+                    devices=str(chain.device_count),
+                    idcode=dev.hex_str(),
+                    mfr=dev.mfr_hex(),
+                    part=dev.part_hex(),
+                    ir_len="- ",
+                )
+                # Log all IDCODEs to TDO logger
+                for i, d in enumerate(chain.devices):
+                    panel.append_tdo_data(
+                        f"[{i}] IDCODE={d.hex_str()} Mfr={d.mfr_hex()} "
+                        f"Part={d.part_hex()} Ver={d.version}"
+                    )
+            else:
+                panel.set_chain_info()
+
+        elif result.operation == "bypass_test":
+            # Update execution counters
+            cur_pass = panel._exec_labels["Pass"][1].text()
+            cur_fail = panel._exec_labels["Fail"][1].text()
+            try:
+                p = int(cur_pass)
+                f = int(cur_fail)
+            except ValueError:
+                p, f = 0, 0
+            if result.success:
+                p += 1
+            else:
+                f += 1
+            panel.set_exec_counters(
+                cycles=f"{p + f} / {p + f}",
+                passed=str(p),
+                failed=str(f),
+            )
+            panel.append_tdo_data(
+                f"Bypass Test: {'PASS' if result.success else 'FAIL'} — {result.message}"
+            )
+
+        elif result.operation == "reset_tap":
+            panel.append_tdo_data(f"TAP Reset: {result.message}")
 
     def _create_pinout_panel(self) -> QGroupBox:
         """Right: interactive pinmap."""
@@ -2260,7 +2409,7 @@ class FtdiVerifierModule(BaseModule):
         self._worker = None
 
     def _stop_single_shot_threads(self) -> None:
-        for name in ("_spi_test_thread", "_spi_id_thread", "_i2c_test_thread", "_i2c_scan_thread"):
+        for name in ("_spi_test_thread", "_spi_id_thread", "_i2c_test_thread", "_i2c_scan_thread", "_jtag_thread"):
             th = getattr(self, name, None)
             if th is None:
                 continue
@@ -2455,37 +2604,9 @@ class FtdiVerifierModule(BaseModule):
                 f"background: {tm.color('spi_input_bg')}; color: {tm.color('spi_input_text')}; border: 1px solid {tm.color('spi_input_border')}; border-radius: 4px; padding: 2px 8px;"
             )
 
-        # JTAG Sequencer
-        if hasattr(self, "_jtag_run_btn"):
-            jtag_btn_css = (
-                f"QPushButton {{ background: {tm.color('jtag_run_bg')}; color: {tm.color('jtag_run_text')}; font-weight: 700; border-radius: 6px; border: 1px solid {tm.color('jtag_btn_border')}; }}"
-                f"QPushButton:hover {{ background: {tm.color('jtag_btn_hover')}; }}"
-                f"QPushButton:disabled {{ background: {tm.color('bg_disabled')}; color: {tm.color('text_disabled')}; border: 1px solid {tm.color('border_subtle')}; }}"
-            )
-            self._jtag_run_btn.setStyleSheet(jtag_btn_css)
-            # \ud3f4\ub354/CSV \ubc84\ud2bc
-            header_btn_css = (
-                f"QPushButton {{ background: {tm.color('jtag_btn_bg')}; color: {tm.color('jtag_btn_text')}; font-weight: 600; border-radius: 4px; border: 1px solid {tm.color('jtag_btn_border')}; }}"
-                f"QPushButton:hover {{ background: {tm.color('jtag_btn_hover')}; }}"
-            )
-            self._jtag_folder_btn.setStyleSheet(header_btn_css)
-            self._jtag_csv_btn.setStyleSheet(header_btn_css)
-            # \uc2dc\ud000\uc2a4 \ud14c\uc774\ube14
-            self._jtag_seq_table.setStyleSheet(
-                f"QTableWidget {{ background: {tm.color('jtag_seq_table_bg')}; color: {tm.color('jtag_tap_text')}; gridline-color: {tm.color('jtag_btn_border')}; border: 1px solid {tm.color('jtag_btn_border')}; }}"
-                f"QHeaderView::section {{ background: {tm.color('jtag_tap_state')}; color: {tm.color('jtag_tap_text')}; border: 1px solid {tm.color('jtag_btn_border')}; padding: 2px; }}"
-                f"QTableWidget::item:selected {{ background: {tm.color('jtag_seq_selected')}; }}"
-            )
-            # \ubbf8\ub9ac\ubcf4\uae30
-            self._jtag_file_preview.setStyleSheet(
-                f"QTextEdit {{ background: {tm.color('jtag_preview_bg')}; color: {tm.color('jtag_preview_text')}; border: 1px solid {tm.color('jtag_btn_border')}; border-radius: 4px; }}"
-            )
-            # \uc0c1\ud0dc \ub77c\ubca8
-            status_css = f"color: {tm.color('jtag_status_text')};"
-            self._jtag_progress_label.setStyleSheet(status_css)
-            self._jtag_current_pattern.setStyleSheet(status_css)
-            self._jtag_tdo_path_label.setStyleSheet(status_css)
-            self._jtag_folder_label.setStyleSheet(f"color: {tm.color('jtag_preview_text')};")
+        # JTAG Sequencer left panel (theme handled internally by JtagLeftPanel)
+        if hasattr(self, "_jtag_left"):
+            self._jtag_left._apply_theme()
 
         # UART
         if hasattr(self, "_uart_console"):

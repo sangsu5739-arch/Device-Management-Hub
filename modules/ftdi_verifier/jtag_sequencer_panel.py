@@ -286,6 +286,17 @@ class JtagSequencerPanel(QWidget):
         mapping_body.setContentsMargins(2, 4, 2, 2)
         mapping_body.setSpacing(4)
 
+        # Active step indicator
+        active_row = QHBoxLayout()
+        active_row.setSpacing(4)
+        self._active_step_lbl = QLabel("Active Step:")
+        self._active_step_lbl.setFont(QFont("Segoe UI", 8))
+        self._active_step_name = QLabel("-")
+        self._active_step_name.setFont(QFont("Consolas", 9, QFont.Weight.Bold))
+        active_row.addWidget(self._active_step_lbl)
+        active_row.addWidget(self._active_step_name, 1)
+        mapping_body.addLayout(active_row)
+
         header_row = QHBoxLayout()
         self._target_file_lbl = QLabel("Target File:")
         header_row.addWidget(self._target_file_lbl)
@@ -302,16 +313,16 @@ class JtagSequencerPanel(QWidget):
 
         self._mapping_table = QTableWidget(0, 5)
         self._mapping_table.setHorizontalHeaderLabels(
-            ["Signal", "Type", "Bits", "Dir", "Mapped Pin"]
+            ["Signal", "Bits", "Source", "Value", "Status"]
         )
         h_hdr = self._mapping_table.horizontalHeader()
         h_hdr.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
         for col in (1, 2, 3, 4):
             h_hdr.setSectionResizeMode(col, QHeaderView.ResizeMode.Fixed)
-        self._mapping_table.setColumnWidth(1, 55)
+        self._mapping_table.setColumnWidth(1, 45)
         self._mapping_table.setColumnWidth(2, 60)
-        self._mapping_table.setColumnWidth(3, 50)
-        self._mapping_table.setColumnWidth(4, 90)
+        self._mapping_table.setColumnWidth(3, 75)
+        self._mapping_table.setColumnWidth(4, 45)
         self._mapping_table.verticalHeader().setVisible(False)
         self._mapping_table.setSelectionBehavior(
             QAbstractItemView.SelectionBehavior.SelectRows
@@ -431,6 +442,83 @@ class JtagSequencerPanel(QWidget):
     def clear_tdo_log(self) -> None:
         self._tdo_log.clear()
 
+    # ── Scenario / Dynamic field API ──────────────────────────────
+
+    def set_active_step(self, name: str) -> None:
+        """Show which step is currently executing."""
+        self._active_step_name.setText(name)
+
+    def clear_active_step(self) -> None:
+        self._active_step_name.setText("-")
+
+    def set_dynamic_fields(self, fields: list) -> None:
+        """Populate mapping table with dynamic field info.
+
+        Args:
+            fields: List of DynamicFieldInfo objects.
+        """
+        self._mapping_table.setRowCount(0)
+        for f in fields:
+            row = self._mapping_table.rowCount()
+            self._mapping_table.insertRow(row)
+
+            # Signal name
+            name_item = QTableWidgetItem(f.reg_name)
+            self._mapping_table.setItem(row, 0, name_item)
+
+            # Bits
+            bits_item = QTableWidgetItem(str(f.bit_width))
+            bits_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            self._mapping_table.setItem(row, 1, bits_item)
+
+            # Source
+            source_item = QTableWidgetItem("-")
+            source_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            self._mapping_table.setItem(row, 2, source_item)
+
+            # Value
+            if f.resolved_value is not None:
+                val_text = f"0x{f.resolved_value:X}"
+            else:
+                val_text = "pending"
+            val_item = QTableWidgetItem(val_text)
+            val_item.setFont(QFont("Consolas", 9))
+            val_item.setTextAlignment(Qt.AlignmentFlag.AlignRight)
+            self._mapping_table.setItem(row, 3, val_item)
+
+            # Status
+            if f.resolved_value is not None:
+                status_text = "OK"
+                status_color = "#27AE60"
+            else:
+                status_text = "?"
+                status_color = "#E74C3C"
+            status_item = QTableWidgetItem(status_text)
+            status_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            status_item.setForeground(QColor(status_color))
+            self._mapping_table.setItem(row, 4, status_item)
+
+        total = len(fields)
+        resolved = sum(1 for f in fields if f.resolved_value is not None)
+        self._mapping_status.setText(
+            f"Fields: {total} | Resolved: {resolved}/{total}"
+        )
+
+    def update_dynamic_field_source(self, fields: list, source_label: str) -> None:
+        """Update the Source column for all fields."""
+        for row in range(min(len(fields), self._mapping_table.rowCount())):
+            item = self._mapping_table.item(row, 2)
+            if item:
+                item.setText(source_label)
+
+    def update_scenario_counters(
+        self, total: int, completed: int, passed: int, failed: int
+    ) -> None:
+        """Update execution counters with scenario-level progress."""
+        self._exec_labels["Cycles"][1].setText(f"{completed} / {total}")
+        self._exec_labels["Pass"][1].setText(str(passed))
+        self._exec_labels["Fail"][1].setText(str(failed))
+
     # \u2500\u2500 slots \u2500\u2500
 
     def _on_tdo_clear(self) -> None:
@@ -492,6 +580,8 @@ class JtagSequencerPanel(QWidget):
 
         self._mapping_file_label.setStyleSheet(f"color: {text};")
         self._target_file_lbl.setStyleSheet(f"color: {text};")
+        self._active_step_lbl.setStyleSheet(f"color: {tm.color('jtag_status_text')};")
+        self._active_step_name.setStyleSheet(f"color: {highlight};")
         self._mapping_status.setStyleSheet(
             f"color: {tm.color('jtag_status_text')};"
         )

@@ -41,6 +41,18 @@ class ProtocolTestResult:
     raw_data: bytes = b""
 
 
+@dataclass
+class JtagResult:
+    """JTAG operation result."""
+    timestamp: float = 0.0
+    operation: str = ""
+    success: bool = False
+    message: str = ""
+    chain_info: object = None     # JtagChainInfo
+    tap_state: str = ""
+    pin_states: Dict[str, bool] = field(default_factory=dict)
+
+
 class VerifierWorker(QObject):
     """Async hardware verification worker.
 
@@ -55,6 +67,7 @@ class VerifierWorker(QObject):
     gpio_updated = Signal(object)
     i2c_scan_done = Signal(object)
     protocol_test_done = Signal(object)
+    jtag_result = Signal(object)
     log_message = Signal(str)
     error_occurred = Signal(str)
 
@@ -329,6 +342,121 @@ class VerifierWorker(QObject):
             self._log(f"SPI ID read error: {e}")
 
         self.protocol_test_done.emit(result)
+
+    # -- JTAG operations --
+
+    def jtag_read_idcode(self) -> None:
+        """Read IDCODE(s) from the JTAG chain."""
+        if not self._ftdi.is_connected:
+            self.error_occurred.emit("FTDI not connected")
+            return
+
+        self._log("JTAG: Reading IDCODE...")
+        try:
+            chain = self._ftdi.jtag_read_idcode()
+            if chain is None:
+                result = JtagResult(
+                    timestamp=time.time(), operation="read_idcode",
+                    success=False, message="IDCODE read failed",
+                    tap_state=self._ftdi.jtag_get_tap_state(),
+                )
+            else:
+                count = chain.device_count
+                msg = f"{count} device(s) found"
+                if count > 0:
+                    ids = ", ".join(d.hex_str() for d in chain.devices)
+                    msg += f": {ids}"
+                result = JtagResult(
+                    timestamp=time.time(), operation="read_idcode",
+                    success=count > 0, message=msg,
+                    chain_info=chain,
+                    tap_state=self._ftdi.jtag_get_tap_state(),
+                )
+                self._log(f"JTAG IDCODE: {msg}")
+        except Exception as e:
+            result = JtagResult(
+                timestamp=time.time(), operation="read_idcode",
+                success=False, message=str(e),
+                tap_state=self._ftdi.jtag_get_tap_state(),
+            )
+            self._log(f"JTAG IDCODE error: {e}")
+
+        self._emit_jtag_pin_state(result)
+        self.jtag_result.emit(result)
+
+    def jtag_reset_tap(self) -> None:
+        """Reset TAP to Test-Logic-Reset."""
+        if not self._ftdi.is_connected:
+            self.error_occurred.emit("FTDI not connected")
+            return
+
+        self._log("JTAG: Resetting TAP...")
+        try:
+            ok = self._ftdi.jtag_reset()
+            result = JtagResult(
+                timestamp=time.time(), operation="reset_tap",
+                success=ok, message="TAP reset to TLR" if ok else "TAP reset failed",
+                tap_state=self._ftdi.jtag_get_tap_state(),
+            )
+            self._log(f"JTAG Reset TAP: {'OK' if ok else 'FAILED'}")
+        except Exception as e:
+            result = JtagResult(
+                timestamp=time.time(), operation="reset_tap",
+                success=False, message=str(e),
+                tap_state=self._ftdi.jtag_get_tap_state(),
+            )
+            self._log(f"JTAG Reset TAP error: {e}")
+
+        self._emit_jtag_pin_state(result)
+        self.jtag_result.emit(result)
+
+    def jtag_bypass_test(self, device_count: int = 1) -> None:
+        """Run JTAG BYPASS test."""
+        if not self._ftdi.is_connected:
+            self.error_occurred.emit("FTDI not connected")
+            return
+
+        self._log(f"JTAG: Bypass test (devices={device_count})...")
+        try:
+            passed = self._ftdi.jtag_bypass_test(device_count)
+            if passed is None:
+                result = JtagResult(
+                    timestamp=time.time(), operation="bypass_test",
+                    success=False, message="Bypass test error",
+                    tap_state=self._ftdi.jtag_get_tap_state(),
+                )
+            else:
+                result = JtagResult(
+                    timestamp=time.time(), operation="bypass_test",
+                    success=passed,
+                    message=f"Bypass test {'PASS' if passed else 'FAIL'}",
+                    tap_state=self._ftdi.jtag_get_tap_state(),
+                )
+            self._log(f"JTAG Bypass: {result.message}")
+        except Exception as e:
+            result = JtagResult(
+                timestamp=time.time(), operation="bypass_test",
+                success=False, message=str(e),
+                tap_state=self._ftdi.jtag_get_tap_state(),
+            )
+            self._log(f"JTAG Bypass error: {e}")
+
+        self._emit_jtag_pin_state(result)
+        self.jtag_result.emit(result)
+
+    def _emit_jtag_pin_state(self, result: JtagResult) -> None:
+        """Read JTAG pin states and attach to result."""
+        try:
+            raw = self._ftdi.jtag_read_pins()
+            if raw is not None:
+                result.pin_states = {
+                    "TCK": bool(raw & 0x01),
+                    "TDI": bool(raw & 0x02),
+                    "TDO": bool(raw & 0x04),
+                    "TMS": bool(raw & 0x08),
+                }
+        except Exception:
+            pass
 
     # -- Utils --
 
